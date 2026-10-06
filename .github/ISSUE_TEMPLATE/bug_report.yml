@@ -1,0 +1,30 @@
+name: Bug report
+description: Something is broken or renders wrongly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: pdf
+    attributes:
+      label: Sample PDF
+      description: >
+        Attach the PDF if it is not private. If it is, describe where it came from
+        (scanner, Word export, website…). Do not attach documents with personal data.
+  - type: input
+    id: version
+    attributes:
+      label: micropdf version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: e.g. Windows 11 24H2

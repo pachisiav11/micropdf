@@ -1,0 +1,28 @@
+# Rust
+target/
+*.pdb
+
+# Node / extension
+node_modules/
+extension/dist/
+
+# Benchmarks and generated output
+bench/results/
+fixtures/external/
+*.render.png
+
+# Local secrets and app data
+.env
+.env.*
+recovery/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json

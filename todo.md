@@ -1,0 +1,19 @@
+- 2026-10-07 00:22: M0 — git init + create public GitHub repo pachisiav11/micropdf (README, PLAN, LICENSE AGPL-3.0, .gitignore, .gitattributes, topics, settings, SECURITY.md, issue templates, dependabot)
+- 2026-10-07 00:22: M0 — turn on branch protection for main (require CI) once CI exists
+- 2026-10-07 00:18: M0 — set up Cargo workspace, THIRD-PARTY-NOTICES, CI on windows-latest
+- 2026-10-07 00:18: M0 — build mupdf-sys with MSVC (no bundled CJK fonts, extract + mujs on); render a fixture page to PNG in a test
+- 2026-10-07 00:18: M0 — generate tokens.slint / tokens.css from design/tokens.toml (Recto themes)
+- 2026-10-07 00:18: M0 — tile viewport spike: compare Slint software / FemtoVG / Skia renderers on fps and RAM; pick one
+- 2026-10-07 00:18: M0 — engine actor + cloned-context render pool prototype with stress test
+- 2026-10-07 00:18: M0 — bench/ memory harness + one-time Acrobat comparison
+- 2026-10-07 00:18: M0 — fixtures/ corpus (text, scanned, forms, signed, encrypted, huge, CJK, broken)
+- 2026-10-07 00:18: M1 — viewer (v0.1)
+- 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
+- 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)
+- 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
+- 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)
+- 2026-10-07 00:18: M6 — OCR, digital signatures, compare, measure (v0.6)
+- 2026-10-07 00:18: M7 — edit content, prepare form (v0.7)
+- 2026-10-07 00:18: M8 — conversion + LibreOffice add-on (v0.8)
+- 2026-10-07 00:18: M9 — library + batch (v0.9)
+- 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
