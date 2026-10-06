@@ -41,7 +41,7 @@ foreach ($file in $Files) {
             settled_mb = $mem.last_mb
             scroll_s   = $run.scroll_seconds
             ticks_s    = $run.ticks_per_second
-            renders    = $run.renders
+            tiles      = $run.tiles_rendered
         }
     }
 }
@@ -60,11 +60,13 @@ if ($Acrobat) {
             $rows += [pscustomobject]@{
                 app = "Acrobat"; renderer = "-"; file = Split-Path $file -Leaf
                 peak_mb = $mem.peak_mb; settled_mb = $mem.last_mb
-                scroll_s = $null; ticks_s = $null; renders = $null
+                scroll_s = $null; ticks_s = $null; tiles = $null
             }
             if (-not $p.WaitForExit(20000)) {
-                Write-Warning "Acrobat did not close; stopping the Acrobat runs. Close it by hand."
-                break
+                # Acrobat was not running before this script started it, so stopping it is safe.
+                Write-Warning "Acrobat did not close after 20 s; stopping it."
+                Stop-Process -Name Acrobat, AcroCEF -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
             }
         }
     }
@@ -77,10 +79,10 @@ $md = @(
     "micropdf: open, scroll top to bottom, settle 3 s. Acrobat: open, idle $AcrobatSeconds s (no scrolling).",
     "Memory is private working set summed over all processes of the app, in MB.",
     "",
-    "| app | renderer | file | peak MB | settled MB | scroll s | ticks/s | renders |",
+    "| app | renderer | file | peak MB | settled MB | scroll s | ticks/s | tiles |",
     "|---|---|---|---|---|---|---|---|"
 ) + ($rows | ForEach-Object {
-    "| $($_.app) | $($_.renderer) | $($_.file) | $($_.peak_mb) | $($_.settled_mb) | $($_.scroll_s) | $($_.ticks_s) | $($_.renders) |"
+    "| $($_.app) | $($_.renderer) | $($_.file) | $($_.peak_mb) | $($_.settled_mb) | $($_.scroll_s) | $($_.ticks_s) | $($_.tiles) |"
 })
 $path = Join-Path $results "$stamp.md"
 $md | Set-Content -Encoding utf8 $path

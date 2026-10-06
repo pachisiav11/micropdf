@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mp_engine::{
-    DocId, DocInfo, Engine, Link, LinkTarget, OutlineItem, PageText, Rect, RenderPool, Tile,
+    Attachment, DocId, DocInfo, Engine, Layer, Link, LinkTarget, OutlineItem, PageText, Rect,
+    RenderPool, Tile,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
@@ -23,8 +24,8 @@ use crate::palette;
 use crate::recolor::ReadingMode;
 use crate::settings::Settings;
 use crate::{
-    InfoRow, MainWindow, MarkItem, OutlineRow, PageItem, PaletteItem, TabItem, Theme, ThumbItem,
-    TileItem,
+    AttachmentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem, PaletteItem,
+    TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -157,6 +158,8 @@ struct DocTab {
     outline_rows: Vec<usize>,
     outline_current: Option<usize>,
     metadata: Vec<(String, String)>,
+    attachments: Vec<Attachment>,
+    layers: Vec<Layer>,
 }
 
 impl DocTab {
@@ -216,6 +219,8 @@ struct Models {
     info: Rc<VecModel<InfoRow>>,
     palette: Rc<VecModel<PaletteItem>>,
     recent: Rc<VecModel<PaletteItem>>,
+    attachments: Rc<VecModel<AttachmentRow>>,
+    layers: Rc<VecModel<LayerRow>>,
 }
 
 pub struct App {
@@ -265,6 +270,8 @@ impl App {
             info: Rc::new(VecModel::default()),
             palette: Rc::new(VecModel::default()),
             recent: Rc::new(VecModel::default()),
+            attachments: Rc::new(VecModel::default()),
+            layers: Rc::new(VecModel::default()),
         };
         window.set_tabs(ModelRc::from(models.tabs.clone()));
         window.set_pages(ModelRc::from(models.pages.clone()));
@@ -275,6 +282,8 @@ impl App {
         window.set_info(ModelRc::from(models.info.clone()));
         window.set_palette_items(ModelRc::from(models.palette.clone()));
         window.set_recent_items(ModelRc::from(models.recent.clone()));
+        window.set_attachments(ModelRc::from(models.attachments.clone()));
+        window.set_layers(ModelRc::from(models.layers.clone()));
 
         window.global::<Theme>().set_dark(settings.dark_theme);
         window.set_vim_enabled(settings.vim);
@@ -413,6 +422,8 @@ impl App {
         }
         let outline = self.engine.outline(info.id).unwrap_or_default();
         let metadata = self.engine.metadata(info.id).unwrap_or_default();
+        let attachments = self.engine.attachments(info.id).unwrap_or_default();
+        let layers = self.engine.layers(info.id).unwrap_or_default();
         let expanded = if outline.len() <= 30 {
             (0..outline.len()).collect()
         } else {
@@ -461,6 +472,8 @@ impl App {
             outline_rows: Vec::new(),
             outline_current: None,
             metadata,
+            attachments,
+            layers,
         };
         self.tabs.push(tab);
         self.settings.add_recent(&path);
@@ -514,6 +527,8 @@ impl App {
         self.models.thumbs.set_vec(Vec::new());
         self.models.outline.set_vec(Vec::new());
         self.models.info.set_vec(Vec::new());
+        self.models.attachments.set_vec(Vec::new());
+        self.models.layers.set_vec(Vec::new());
         self.shown_pages.clear();
         self.shown_tiles.clear();
         self.shown_marks.clear();
@@ -553,6 +568,7 @@ impl App {
         self.rebuild_thumbs();
         self.rebuild_outline();
         self.rebuild_info();
+        self.rebuild_files();
         self.refresh_find_status();
         self.refresh_zoom_text();
         self.update_view();
@@ -742,6 +758,8 @@ impl App {
         }
         let outline = self.engine.outline(info.id).unwrap_or_default();
         let metadata = self.engine.metadata(info.id).unwrap_or_default();
+        let attachments = self.engine.attachments(info.id).unwrap_or_default();
+        let layers = self.engine.layers(info.id).unwrap_or_default();
         let generation = self.bump();
         let thumb_generation = self.bump();
         let active = self.active == Some(index);
@@ -765,6 +783,8 @@ impl App {
         tab.selection = None;
         tab.outline = outline;
         tab.metadata = metadata;
+        tab.attachments = attachments;
+        tab.layers = layers;
         tab.view = (0.0, 0.0);
         tab.pending = spot.map(|mut s| {
             s.page = s.page.min(tab.sizes.len() - 1);
@@ -778,6 +798,7 @@ impl App {
             self.rebuild_thumbs();
             self.rebuild_outline();
             self.rebuild_info();
+            self.rebuild_files();
             self.start_search(query);
             self.update_view();
         }
@@ -900,8 +921,10 @@ impl App {
             return;
         };
         let (vw, vh) = (window.get_view_width(), window.get_view_height());
-        let x = x.clamp(0.0, (tab.layout.width - vw).max(0.0));
-        let y = y.clamp(0.0, (tab.layout.height - vh).max(0.0));
+        let dpr = window.window().scale_factor();
+        let snap = |v: f32| (v * dpr).round() / dpr;
+        let x = snap(x.clamp(0.0, (tab.layout.width - vw).max(0.0)));
+        let y = snap(y.clamp(0.0, (tab.layout.height - vh).max(0.0)));
         window.set_viewport_x(-x);
         window.set_viewport_y(-y);
     }
@@ -1080,7 +1103,7 @@ impl App {
             let Some(f) = tab.layout.frame(p) else {
                 continue;
             };
-            page_items.push(page_item(p, f));
+            page_items.push(page_item(p, f, dpr));
             let dw = (f.width * dpr).ceil().max(1.0) as i32;
             let dh = (f.height * dpr).ceil().max(1.0) as i32;
             let x0 = (((left - 128.0) - f.x) * dpr).floor().max(0.0) as i32;
@@ -1100,7 +1123,7 @@ impl App {
                         row,
                     };
                     if let Some(t) = tab.tiles.get(&key) {
-                        fresh.push(tile_item(f, t));
+                        fresh.push(tile_item(f, t, dpr));
                     } else {
                         let tile = Tile {
                             x: col * TILE,
@@ -1128,7 +1151,7 @@ impl App {
                     .filter(|(k, _)| k.page == p && k.generation != generation)
                     .collect();
                 old.sort_by_key(|(k, _)| k.generation);
-                tile_items.extend(old.into_iter().map(|(_, t)| tile_item(f, t)));
+                tile_items.extend(old.into_iter().map(|(_, t)| tile_item(f, t, dpr)));
             }
             tile_items.extend(fresh);
         }
@@ -1237,10 +1260,11 @@ impl App {
         let (w, h) = tab.sizes[page];
         window.set_status_right(
             format!(
-                "{:.2} × {:.2} in  ·  {} pages",
+                "{:.2} × {:.2} in  ·  {} page{}",
                 w / 72.0,
                 h / 72.0,
-                tab.page_count()
+                tab.page_count(),
+                if tab.page_count() == 1 { "" } else { "s" }
             )
             .into(),
         );
@@ -2462,6 +2486,99 @@ impl App {
         self.models.info.set_vec(items);
     }
 
+    /// Fills the attachments and layers panels, and leaves a panel the new tab lacks.
+    fn rebuild_files(&self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        let files: Vec<AttachmentRow> = tab
+            .attachments
+            .iter()
+            .map(|a| AttachmentRow {
+                name: a.name.clone().into(),
+                detail: a
+                    .size
+                    .map(|n| format_size(n as u64))
+                    .unwrap_or_default()
+                    .into(),
+            })
+            .collect();
+        self.models.attachments.set_vec(files);
+        self.fill_layers();
+        let tab_index = window.get_sidebar_tab();
+        if (tab_index == 3 && tab.attachments.is_empty())
+            || (tab_index == 4 && tab.layers.is_empty())
+        {
+            window.set_sidebar_tab(0);
+        }
+    }
+
+    fn fill_layers(&self) {
+        let Some(tab) = self.tab() else { return };
+        let rows: Vec<LayerRow> = tab
+            .layers
+            .iter()
+            .map(|l| LayerRow {
+                name: l.name.clone().into(),
+                depth: l.depth as i32,
+                toggle: l.toggle,
+                visible: l.visible,
+                locked: l.locked,
+            })
+            .collect();
+        self.models.layers.set_vec(rows);
+    }
+
+    pub fn layer_toggle(&mut self, index: usize) {
+        let Some(tab) = self.tab() else { return };
+        let Ok(layers) = self.engine.toggle_layer(tab.info.id, index) else {
+            return;
+        };
+        let thumb_generation = self.bump();
+        let Some(tab) = self.tab_mut() else { return };
+        tab.layers = layers;
+        // Every rendered pixel may change: force new tiles, thumbnails and text.
+        tab.signature = (0, 0, ReadingMode::Normal);
+        tab.tiles.clear();
+        tab.thumbs.clear();
+        tab.thumb_generation = thumb_generation;
+        tab.texts.clear();
+        self.fill_layers();
+        self.rebuild_thumbs();
+        self.update_view();
+    }
+
+    /// Asks where to save attachment `index`, then writes it, off the UI thread.
+    pub fn attachment_save(&mut self, index: usize) {
+        let Some(tab) = self.tab() else { return };
+        let Some(file) = tab.attachments.get(index) else {
+            return;
+        };
+        let (engine, doc) = (Arc::clone(&self.engine), tab.info.id);
+        let name = file.name.clone();
+        let dir = tab.path.parent().map(Path::to_path_buf);
+        std::thread::spawn(move || {
+            let mut dialog = rfd::FileDialog::new().set_file_name(&name);
+            if let Some(dir) = dir {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(target) = dialog.save_file() else {
+                return;
+            };
+            let message = match engine
+                .attachment_data(doc, index)
+                .map_err(|e| e.to_string())
+                .and_then(|data| std::fs::write(&target, data).map_err(|e| e.to_string()))
+            {
+                Ok(()) => format!("Saved {}", target.display()),
+                Err(e) => format!("Could not save {name}: {e}"),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                with(|app| app.status(message));
+            });
+        });
+    }
+
     // ---------------------------------------------------------------- palette
 
     pub fn open_palette(&mut self) {
@@ -2644,27 +2761,32 @@ impl App {
     }
 }
 
-fn page_item(index: usize, f: Frame) -> PageItem {
-    let (x0, y0) = (f.x.round(), f.y.round());
+/// Page sheet snapped to physical pixels, so tiles line up with it exactly.
+fn page_item(index: usize, f: Frame, dpr: f32) -> PageItem {
+    let (x, y) = ((f.x * dpr).round(), (f.y * dpr).round());
     PageItem {
         index: index as i32,
-        x: x0,
-        y: y0,
-        width: (f.x + f.width).round() - x0,
-        height: (f.y + f.height).round() - y0,
+        x: x / dpr,
+        y: y / dpr,
+        width: (f.width * dpr).ceil() / dpr,
+        height: (f.height * dpr).ceil() / dpr,
     }
 }
 
-fn tile_item(f: Frame, t: &TileImage) -> TileItem {
-    let x0 = (f.x + t.frac[0] * f.width).round();
-    let y0 = (f.y + t.frac[1] * f.height).round();
-    let x1 = (f.x + t.frac[2] * f.width).round();
-    let y1 = (f.y + t.frac[3] * f.height).round();
+/// Tile edges are computed in physical pixels: a tile must cover exactly as many physical pixels
+/// as it has, or the renderer resamples it and a seam shows in the middle.
+fn tile_item(f: Frame, t: &TileImage, dpr: f32) -> TileItem {
+    let (px, py) = ((f.x * dpr).round(), (f.y * dpr).round());
+    let (dw, dh) = ((f.width * dpr).ceil(), (f.height * dpr).ceil());
+    let x0 = px + (t.frac[0] * dw).round();
+    let y0 = py + (t.frac[1] * dh).round();
+    let x1 = px + (t.frac[2] * dw).round();
+    let y1 = py + (t.frac[3] * dh).round();
     TileItem {
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
+        x: x0 / dpr,
+        y: y0 / dpr,
+        width: (x1 - x0) / dpr,
+        height: (y1 - y0) / dpr,
         image: t.image.clone(),
     }
 }

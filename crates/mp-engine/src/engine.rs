@@ -5,9 +5,10 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
 use mupdf::link::LinkDestination;
+use mupdf::pdf::{PdfDocument, PdfObject};
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
-use crate::{Error, Link, LinkTarget, OutlineItem};
+use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
 const LIST_CACHE_CAPACITY: usize = 48;
@@ -63,6 +64,24 @@ enum Command {
     Metadata {
         doc: DocId,
         reply: Reply<Vec<(String, String)>>,
+    },
+    Attachments {
+        doc: DocId,
+        reply: Reply<Vec<Attachment>>,
+    },
+    AttachmentData {
+        doc: DocId,
+        index: usize,
+        reply: Reply<Vec<u8>>,
+    },
+    Layers {
+        doc: DocId,
+        reply: Reply<Vec<Layer>>,
+    },
+    ToggleLayer {
+        doc: DocId,
+        index: usize,
+        reply: Reply<Vec<Layer>>,
     },
     Close {
         doc: DocId,
@@ -124,6 +143,27 @@ impl Engine {
     /// Non-empty document information entries as (label, value).
     pub fn metadata(&self, doc: DocId) -> Result<Vec<(String, String)>, Error> {
         self.call(|reply| Command::Metadata { doc, reply })
+    }
+
+    /// Files embedded in the document (the EmbeddedFiles name tree), in tree order.
+    pub fn attachments(&self, doc: DocId) -> Result<Vec<Attachment>, Error> {
+        self.call(|reply| Command::Attachments { doc, reply })
+    }
+
+    /// The contents of attachment `index` from [`Engine::attachments`].
+    pub fn attachment_data(&self, doc: DocId, index: usize) -> Result<Vec<u8>, Error> {
+        self.call(|reply| Command::AttachmentData { doc, index, reply })
+    }
+
+    /// Rows of the document's layers (optional content) panel. Empty when it has none.
+    pub fn layers(&self, doc: DocId) -> Result<Vec<Layer>, Error> {
+        self.call(|reply| Command::Layers { doc, reply })
+    }
+
+    /// Shows or hides layer `index` and returns the updated rows. Display lists made before
+    /// the change still show the old state; ask for new ones.
+    pub fn toggle_layer(&self, doc: DocId, index: usize) -> Result<Vec<Layer>, Error> {
+        self.call(|reply| Command::ToggleLayer { doc, index, reply })
     }
 
     /// Display lists already handed out stay valid after the document closes.
@@ -273,12 +313,98 @@ fn run(rx: mpsc::Receiver<Command>) {
                 });
                 let _ = reply.send(result);
             }
+            Command::Attachments { doc, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    Ok(embedded_files(d)?
+                        .into_iter()
+                        .map(|(name, spec)| Attachment {
+                            size: file_size(&spec),
+                            name,
+                        })
+                        .collect())
+                });
+                let _ = reply.send(result);
+            }
+            Command::AttachmentData { doc, index, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    let files = embedded_files(d)?;
+                    let (_, spec) = files.get(index).ok_or(Error::NotFound)?;
+                    let stream = spec
+                        .get_dict("EF")?
+                        .and_then(|ef| {
+                            ef.get_dict("UF").ok().flatten().or(ef.get_dict("F").ok()?)
+                        })
+                        .ok_or(Error::NotFound)?;
+                    Ok(stream.read_stream()?)
+                });
+                let _ = reply.send(result);
+            }
+            Command::Layers { doc, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, |d| Ok(layers(d))));
+            }
+            Command::ToggleLayer { doc, index, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    if let Ok(mut pdf) = PdfDocument::try_from(d.clone()) {
+                        pdf.toggle_layer_ui(index as i32);
+                    }
+                    Ok(layers(d))
+                });
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
+            }
             Command::Close { doc } => {
                 docs.remove(&doc);
                 lists.remove_doc(doc);
             }
         }
     }
+}
+
+/// (file name, file specification) for each embedded file. Empty for non-PDF documents.
+fn embedded_files(doc: &Document) -> Result<Vec<(String, PdfObject)>, Error> {
+    let Ok(pdf) = PdfDocument::try_from(doc.clone()) else {
+        return Ok(Vec::new());
+    };
+    // MuPDF takes the tree's name and finds it under the catalog's /Names itself.
+    let map = pdf.load_name_tree(PdfObject::new_name("EmbeddedFiles")?)?;
+    let mut out = Vec::new();
+    for i in 0..map.dict_len()? as i32 {
+        let (Some(key), Some(spec)) = (map.get_dict_key(i)?, map.get_dict_val(i)?) else {
+            continue;
+        };
+        let fallback = String::from_utf8_lossy(&key.as_name().unwrap_or_default()).into_owned();
+        let name = ["UF", "F"]
+            .iter()
+            .find_map(|k| spec.get_dict(*k).ok().flatten()?.as_string().ok())
+            .filter(|n| !n.is_empty())
+            .unwrap_or(fallback);
+        out.push((name, spec));
+    }
+    Ok(out)
+}
+
+fn layers(doc: &Document) -> Vec<Layer> {
+    PdfDocument::try_from(doc.clone())
+        .map(|pdf| {
+            pdf.layer_ui()
+                .into_iter()
+                .map(|l| Layer {
+                    name: l.text,
+                    depth: l.depth,
+                    toggle: l.toggle,
+                    visible: l.selected,
+                    locked: l.locked,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn file_size(spec: &PdfObject) -> Option<usize> {
+    let ef = spec.get_dict("EF").ok()??;
+    let stream = ef.get_dict("F").ok()??;
+    let size = stream.get_dict("Params").ok()??.get_dict("Size").ok()??;
+    size.as_int().ok().map(|s| s.max(0) as usize)
 }
 
 fn with_doc<T>(

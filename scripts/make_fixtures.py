@@ -4,6 +4,8 @@ outline-links.pdf  3 pages; outline with 3 entries; page 1 links to page 3 and t
 form.pdf           AcroForm with a text field and a checkbox.
 truncated.pdf      hello.pdf cut before its xref table (MuPDF must repair it).
 not-a-pdf.pdf      plain text with a .pdf name (must fail cleanly).
+attachment.pdf     one page; embeds notes.txt in the EmbeddedFiles name tree.
+layers.pdf         one page; two optional content groups, "Grid" on and "Notes" off.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
@@ -82,13 +84,52 @@ def form() -> bytes:
     return serialize(objs)
 
 
+ATTACHMENT_TEXT = b"Embedded by make_fixtures.py.\n"
+
+
+def attachment() -> bytes:
+    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6 filespec, 7 embedded file
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles << /Names [(notes.txt) 6 0 R] >> >> >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        stream(b"BT /F1 14 Tf 72 700 Td (This document carries an attachment.) Tj ET"),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /Filespec /F (notes.txt) /UF (notes.txt) /EF << /F 7 0 R >> >>",
+        stream(ATTACHMENT_TEXT, b"/Type /EmbeddedFile /Params << /Size %d >> " % len(ATTACHMENT_TEXT)),
+    ]
+    return serialize(objs)
+
+
+def layers() -> bytes:
+    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6-7 optional content groups
+    content = (b"BT /F1 14 Tf 72 700 Td (Always visible) Tj ET\n"
+               b"/OC /oc1 BDC 0.6 g 72 600 200 40 re f EMC\n"
+               b"/OC /oc2 BDC BT /F1 14 Tf 72 560 Td (Hidden notes layer) Tj ET EMC")
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R 7 0 R] "
+        b"/D << /Order [6 0 R 7 0 R] /ON [6 0 R] /OFF [7 0 R] >> >> >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> /Properties << /oc1 6 0 R /oc2 7 0 R >> >> >>",
+        stream(content),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /OCG /Name (Grid) >>",
+        b"<< /Type /OCG /Name (Notes) >>",
+    ]
+    return serialize(objs)
+
+
 def main() -> None:
     (FIXTURES / "outline-links.pdf").write_bytes(outline_links())
     (FIXTURES / "form.pdf").write_bytes(form())
     hello = (FIXTURES / "hello.pdf").read_bytes()
     (FIXTURES / "truncated.pdf").write_bytes(hello[: hello.index(b"xref")])
     (FIXTURES / "not-a-pdf.pdf").write_bytes(b"This is a text file, not a PDF.\n")
-    print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf")
+    (FIXTURES / "attachment.pdf").write_bytes(attachment())
+    (FIXTURES / "layers.pdf").write_bytes(layers())
+    print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf")
 
 
 if __name__ == "__main__":

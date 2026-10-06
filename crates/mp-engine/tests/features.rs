@@ -163,3 +163,44 @@ fn reports_metadata() {
         .map(|(_, v)| v.as_str());
     assert_eq!(format, Some("PDF 1.7"));
 }
+
+#[test]
+fn lists_and_extracts_attachments() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("attachment.pdf")).unwrap();
+    let files = engine.attachments(doc.id).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].name, "notes.txt");
+    assert_eq!(files[0].size, Some(30));
+    let data = engine.attachment_data(doc.id, 0).unwrap();
+    assert_eq!(data, b"Embedded by make_fixtures.py.\n");
+    assert!(engine.attachment_data(doc.id, 1).is_err());
+
+    let plain = engine.open(fixture("hello.pdf")).unwrap();
+    assert!(engine.attachments(plain.id).unwrap().is_empty());
+}
+
+#[test]
+fn lists_and_toggles_layers() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("layers.pdf")).unwrap();
+    let layers = engine.layers(doc.id).unwrap();
+    let state: Vec<(&str, bool)> = layers
+        .iter()
+        .map(|l| (l.name.as_str(), l.visible))
+        .collect();
+    assert_eq!(state, [("Grid", true), ("Notes", false)]);
+
+    let has_notes = |engine: &Engine| {
+        let list = engine.display_list(doc.id, 0).unwrap();
+        let text = mp_engine::page_text(&list).unwrap();
+        text.text(0..text.chars.len()).contains("Hidden notes")
+    };
+    assert!(!has_notes(&engine));
+    let layers = engine.toggle_layer(doc.id, 1).unwrap();
+    assert!(layers[1].visible);
+    assert!(has_notes(&engine));
+
+    let plain = engine.open(fixture("hello.pdf")).unwrap();
+    assert!(engine.layers(plain.id).unwrap().is_empty());
+}

@@ -812,6 +812,46 @@ impl PdfDocument {
             .map(|count| count as u32)
     }
 
+    /// Entries of the default optional content (layers) configuration, in display order.
+    /// (micropdf addition.)
+    pub fn layer_ui(&self) -> Vec<LayerUi> {
+        // SAFETY: inner is a live pdf_document; these calls read the OC config and do not throw.
+        let count = unsafe { pdf_count_layer_config_ui(context(), self.inner) };
+        (0..count)
+            .map(|i| {
+                let mut info = pdf_layer_config_ui {
+                    text: ptr::null(),
+                    depth: 0,
+                    type_: PDF_LAYER_UI_LABEL,
+                    selected: 0,
+                    locked: 0,
+                };
+                unsafe { pdf_layer_config_ui_info(context(), self.inner, i, &mut info) };
+                let text = if info.text.is_null() {
+                    String::new()
+                } else {
+                    unsafe { CStr::from_ptr(info.text) }
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                LayerUi {
+                    text,
+                    depth: info.depth.max(0) as usize,
+                    toggle: info.type_ != PDF_LAYER_UI_LABEL,
+                    selected: info.selected != 0,
+                    locked: info.locked != 0,
+                }
+            })
+            .collect()
+    }
+
+    /// Flips the layer entry `index` of [`PdfDocument::layer_ui`]. Pages must be re-run to
+    /// see the change. (micropdf addition.)
+    pub fn toggle_layer_ui(&mut self, index: i32) {
+        // SAFETY: inner is a live pdf_document; out-of-range indices are ignored by MuPDF.
+        unsafe { pdf_toggle_layer_config_ui(context(), self.inner, index) };
+    }
+
     pub fn has_acro_form(&self) -> Result<bool, Error> {
         let trailer = self.trailer()?;
         if let Some(root) = trailer.get_dict("Root")? {
@@ -1873,6 +1913,17 @@ impl DerefMut for PdfDocument {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.doc
     }
+}
+
+/// One row of a layers panel. (micropdf addition.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerUi {
+    pub text: String,
+    pub depth: usize,
+    /// False for labels, which only group the rows below them.
+    pub toggle: bool,
+    pub selected: bool,
+    pub locked: bool,
 }
 
 impl TryFrom<Document> for PdfDocument {

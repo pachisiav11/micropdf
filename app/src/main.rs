@@ -86,7 +86,8 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::run_event_loop()?;
     window.hide()?;
     viewer::with(viewer::App::shutdown);
-    Ok(())
+    // Settings are saved; skip tearing down render workers and MuPDF one by one.
+    std::process::exit(0)
 }
 
 fn wire(window: &MainWindow) {
@@ -155,5 +156,11 @@ fn wire(window: &MainWindow) {
     });
     window.on_recent_clicked(|i| {
         viewer::with(|app| app.open_recent(i as usize));
+    });
+    window.on_attachment_save(|i| {
+        viewer::with(|app| app.attachment_save(i as usize));
+    });
+    window.on_layer_toggle(|i| {
+        viewer::with(|app| app.layer_toggle(i as usize));
     });
 }

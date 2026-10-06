@@ -11,3 +11,7 @@
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:50 | M0 — bench/ memory harness (run.ps1, measure.ps1, --bench-scroll)
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:53 | M0 — fixtures: hello, outline-links, form, encrypted, truncated, not-a-pdf; generated text-300 and scan-1000
 - Added: 2026-10-07 01:53 | Completed: 2026-10-07 02:56 | M1 — cap MuPDF resource store (shrink_store after each render) and render 512 px viewport tiles
+- Added: 2026-10-07 01:53 | Completed: 2026-10-07 03:27 | M0 — Acrobat comparison run (bench/run.ps1 -Acrobat) — only after 03:00, user away
+- Added: 2026-10-07 02:56 | Completed: 2026-10-07 03:27 | M1 — re-bench scan-1000 with tiles + store cap against 120 MB (after 03:00)
+- Added: 2026-10-07 02:56 | Completed: 2026-10-07 03:27 | M1 — GUI smoke test of the new viewer: open, scroll, zoom, find, select/copy, links, tabs, palette, dialogs (after 03:00)
+- Added: 2026-10-07 02:56 | Completed: 2026-10-07 03:27 | M1 — attachments panel, optional content (layers) panel

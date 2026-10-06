@@ -75,3 +75,22 @@ pub struct OutlineItem {
     pub depth: usize,
     pub target: Option<LinkTarget>,
 }
+
+/// A file embedded in the document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attachment {
+    pub name: String,
+    /// Uncompressed size, when the document records it.
+    pub size: Option<usize>,
+}
+
+/// One row of a layers (optional content) panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layer {
+    pub name: String,
+    pub depth: usize,
+    /// False for labels, which only group the rows below them.
+    pub toggle: bool,
+    pub visible: bool,
+    pub locked: bool,
+}

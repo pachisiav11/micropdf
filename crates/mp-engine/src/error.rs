@@ -4,6 +4,8 @@ use std::fmt;
 pub enum Error {
     MuPdf(mupdf::Error),
     UnknownDocument,
+    /// The requested item (an attachment, say) does not exist in the document.
+    NotFound,
     /// The engine or render pool thread is gone (it panicked or was shut down).
     Stopped,
 }
@@ -13,6 +15,7 @@ impl fmt::Display for Error {
         match self {
             Error::MuPdf(e) => write!(f, "{e}"),
             Error::UnknownDocument => f.write_str("document is not open"),
+            Error::NotFound => f.write_str("not found in the document"),
             Error::Stopped => f.write_str("PDF engine has stopped"),
         }
     }

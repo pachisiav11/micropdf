@@ -36,8 +36,10 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds $IntervalMs
 }
 
-# The last samples can catch the process tearing down; report the one ~0.5 s before the end.
-$last = if ($history.Count -ge 3) { $history[$history.Count - 3] } elseif ($history.Count) { $history[0] } else { 0 }
+# The perf counter lags, so the last samples can catch the process after it exited (near 0 MB).
+# Drop those, then report the one ~0.25 s before the end.
+$live = @($history | Where-Object { $_ -ge 1.0 })
+$last = if ($live.Count -ge 2) { $live[$live.Count - 2] } elseif ($live.Count) { $live[0] } else { 0 }
 
 [pscustomobject]@{
     names      = ($Names -join ',')

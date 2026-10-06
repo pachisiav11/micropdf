@@ -16,4 +16,4 @@ pub use error::Error;
 pub use mupdf::DisplayList;
 pub use render::{PageImage, RenderPool, Tile, render, render_tile, rendered_size};
 pub use text::{PageText, TextChar, page_text, search};
-pub use types::{Link, LinkTarget, OutlineItem, Rect};
+pub use types::{Attachment, Layer, Link, LinkTarget, OutlineItem, Rect};

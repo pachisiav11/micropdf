@@ -19,7 +19,7 @@ pub use annotation::{
 };
 pub use document::{
     EmbeddedFileInfo, EmbeddedFileOptions, Encryption, InsertPdfOptions, InsertPdfResult,
-    InsertPosition, OptionalContentGroup, OptionalContentRef, PageLabelRule, PageLabelStyle,
+    InsertPosition, LayerUi, OptionalContentGroup, OptionalContentRef, PageLabelRule, PageLabelStyle,
     PageRange, PageSelection, PdfDocument, PdfWriteOptions, Permission,
 };
 pub use filter::PdfFilterOptions;
