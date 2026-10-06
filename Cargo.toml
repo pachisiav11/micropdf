@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/mp-engine"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/pachisiav11/micropdf"
+publish = false
+
+[workspace.dependencies]
+# No bundled CJK/Noto fonts (system fonts fill gaps); no Tesseract (Windows OCR is used instead).
+mupdf = { version = "0.8", default-features = false, features = [
+    "base14-fonts",
+    "system-fonts",
+    "js",
+    "html",
+    "img",
+    "docx-output",
+    "brotli",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,10 +1,9 @@
-- 2026-10-07 00:22: M0 — git init + create public GitHub repo pachisiav11/micropdf (README, PLAN, LICENSE AGPL-3.0, .gitignore, .gitattributes, topics, settings, SECURITY.md, issue templates, dependabot)
 - 2026-10-07 00:22: M0 — turn on branch protection for main (require CI) once CI exists
-- 2026-10-07 00:18: M0 — set up Cargo workspace, THIRD-PARTY-NOTICES, CI on windows-latest
-- 2026-10-07 00:18: M0 — build mupdf-sys with MSVC (no bundled CJK fonts, extract + mujs on); render a fixture page to PNG in a test
-- 2026-10-07 00:18: M0 — generate tokens.slint / tokens.css from design/tokens.toml (Recto themes)
+- 2026-10-07 00:18: M0 — THIRD-PARTY-NOTICES.md via cargo-about
+- 2026-10-07 00:48: M0 — confirm first CI run is green on windows-latest (fmt, clippy, tests); local clippy run was not finished
+- 2026-10-07 00:31: M0 — confirm generated app/ui/tokens.slint compiles once Slint is added (global self-references are untested)
+- 2026-10-07 00:48: M0 — slim the MuPDF build: libmupdf.vcxproj still compiles tesseract/leptonica/zxing with those features off; fix LNK4098 msvcrt conflict warning in debug builds
 - 2026-10-07 00:18: M0 — tile viewport spike: compare Slint software / FemtoVG / Skia renderers on fps and RAM; pick one
-- 2026-10-07 00:18: M0 — engine actor + cloned-context render pool prototype with stress test
 - 2026-10-07 00:18: M0 — bench/ memory harness + one-time Acrobat comparison
 - 2026-10-07 00:18: M0 — fixtures/ corpus (text, scanned, forms, signed, encrypted, huge, CJK, broken)
 - 2026-10-07 00:18: M1 — viewer (v0.1)

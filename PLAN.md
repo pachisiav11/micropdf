@@ -98,7 +98,7 @@ micropdf/
 │  ├─ ui/*.slint
 │  └─ src/
 ├─ extension/                 MV3 extension (Vite + Svelte 5 + TS + mupdf.js)
-├─ design/tokens.toml         single source of design tokens → generates tokens.slint + tokens.css
+├─ design/tokens.json         single source of design tokens → generates tokens.slint + tokens.css
 ├─ installer/                 per-user installer (no admin), native-messaging + file-assoc registration
 ├─ bench/                     memory + startup benchmark harness, Acrobat comparison script
 ├─ fixtures/                  small test PDFs (licence-checked); large ones fetched by script
@@ -151,8 +151,9 @@ micropdf/
 
 ### 3.6 Design system
 
-- `design/tokens.toml` holds Recto's dark and light tokens (from `md-render/renderer/styles/themes.css`).
-  A build step generates `app/ui/tokens.slint` (a `global Theme`) and `extension/src/tokens.css`.
+- `design/tokens.json` holds Recto's dark and light tokens (from `md-render/renderer/styles/themes.css`).
+  `scripts/gen-tokens.mjs` (Node, no dependencies) generates `app/ui/tokens.slint` (a
+  `global Theme`) and `extension/src/tokens.css`; CI fails when they are stale.
 - Fonts ship with Windows: **Bahnschrift** (chrome), **Sitka Text** (reflow view, assistant answers),
   **Cascadia Mono** (metadata, code). The extension falls back to system-ui when they are absent.
 - One SVG icon set (Lucide, ISC licence).

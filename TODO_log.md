@@ -1,0 +1,5 @@
+- Added: 2026-10-07 00:22 | Completed: 2026-10-07 00:26 | M0 — git init + create public GitHub repo pachisiav11/micropdf (README, PLAN, LICENSE AGPL-3.0, .gitignore, .gitattributes, topics, settings, SECURITY.md, issue templates, dependabot)
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:31 | M0 — generate tokens.slint / tokens.css from design/tokens.json (Recto themes)
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:48 | M0 — set up Cargo workspace and CI workflow on windows-latest
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:42 | M0 — build mupdf-sys with MSVC (no bundled CJK fonts, extract + mujs on); render a fixture page to PNG in a test
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:42 | M0 — engine actor + cloned-context render pool prototype with stress test
