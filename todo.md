@@ -1,11 +1,8 @@
-- 2026-10-07 00:22: M0 — turn on branch protection for main (require CI) once CI exists
-- 2026-10-07 00:18: M0 — THIRD-PARTY-NOTICES.md via cargo-about
-- 2026-10-07 00:48: M0 — confirm first CI run is green on windows-latest (fmt, clippy, tests); local clippy run was not finished
-- 2026-10-07 00:31: M0 — confirm generated app/ui/tokens.slint compiles once Slint is added (global self-references are untested)
 - 2026-10-07 00:48: M0 — slim the MuPDF build: libmupdf.vcxproj still compiles tesseract/leptonica/zxing with those features off; fix LNK4098 msvcrt conflict warning in debug builds
-- 2026-10-07 00:18: M0 — tile viewport spike: compare Slint software / FemtoVG / Skia renderers on fps and RAM; pick one
-- 2026-10-07 00:18: M0 — bench/ memory harness + one-time Acrobat comparison
-- 2026-10-07 00:18: M0 — fixtures/ corpus (text, scanned, forms, signed, encrypted, huge, CJK, broken)
+- 2026-10-07 01:53: M0 — Acrobat comparison run (bench/run.ps1 -Acrobat) — only after 03:00, user away
+- 2026-10-07 01:53: M1 — cap MuPDF resource store (fixed 256 MB in mupdf-sys wrapper) and render viewport tiles; re-bench scan-1000 against 120 MB
+- 2026-10-07 01:53: M1 — CJK fixture + system-font fallback check
+- 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
 - 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)

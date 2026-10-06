@@ -1,0 +1,23 @@
+[package]
+name = "micropdf"
+description = "Lightweight PDF reader and editor for Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mp-engine = { path = "../crates/mp-engine" }
+# Software renderer only: the M0 benchmark measured 8.6 MB idle vs 23.3 MB for FemtoVG, and it
+# scrolled faster (bench/README.md). Skia is out: its libjpeg-turbo clashes with MuPDF's libjpeg.
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "accessibility",
+    "backend-winit",
+    "renderer-software",
+] }
+
+[build-dependencies]
+slint-build = "1.18"

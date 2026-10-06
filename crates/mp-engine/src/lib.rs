@@ -9,7 +9,7 @@ mod engine;
 mod error;
 mod render;
 
-pub use engine::{DocId, DocInfo, Engine};
+pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use mupdf::DisplayList;
-pub use render::{PageImage, RenderPool};
+pub use render::{PageImage, RenderPool, render};

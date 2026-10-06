@@ -13,6 +13,7 @@ its memory, and ships with a Chromium extension that shares its engine and look.
 |---|---|---|
 | Scope | Full Acrobat Pro parity (minus cloud services and XFA), delivered in milestones | Requested; milestones keep each release usable |
 | Desktop UI | **Native Rust + Slint**, no webview | WebView2 alone costs ~100–180 MB; Slint targets ~20–50 MB |
+| Slint renderer | **Software renderer** (decided in M0) | 8.6 MB idle vs 23.3 MB for FemtoVG, faster scrolling; Skia clashes with MuPDF's libjpeg (bench/README.md) |
 | PDF engine | **MuPDF** (C, via `mupdf-sys`) on desktop, **mupdf.js** (WASM) in the extension | One engine everywhere; built-in redaction, annotations, forms, signatures hooks, DOCX writer, Story layout API, undo journal |
 | License | **AGPL-3.0-or-later** for the whole repo | Required by MuPDF/mupdf.js; Slint's GPLv3 option is compatible |
 | Platform | **Windows only** | Lets us use Windows OCR, cert store, GDI printing, Credential Manager freely |
@@ -136,8 +137,9 @@ micropdf/
 6. Slint draws tiles as `Image` elements from a Rust model. Overlays (selection, search hits,
    annotation handles, active form widget) are Slint elements driven by models. Slint never
    computes PDF geometry.
-7. Slint renderer (software with partial rendering vs FemtoVG vs Skia) is **chosen in M0 by
-   benchmark**, not guessed.
+7. Slint uses its **software renderer** (M0 benchmark; see bench/README.md).
+8. MuPDF's resource store must be capped (it is fixed at 256 MB by `mupdf-sys`'s C wrapper); M1
+   patches this, or shrinks the store explicitly, so scanned documents stay within budget.
 
 ### 3.5 Editing and saving
 
@@ -322,6 +324,10 @@ release.
 **Exit:** public repo live with CI green on `main` and branch protection on; renderer chosen;
 idle ≤ 30 MB and one-doc scenario ≤ 80 MB on the spike; build is reproducible in CI.
 
+**Outcome (2026-10-07):** all met — software renderer at 8.6 MB idle and 52.8 MB peak scrolling
+a 300-page document. Acrobat comparison deferred to an unattended run. The 1000-page scan peaked
+at 277 MB, which moves the store cap and viewport tiles into M1.
+
 ### M1 — Viewer (v0.1)
 Open (dialog, drag-drop, CLI, file association, single instance → tabs), page modes, zoom (Ctrl+wheel,
 anchored touchpad pinch), thumbnails, outline, find, text selection/copy, links, history, password
@@ -458,6 +464,7 @@ user docs, privacy page.
 | In-place text editing fidelity (subset fonts lack glyphs) | High | font fallback with notice; keep edits box-local; same limitation exists in Acrobat |
 | Safe Rust wrapper over MuPDF threading | High | engine actor, display-list-only workers, stress tests in M0 |
 | Slint gaps (IME in form fields, very long virtualised lists, custom viewport) | Medium | M0 spikes; fall back to Rust-composited viewport if needed |
+| `mupdf-sys` limits (256 MB store, Windows toolset detection, bundled libjpeg clashes) | Medium | patch via `[patch.crates-io]` fork when needed; avoid crates that bundle libjpeg |
 | Memory budget at 4K / many tabs | Medium | per-megapixel cache budget; drop caches of background tabs |
 | Chrome Web Store review of broad host permissions | Medium | clear justification, optional permissions, Edge listing in parallel |
 | Signature trust differs from Acrobat (AATL vs Windows roots) | Medium | Windows root store by default; optional trust-list import |

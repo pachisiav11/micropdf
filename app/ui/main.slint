@@ -1,0 +1,107 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "tokens.slint";
+
+export { Theme }
+
+// One page on the desk, in logical pixels relative to the document's top-left corner.
+export struct PageItem {
+    index: int,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    image: image,
+}
+
+export component MainWindow inherits Window {
+    title: root.title-text;
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Theme.bg;
+    default-font-family: Theme.font-ui;
+
+    in property <string> title-text: "micropdf";
+    in property <string> status-text;
+    in property <[PageItem]> pages;
+    in property <length> document-width;
+    in property <length> document-height;
+
+    // Negative when scrolled down, as Slint's ScrollView reports it.
+    in-out property <length> viewport-y <=> scroller.content-y;
+    out property <length> view-width: scroller.visible-width;
+    out property <length> view-height: scroller.visible-height;
+
+    callback view-changed();
+
+    changed viewport-y => { root.view-changed(); }
+    changed view-width => { root.view-changed(); }
+    changed view-height => { root.view-changed(); }
+
+    VerticalLayout {
+        Rectangle {
+            height: Theme.toolbar-height;
+            background: Theme.bg-secondary;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                Text {
+                    text: root.title-text;
+                    font-family: Theme.font-display;
+                    font-size: 15px;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border-muted;
+            }
+        }
+
+        scroller := ScrollView {
+            content-width: max(self.visible-width, root.document-width);
+            content-height: root.document-height;
+
+            for page in root.pages: Rectangle {
+                x: page.x;
+                y: page.y;
+                width: page.width;
+                height: page.height;
+                // Paper stays white in every theme; reading modes recolour the render instead.
+                background: #ffffff;
+                drop-shadow-blur: Theme.sheet-shadow-blur;
+                drop-shadow-offset-y: Theme.sheet-shadow-offset;
+                drop-shadow-color: Theme.shadow-sheet;
+
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: page.image;
+                    image-fit: fill;
+                    accessible-role: image;
+                    accessible-label: "Page " + (page.index + 1);
+                }
+            }
+        }
+
+        Rectangle {
+            height: Theme.statusbar-height;
+            background: Theme.bg-secondary;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                Text {
+                    text: root.status-text;
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

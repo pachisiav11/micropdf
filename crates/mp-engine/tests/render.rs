@@ -16,6 +16,24 @@ fn opens_and_counts_pages() {
 }
 
 #[test]
+fn reports_page_sizes_in_points() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap();
+    let sizes = engine.page_sizes(doc.id).unwrap();
+    assert_eq!(sizes.len(), 1);
+    assert_eq!((sizes[0].width, sizes[0].height), (300.0, 200.0));
+}
+
+#[test]
+fn display_lists_are_cached() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap();
+    let first = engine.display_list(doc.id, 0).unwrap();
+    let second = engine.display_list(doc.id, 0).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+}
+
+#[test]
 fn missing_file_is_an_error() {
     let engine = Engine::start();
     assert!(matches!(
@@ -71,4 +89,28 @@ fn closed_document_rejects_new_requests_but_old_lists_still_render() {
         Err(Error::UnknownDocument)
     ));
     assert!(pool.render(list, 1.0).recv().unwrap().is_ok());
+}
+
+#[test]
+fn repairs_a_file_without_xref() {
+    let engine = Engine::start();
+    assert_eq!(engine.open(fixture("truncated.pdf")).unwrap().page_count, 1);
+}
+
+#[test]
+fn rejects_a_file_that_is_not_a_pdf() {
+    let engine = Engine::start();
+    assert!(engine.open(fixture("not-a-pdf.pdf")).is_err());
+}
+
+#[test]
+fn opens_multi_page_fixture() {
+    let engine = Engine::start();
+    assert_eq!(
+        engine
+            .open(fixture("outline-links.pdf"))
+            .unwrap()
+            .page_count,
+        3
+    );
 }

@@ -3,3 +3,10 @@
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:48 | M0 — set up Cargo workspace and CI workflow on windows-latest
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:42 | M0 — build mupdf-sys with MSVC (no bundled CJK fonts, extract + mujs on); render a fixture page to PNG in a test
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 00:42 | M0 — engine actor + cloned-context render pool prototype with stress test
+- Added: 2026-10-07 00:22 | Completed: 2026-10-07 01:08 | M0 — turn on branch protection for main (require CI) once CI exists
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:43 | M0 — THIRD-PARTY-NOTICES.md via cargo-about
+- Added: 2026-10-07 00:48 | Completed: 2026-10-07 01:07 | M0 — confirm first CI run is green on windows-latest (fmt, clippy, tests); local fmt, clippy and tests pass
+- Added: 2026-10-07 00:31 | Completed: 2026-10-07 01:32 | M0 — confirm generated app/ui/tokens.slint compiles once Slint is added (global self-references are untested)
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:50 | M0 — renderer spike: software vs FemtoVG measured, software chosen (Skia excluded: libjpeg clash)
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:50 | M0 — bench/ memory harness (run.ps1, measure.ps1, --bench-scroll)
+- Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:53 | M0 — fixtures: hello, outline-links, form, encrypted, truncated, not-a-pdf; generated text-300 and scan-1000

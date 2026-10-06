@@ -14,12 +14,10 @@ pub struct PageImage {
     pub rgb: Vec<u8>,
 }
 
-struct Job {
-    list: Arc<DisplayList>,
-    scale: f32,
-    reply: Sender<Result<PageImage, Error>>,
-}
+type Job = Box<dyn FnOnce() + Send>;
 
+/// Worker threads for rendering. Each worker gets its own cloned MuPDF context the first time
+/// it touches MuPDF.
 pub struct RenderPool {
     tx: Option<Sender<Job>>,
     workers: Vec<JoinHandle<()>>,
@@ -44,13 +42,21 @@ impl RenderPool {
         }
     }
 
+    /// Runs `job` on a worker. Jobs run in the order they were queued.
+    pub fn spawn(&self, job: impl FnOnce() + Send + 'static) {
+        let _ = self
+            .tx
+            .as_ref()
+            .expect("taken only in drop")
+            .send(Box::new(job));
+    }
+
     /// Queues a whole-page render at `scale` (1.0 = 72 dpi). The result arrives on the receiver.
     pub fn render(&self, list: Arc<DisplayList>, scale: f32) -> Receiver<Result<PageImage, Error>> {
         let (reply, rx) = mpsc::channel();
-        let job = Job { list, scale, reply };
-        if let Err(mpsc::SendError(job)) = self.tx.as_ref().expect("taken only in drop").send(job) {
-            let _ = job.reply.send(Err(Error::Stopped));
-        }
+        self.spawn(move || {
+            let _ = reply.send(render(&list, scale));
+        });
         rx
     }
 }
@@ -64,24 +70,25 @@ impl Drop for RenderPool {
     }
 }
 
+/// Renders a display list at `scale` (1.0 = 72 dpi) on the calling thread.
+pub fn render(list: &DisplayList, scale: f32) -> Result<PageImage, Error> {
+    let pixmap = list.to_pixmap(
+        &Matrix::new_scale(scale, scale),
+        &Colorspace::device_rgb(),
+        false,
+    )?;
+    Ok(page_image(&pixmap))
+}
+
 fn work(rx: &Mutex<Receiver<Job>>) {
     loop {
-        // Hold the lock only while taking a job, never while rendering.
+        // Hold the lock only while taking a job, never while running it.
         let job = match rx.lock() {
             Ok(rx) => rx.recv(),
             Err(_) => return,
         };
         let Ok(job) = job else { return };
-        let result = job
-            .list
-            .to_pixmap(
-                &Matrix::new_scale(job.scale, job.scale),
-                &Colorspace::device_rgb(),
-                false,
-            )
-            .map(|pixmap| page_image(&pixmap))
-            .map_err(Error::from);
-        let _ = job.reply.send(result);
+        job();
     }
 }
 
