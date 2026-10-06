@@ -1,311 +1,2734 @@
-//! Continuous-scroll page view. Layout lives here, not in Slint: the model only ever holds the
-//! pages near the viewport, and renders are requested for those at the current zoom.
+//! The document viewer: tabs, page tiles, navigation, selection, search and the sidebar. All
+//! state lives on the UI thread in one `App`; render and search work runs on the pool and reports
+//! back through `invoke_from_event_loop`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::ops::Range;
-use std::path::Path;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use mp_engine::{DocInfo, Engine, PageSize, RenderPool};
-use slint::{ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer, VecModel};
+use mp_engine::{
+    DocId, DocInfo, Engine, Link, LinkTarget, OutlineItem, PageText, Rect, RenderPool, Tile,
+};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
+    VecModel,
+};
 
-use crate::{MainWindow, PageItem};
+use crate::layout::{Frame, Layout, PageMode, Params, Zoom};
+use crate::palette;
+use crate::recolor::ReadingMode;
+use crate::settings::Settings;
+use crate::{
+    InfoRow, MainWindow, MarkItem, OutlineRow, PageItem, PaletteItem, TabItem, Theme, ThumbItem,
+    TileItem,
+};
 
-/// Space around the document and between pages, in logical pixels.
-const MARGIN: f32 = 24.0;
-const GAP: f32 = 16.0;
+/// Tile edge in device pixels.
+const TILE: i32 = 512;
+/// Largest thumbnail, in logical pixels.
+const THUMB_BOX: (f32, f32) = (140.0, 180.0);
+/// Space below each thumbnail for its label; matches the row height in main.slint.
+const THUMB_EXTRA: f32 = 34.0;
+/// Logical pixels per point at 100%: an inch of paper is 96 logical pixels on screen.
+pub const ACTUAL: f32 = 96.0 / 72.0;
+const ZOOM_STEPS: &[f32] = &[
+    0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 6.4,
+    8.0, 12.0,
+];
+/// Arrow-key scroll step, in logical pixels.
+pub const LINE: f32 = 60.0;
+const HISTORY_LIMIT: usize = 100;
+const TEXT_CACHE: usize = 24;
+const STATUS_TIME: Duration = Duration::from_secs(4);
 
 thread_local! {
-    static VIEWER: RefCell<Option<Viewer>> = const { RefCell::new(None) };
+    static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
-/// Runs `f` on the open viewer, if any. UI thread only.
-pub fn with<R>(f: impl FnOnce(&mut Viewer) -> R) -> Option<R> {
-    VIEWER.with(|v| v.borrow_mut().as_mut().map(f))
+/// Runs `f` on the app. UI thread only. Returns None (and does nothing) if the app is already
+/// borrowed, which happens when a modal dialog pumps events from inside a handler.
+pub fn with<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    APP.with(|cell| {
+        let mut app = cell.try_borrow_mut().ok()?;
+        app.as_mut().map(f)
+    })
 }
 
-pub fn open(window: &MainWindow, path: &Path) -> Result<(), mp_engine::Error> {
-    let engine = Arc::new(Engine::start());
-    let doc = engine.open(path)?;
-    let sizes = engine.page_sizes(doc.id)?;
-    let workers =
-        std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(1, 4));
-
-    let model = Rc::new(VecModel::default());
-    window.set_pages(model.clone().into());
-    window.set_title_text(
-        format!(
-            "{} — micropdf",
-            path.file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-        )
-        .into(),
-    );
-    window.on_view_changed(|| {
-        with(Viewer::update);
-    });
-
-    let viewer = Viewer {
-        window: window.as_weak(),
-        engine,
-        pool: RenderPool::new(workers),
-        doc,
-        sizes,
-        zoom: 0.0,
-        tops: Vec::new(),
-        generation: 0,
-        shared: Arc::new(Shared {
-            generation: AtomicU64::new(0),
-            wanted: Mutex::new(HashSet::new()),
-        }),
-        cache: HashMap::new(),
-        inflight: HashSet::new(),
-        model,
-        shown: Vec::new(),
-        renders: 0,
-    };
-    VIEWER.with(|v| *v.borrow_mut() = Some(viewer));
-    with(Viewer::update);
-    Ok(())
+pub fn install(app: App) {
+    APP.with(|cell| *cell.borrow_mut() = Some(app));
 }
 
-pub struct Viewer {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TileKey {
+    page: usize,
+    generation: u64,
+    col: i32,
+    row: i32,
+}
+
+struct TileImage {
+    /// Edges as fractions of the page frame: x0, y0, x1, y1. Fractions keep a tile placed
+    /// correctly after a zoom, so it can stand in until the sharper tile arrives.
+    frac: [f32; 4],
+    image: Image,
+}
+
+enum Rendered {
+    Skipped,
+    Failed,
+    Done(SharedPixelBuffer<Rgb8Pixel>),
+}
+
+/// Read by render workers so they can skip work that scrolled away.
+#[derive(Default)]
+struct Shared {
+    tiles: Mutex<HashSet<(DocId, TileKey)>>,
+    thumbs: Mutex<HashSet<(DocId, usize, u64)>>,
+    search: AtomicU64,
+}
+
+/// A reading position: the page at the top of the view and how far down it the view starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Spot {
+    page: usize,
+    /// Fraction of the page height above the view's top edge (negative in the margin above).
+    frac: f32,
+    /// Horizontal centre of the view as a fraction of the document width.
+    x_frac: f32,
+}
+
+#[derive(Default)]
+struct Search {
+    query: String,
+    id: u64,
+    hits: Vec<(usize, Rect)>,
+    current: Option<(usize, Rect)>,
+    searched: usize,
+    done: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Selection {
+    page: usize,
+    anchor: usize,
+    focus: usize,
+}
+
+impl Selection {
+    fn range(&self) -> std::ops::Range<usize> {
+        self.anchor.min(self.focus)..self.anchor.max(self.focus) + 1
+    }
+}
+
+struct DocTab {
+    path: PathBuf,
+    info: DocInfo,
+    sizes: Vec<(f32, f32)>,
+    mode: PageMode,
+    zoom: Zoom,
+    rotation: i32,
+    layout: Layout,
+    view: (f32, f32),
+    current: usize,
+    /// Applied once the layout exists.
+    pending: Option<Spot>,
+    saved_scroll: Option<(f32, f32)>,
+    /// What tiles were rendered with: device scale, rotation, reading mode.
+    signature: (u32, i32, ReadingMode),
+    generation: u64,
+    tiles: HashMap<TileKey, TileImage>,
+    inflight: HashSet<TileKey>,
+    thumb_generation: u64,
+    thumb_tops: Vec<f32>,
+    thumbs: HashMap<usize, Image>,
+    thumbs_inflight: HashSet<usize>,
+    texts: HashMap<usize, Rc<PageText>>,
+    links: HashMap<usize, Rc<Vec<Link>>>,
+    search: Search,
+    selection: Option<Selection>,
+    history: Vec<Spot>,
+    future: Vec<Spot>,
+    outline: Vec<OutlineItem>,
+    expanded: HashSet<usize>,
+    outline_rows: Vec<usize>,
+    outline_current: Option<usize>,
+    metadata: Vec<(String, String)>,
+}
+
+impl DocTab {
+    fn name(&self) -> String {
+        file_name(&self.path)
+    }
+
+    fn page_count(&self) -> usize {
+        self.sizes.len()
+    }
+}
+
+enum Ask {
+    Unlock { info: DocInfo, path: PathBuf },
+    OpenUri(String),
+    Restore(Vec<PathBuf>),
+    Message,
+}
+
+struct Dialog {
+    ask: Ask,
+    kind: &'static str,
+    title: String,
+    text: String,
+    ok: &'static str,
+    cancel: &'static str,
+}
+
+enum PaletteAction {
+    Command(&'static str),
+    Page(usize),
+    Recent(PathBuf),
+    Outline(usize),
+}
+
+enum Drag {
+    Select {
+        moved: bool,
+        start: (f32, f32),
+    },
+    Pan {
+        start: (f32, f32),
+        scroll: (f32, f32),
+    },
+    Click {
+        start: (f32, f32),
+    },
+}
+
+struct Models {
+    tabs: Rc<VecModel<TabItem>>,
+    pages: Rc<VecModel<PageItem>>,
+    tiles: Rc<VecModel<TileItem>>,
+    marks: Rc<VecModel<MarkItem>>,
+    thumbs: Rc<VecModel<ThumbItem>>,
+    outline: Rc<VecModel<OutlineRow>>,
+    info: Rc<VecModel<InfoRow>>,
+    palette: Rc<VecModel<PaletteItem>>,
+    recent: Rc<VecModel<PaletteItem>>,
+}
+
+pub struct App {
     window: slint::Weak<MainWindow>,
     engine: Arc<Engine>,
     pool: RenderPool,
-    doc: DocInfo,
-    sizes: Vec<PageSize>,
-    /// Logical pixels per PDF point.
-    zoom: f32,
-    /// Top edge of each page in logical pixels.
-    tops: Vec<f32>,
-    /// Bumped whenever the zoom changes; renders from an older generation are discarded.
-    generation: u64,
     shared: Arc<Shared>,
-    cache: HashMap<usize, Rendered>,
-    inflight: HashSet<usize>,
-    model: Rc<VecModel<PageItem>>,
-    /// What the model currently shows: (page, generation of its image), plus the zoom.
-    shown: Vec<(usize, Option<u64>)>,
+    pub settings: Settings,
+    /// False for benchmark runs: nothing is written to the settings file.
+    persist: bool,
+    tabs: Vec<DocTab>,
+    active: Option<usize>,
+    closed: Vec<PathBuf>,
+    models: Models,
+    next_generation: u64,
+    shown_pages: Vec<PageItem>,
+    shown_tiles: Vec<TileItem>,
+    shown_marks: Vec<MarkItem>,
+    dialogs: VecDeque<Dialog>,
+    palette_actions: Vec<PaletteAction>,
+    drag: Option<Drag>,
+    cursor: i32,
+    status_timer: Timer,
+    search_timer: Timer,
+    reload_timer: Timer,
+    reload_paths: HashSet<PathBuf>,
+    watcher: Option<notify::RecommendedWatcher>,
+    watched: HashSet<PathBuf>,
+    /// State to restore when leaving presentation mode: sidebar, page mode, zoom.
+    presenting: Option<(bool, PageMode, Zoom)>,
+    pub vim_count: String,
+    pub vim_pending: Option<char>,
     renders: u64,
 }
 
-struct Rendered {
-    image: Image,
-    generation: u64,
-}
+impl App {
+    pub fn new(window: &MainWindow, settings: Settings, persist: bool) -> App {
+        let workers = std::thread::available_parallelism()
+            .map_or(2, |n| n.get().saturating_sub(1).clamp(1, 4));
+        let models = Models {
+            tabs: Rc::new(VecModel::default()),
+            pages: Rc::new(VecModel::default()),
+            tiles: Rc::new(VecModel::default()),
+            marks: Rc::new(VecModel::default()),
+            thumbs: Rc::new(VecModel::default()),
+            outline: Rc::new(VecModel::default()),
+            info: Rc::new(VecModel::default()),
+            palette: Rc::new(VecModel::default()),
+            recent: Rc::new(VecModel::default()),
+        };
+        window.set_tabs(ModelRc::from(models.tabs.clone()));
+        window.set_pages(ModelRc::from(models.pages.clone()));
+        window.set_tiles(ModelRc::from(models.tiles.clone()));
+        window.set_marks(ModelRc::from(models.marks.clone()));
+        window.set_thumbs(ModelRc::from(models.thumbs.clone()));
+        window.set_outline(ModelRc::from(models.outline.clone()));
+        window.set_info(ModelRc::from(models.info.clone()));
+        window.set_palette_items(ModelRc::from(models.palette.clone()));
+        window.set_recent_items(ModelRc::from(models.recent.clone()));
 
-/// Read by render workers so they can skip pages that scrolled away or were re-zoomed.
-struct Shared {
-    generation: AtomicU64,
-    wanted: Mutex<HashSet<usize>>,
-}
+        window.global::<Theme>().set_dark(settings.dark_theme);
+        window.set_vim_enabled(settings.vim);
+        window.set_reading_mode(settings.reading_mode.index());
+        window.set_paper(paper_color(settings.reading_mode));
+        window.set_sidebar_visible(settings.sidebar);
+        window.set_page_mode(mode_index(settings.page_mode));
 
-impl Viewer {
-    pub fn page_count(&self) -> usize {
-        self.doc.page_count
+        let app = App {
+            window: window.as_weak(),
+            engine: Arc::new(Engine::start()),
+            pool: RenderPool::new(workers),
+            shared: Arc::new(Shared::default()),
+            settings,
+            persist,
+            tabs: Vec::new(),
+            active: None,
+            closed: Vec::new(),
+            models,
+            next_generation: 1,
+            shown_pages: Vec::new(),
+            shown_tiles: Vec::new(),
+            shown_marks: Vec::new(),
+            dialogs: VecDeque::new(),
+            palette_actions: Vec::new(),
+            drag: None,
+            cursor: 0,
+            status_timer: Timer::default(),
+            search_timer: Timer::default(),
+            reload_timer: Timer::default(),
+            reload_paths: HashSet::new(),
+            watcher: None,
+            watched: HashSet::new(),
+            presenting: None,
+            vim_count: String::new(),
+            vim_pending: None,
+            renders: 0,
+        };
+        app.refresh_recent();
+        app
+    }
+
+    fn window(&self) -> Option<MainWindow> {
+        self.window.upgrade()
+    }
+
+    fn tab(&self) -> Option<&DocTab> {
+        self.active.and_then(|i| self.tabs.get(i))
+    }
+
+    fn tab_mut(&mut self) -> Option<&mut DocTab> {
+        self.active.and_then(|i| self.tabs.get_mut(i))
+    }
+
+    pub fn has_document(&self) -> bool {
+        self.tab().is_some()
     }
 
     pub fn renders(&self) -> u64 {
         self.renders
     }
 
-    pub fn update(&mut self) {
-        let Some(window) = self.window.upgrade() else {
+    pub fn page_count(&self) -> usize {
+        self.tab().map_or(0, DocTab::page_count)
+    }
+
+    fn save_settings(&self) {
+        if self.persist {
+            self.settings.save();
+        }
+    }
+
+    // ---------------------------------------------------------------- opening and closing
+
+    pub fn open_paths(&mut self, paths: Vec<PathBuf>) {
+        for path in paths {
+            self.open(path);
+        }
+    }
+
+    pub fn open(&mut self, path: PathBuf) {
+        let path = std::path::absolute(&path).unwrap_or(path);
+        if let Some(i) = self.tabs.iter().position(|t| same_path(&t.path, &path)) {
+            self.select(i);
+            return;
+        }
+        match self.engine.open(&path) {
+            Err(e) => self.message("Could not open file", format!("{}\n\n{e}", path.display())),
+            Ok(info) if info.needs_password => self.ask_password(info, path, false),
+            Ok(info) => self.finish_open(path, info),
+        }
+    }
+
+    fn ask_password(&mut self, info: DocInfo, path: PathBuf, retry: bool) {
+        let name = file_name(&path);
+        let text = if retry {
+            format!("That password did not unlock {name}. Try again.")
+        } else {
+            format!("{name} is protected. Enter its password to open it.")
+        };
+        let dialog = Dialog {
+            ask: Ask::Unlock { info, path },
+            kind: "password",
+            title: "Password required".into(),
+            text,
+            ok: "Open",
+            cancel: "Cancel",
+        };
+        if retry {
+            self.dialogs.push_front(dialog);
+            self.show_dialog();
+        } else {
+            self.push_dialog(dialog);
+        }
+    }
+
+    fn finish_open(&mut self, path: PathBuf, info: DocInfo) {
+        let sizes: Vec<(f32, f32)> = match self.engine.page_sizes(info.id) {
+            Ok(s) => s
+                .iter()
+                .map(|s| (s.width.max(1.0), s.height.max(1.0)))
+                .collect(),
+            Err(e) => {
+                self.engine.close(info.id);
+                self.message("Could not open file", format!("{}\n\n{e}", path.display()));
+                return;
+            }
+        };
+        if sizes.is_empty() {
+            self.engine.close(info.id);
+            self.message(
+                "Could not open file",
+                format!("{} has no pages.", path.display()),
+            );
+            return;
+        }
+        let outline = self.engine.outline(info.id).unwrap_or_default();
+        let metadata = self.engine.metadata(info.id).unwrap_or_default();
+        let expanded = if outline.len() <= 30 {
+            (0..outline.len()).collect()
+        } else {
+            HashSet::new()
+        };
+        let pending = self
+            .settings
+            .positions
+            .get(&path)
+            .filter(|&&p| p < sizes.len())
+            .map(|&page| Spot {
+                page,
+                frac: 0.0,
+                x_frac: 0.5,
+            });
+        let generation = self.bump();
+        let thumb_generation = self.bump();
+        let tab = DocTab {
+            path: path.clone(),
+            info,
+            sizes,
+            mode: self.settings.page_mode,
+            zoom: Zoom::FitWidth,
+            rotation: 0,
+            layout: Layout::default(),
+            view: (0.0, 0.0),
+            current: pending.map_or(0, |s| s.page),
+            pending,
+            saved_scroll: None,
+            signature: (0, 0, ReadingMode::Normal),
+            generation,
+            tiles: HashMap::new(),
+            inflight: HashSet::new(),
+            thumb_generation,
+            thumb_tops: Vec::new(),
+            thumbs: HashMap::new(),
+            thumbs_inflight: HashSet::new(),
+            texts: HashMap::new(),
+            links: HashMap::new(),
+            search: Search::default(),
+            selection: None,
+            history: Vec::new(),
+            future: Vec::new(),
+            outline,
+            expanded,
+            outline_rows: Vec::new(),
+            outline_current: None,
+            metadata,
+        };
+        self.tabs.push(tab);
+        self.settings.add_recent(&path);
+        self.watch(&path);
+        self.select(self.tabs.len() - 1);
+        self.save_session();
+    }
+
+    fn bump(&mut self) -> u64 {
+        self.next_generation += 1;
+        self.next_generation
+    }
+
+    pub fn close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(index);
+        self.settings.remember_page(&tab.path, tab.current);
+        self.engine.close(tab.info.id);
+        self.closed.push(tab.path.clone());
+        self.unwatch(&tab.path);
+        let next = match self.active {
+            _ if self.tabs.is_empty() => None,
+            Some(a) if a > index => Some(a - 1),
+            Some(a) if a == index => Some(index.min(self.tabs.len() - 1)),
+            other => other,
+        };
+        self.active = None;
+        match next {
+            Some(i) => self.select(i),
+            None => self.show_empty(),
+        }
+        self.save_session();
+    }
+
+    fn show_empty(&mut self) {
+        let Some(window) = self.window() else { return };
+        self.shared.tiles.lock().unwrap().clear();
+        self.shared.thumbs.lock().unwrap().clear();
+        window.set_has_document(false);
+        window.set_window_title("micropdf".into());
+        window.set_active_tab(-1);
+        window.set_page_count(0);
+        window.set_page_text("".into());
+        window.set_document_width(0.0);
+        window.set_document_height(0.0);
+        window.set_find_visible(false);
+        window.set_status_right("".into());
+        self.models.tabs.set_vec(Vec::new());
+        self.models.thumbs.set_vec(Vec::new());
+        self.models.outline.set_vec(Vec::new());
+        self.models.info.set_vec(Vec::new());
+        self.shown_pages.clear();
+        self.shown_tiles.clear();
+        self.shown_marks.clear();
+        self.models.pages.set_vec(Vec::new());
+        self.models.tiles.set_vec(Vec::new());
+        self.models.marks.set_vec(Vec::new());
+        self.refresh_recent();
+    }
+
+    pub fn select(&mut self, index: usize) {
+        let Some(window) = self.window() else { return };
+        if index >= self.tabs.len() {
+            return;
+        }
+        if let Some(old) = self.active
+            && old != index
+            && let Some(tab) = self.tabs.get_mut(old)
+        {
+            tab.saved_scroll = Some((-window.get_viewport_x(), -window.get_viewport_y()));
+            // Pixels for background tabs are not worth their memory; they re-render quickly.
+            tab.tiles.clear();
+            tab.inflight.clear();
+            tab.thumbs.clear();
+            tab.thumbs_inflight.clear();
+        }
+        self.active = Some(index);
+        self.drag = None;
+        self.refresh_tabs();
+        let tab = &mut self.tabs[index];
+        window.set_has_document(true);
+        window.set_window_title(format!("{} — micropdf", tab.name()).into());
+        window.set_page_count(tab.page_count() as i32);
+        window.set_page_mode(mode_index(tab.mode));
+        window.set_find_query(tab.search.query.clone().into());
+        // Force a fresh layout so the saved scroll applies to this tab's geometry.
+        tab.view = (0.0, 0.0);
+        self.rebuild_thumbs();
+        self.rebuild_outline();
+        self.rebuild_info();
+        self.refresh_find_status();
+        self.refresh_zoom_text();
+        self.update_view();
+        if let Some(tab) = self.tab_mut()
+            && let Some((x, y)) = tab.saved_scroll.take()
+        {
+            self.set_scroll(x, y);
+            self.update_view();
+        }
+    }
+
+    fn refresh_tabs(&self) {
+        let Some(window) = self.window() else { return };
+        let items: Vec<TabItem> = self
+            .tabs
+            .iter()
+            .map(|t| TabItem {
+                title: t.name().into(),
+                tooltip: t.path.display().to_string().into(),
+            })
+            .collect();
+        self.models.tabs.set_vec(items);
+        window.set_active_tab(self.active.map_or(-1, |a| a as i32));
+    }
+
+    fn refresh_recent(&self) {
+        let items: Vec<PaletteItem> = self
+            .settings
+            .recent
+            .iter()
+            .map(|p| PaletteItem {
+                title: file_name(p).into(),
+                detail: p
+                    .parent()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default()
+                    .into(),
+                shortcut: "".into(),
+            })
+            .collect();
+        self.models.recent.set_vec(items);
+    }
+
+    pub fn open_recent(&mut self, index: usize) {
+        let Some(path) = self.settings.recent.get(index).cloned() else {
             return;
         };
-        let (view_w, view_h) = (window.get_view_width(), window.get_view_height());
-        if view_w <= 0.0 || view_h <= 0.0 {
+        if !path.exists() {
+            self.settings.recent.remove(index);
+            self.save_settings();
+            self.refresh_recent();
+            self.status(format!("{} no longer exists", path.display()));
             return;
         }
-        let layout_changed = self.fit_width(&window, view_w);
+        self.open(path);
+    }
 
-        let top = -window.get_viewport_y();
-        let visible = self.pages_between(top - view_h / 2.0, top + view_h * 1.5);
-        *self.shared.wanted.lock().unwrap() = visible.clone().collect();
+    pub fn reopen_closed(&mut self) {
+        if let Some(path) = self.closed.pop() {
+            self.open(path);
+        }
+    }
 
-        let keep = self.pages_between(top - view_h * 2.0, top + view_h * 3.0);
-        self.cache.retain(|page, _| keep.contains(page));
+    pub fn save_session(&mut self) {
+        self.settings.session.files = self.tabs.iter().map(|t| t.path.clone()).collect();
+        self.settings.session.active = self.active.unwrap_or(0);
+        self.save_settings();
+    }
 
-        let shown: Vec<_> = visible
-            .clone()
-            .map(|i| (i, self.cache.get(&i).map(|r| r.generation)))
+    /// Records a normal exit, with every open file's page.
+    pub fn shutdown(&mut self) {
+        for i in 0..self.tabs.len() {
+            let (path, page) = (self.tabs[i].path.clone(), self.tabs[i].current);
+            self.settings.remember_page(&path, page);
+        }
+        self.settings.session.clean_exit = true;
+        self.save_session();
+    }
+
+    /// Offers to reopen the files from a run that ended unexpectedly.
+    pub fn offer_restore(&mut self, files: Vec<PathBuf>) {
+        let files: Vec<PathBuf> = files.into_iter().filter(|p| p.exists()).collect();
+        if files.is_empty() {
+            return;
+        }
+        let count = files.len();
+        self.push_dialog(Dialog {
+            ask: Ask::Restore(files),
+            kind: "confirm",
+            title: "Reopen your files?".into(),
+            text: format!(
+                "micropdf closed unexpectedly last time. Reopen the {count} file{} that {} open?",
+                if count == 1 { "" } else { "s" },
+                if count == 1 { "was" } else { "were" },
+            ),
+            ok: "Reopen",
+            cancel: "Not now",
+        });
+    }
+
+    // ---------------------------------------------------------------- live reload
+
+    fn watch(&mut self, path: &Path) {
+        let Some(dir) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        if self.watched.contains(&dir) {
+            return;
+        }
+        if self.watcher.is_none() {
+            self.watcher = notify::recommended_watcher(|event: notify::Result<notify::Event>| {
+                let Ok(event) = event else { return };
+                if matches!(event.kind, notify::EventKind::Access(_)) {
+                    return;
+                }
+                let paths = event.paths;
+                let _ = slint::invoke_from_event_loop(move || {
+                    with(|app| app.file_changed(paths));
+                });
+            })
+            .ok();
+        }
+        if let Some(w) = self.watcher.as_mut() {
+            use notify::Watcher;
+            if w.watch(&dir, notify::RecursiveMode::NonRecursive).is_ok() {
+                self.watched.insert(dir);
+            }
+        }
+    }
+
+    fn unwatch(&mut self, path: &Path) {
+        let Some(dir) = path.parent() else { return };
+        if self.tabs.iter().any(|t| t.path.parent() == Some(dir)) {
+            return;
+        }
+        if self.watched.remove(dir)
+            && let Some(w) = self.watcher.as_mut()
+        {
+            use notify::Watcher;
+            let _ = w.unwatch(dir);
+        }
+    }
+
+    fn file_changed(&mut self, paths: Vec<PathBuf>) {
+        for p in paths {
+            if self.tabs.iter().any(|t| same_path(&t.path, &p)) {
+                self.reload_paths.insert(p);
+            }
+        }
+        if self.reload_paths.is_empty() {
+            return;
+        }
+        // Writers often save in several steps; wait for the file to settle.
+        self.reload_timer
+            .start(TimerMode::SingleShot, Duration::from_millis(500), || {
+                with(|app| {
+                    let paths: Vec<PathBuf> = app.reload_paths.drain().collect();
+                    for p in paths {
+                        if let Some(i) = app.tabs.iter().position(|t| same_path(&t.path, &p)) {
+                            app.reload(i);
+                        }
+                    }
+                });
+            });
+    }
+
+    pub fn reload(&mut self, index: usize) {
+        let Some(path) = self.tabs.get(index).map(|t| t.path.clone()) else {
+            return;
+        };
+        let info = match self.engine.open(&path) {
+            Ok(info) if !info.needs_password => info,
+            Ok(info) => {
+                self.engine.close(info.id);
+                self.status(format!("{} changed on disk", file_name(&path)));
+                return;
+            }
+            Err(_) => return, // mid-write; the next change event retries
+        };
+        let Ok(sizes) = self.engine.page_sizes(info.id) else {
+            self.engine.close(info.id);
+            return;
+        };
+        if sizes.is_empty() {
+            self.engine.close(info.id);
+            return;
+        }
+        let outline = self.engine.outline(info.id).unwrap_or_default();
+        let metadata = self.engine.metadata(info.id).unwrap_or_default();
+        let generation = self.bump();
+        let thumb_generation = self.bump();
+        let active = self.active == Some(index);
+        let spot = if active { self.spot() } else { None };
+        let tab = &mut self.tabs[index];
+        self.engine.close(tab.info.id);
+        tab.info = info;
+        tab.sizes = sizes
+            .iter()
+            .map(|s| (s.width.max(1.0), s.height.max(1.0)))
             .collect();
-        if layout_changed || shown != self.shown {
-            let items: Vec<PageItem> = visible.clone().map(|i| self.item(i, view_w)).collect();
-            self.model.set_vec(items);
-            self.shown = shown;
+        tab.current = tab.current.min(tab.sizes.len() - 1);
+        tab.generation = generation;
+        tab.thumb_generation = thumb_generation;
+        tab.tiles.clear();
+        tab.inflight.clear();
+        tab.thumbs.clear();
+        tab.thumbs_inflight.clear();
+        tab.texts.clear();
+        tab.links.clear();
+        tab.selection = None;
+        tab.outline = outline;
+        tab.metadata = metadata;
+        tab.view = (0.0, 0.0);
+        tab.pending = spot.map(|mut s| {
+            s.page = s.page.min(tab.sizes.len() - 1);
+            s
+        });
+        let query = tab.search.query.clone();
+        if active {
+            if let Some(window) = self.window() {
+                window.set_page_count(self.tabs[index].page_count() as i32);
+            }
+            self.rebuild_thumbs();
+            self.rebuild_outline();
+            self.rebuild_info();
+            self.start_search(query);
+            self.update_view();
+        }
+        self.status(format!("Reloaded {}", file_name(&path)));
+    }
+
+    // ---------------------------------------------------------------- dialogs
+
+    fn push_dialog(&mut self, dialog: Dialog) {
+        self.dialogs.push_back(dialog);
+        if self.dialogs.len() == 1 {
+            self.show_dialog();
+        }
+    }
+
+    pub fn message(&mut self, title: &str, text: String) {
+        self.push_dialog(Dialog {
+            ask: Ask::Message,
+            kind: "message",
+            title: title.into(),
+            text,
+            ok: "OK",
+            cancel: "",
+        });
+    }
+
+    fn show_dialog(&self) {
+        let Some(window) = self.window() else { return };
+        match self.dialogs.front() {
+            Some(d) => {
+                window.set_dialog_title(d.title.clone().into());
+                window.set_dialog_text(d.text.clone().into());
+                window.set_dialog_ok(d.ok.into());
+                window.set_dialog_cancel_text(d.cancel.into());
+                window.set_dialog_input("".into());
+                window.set_dialog_kind(d.kind.into());
+                if d.kind == "password" {
+                    window.invoke_focus_dialog();
+                } else {
+                    window.invoke_focus_view();
+                }
+            }
+            None => {
+                window.set_dialog_kind("".into());
+                window.invoke_focus_view();
+            }
+        }
+    }
+
+    pub fn dialog_visible(&self) -> bool {
+        !self.dialogs.is_empty()
+    }
+
+    pub fn dialog_accept(&mut self, input: String) {
+        let Some(dialog) = self.dialogs.pop_front() else {
+            return;
+        };
+        match dialog.ask {
+            Ask::Unlock { info, path } => match self.engine.authenticate(info.id, &input) {
+                Ok(Some(count)) => {
+                    let info = DocInfo {
+                        page_count: count,
+                        needs_password: false,
+                        ..info
+                    };
+                    self.finish_open(path, info);
+                }
+                _ => {
+                    self.ask_password(info, path, true);
+                    return;
+                }
+            },
+            Ask::OpenUri(uri) => shell_open(&uri),
+            Ask::Restore(files) => self.open_paths(files),
+            Ask::Message => {}
+        }
+        self.show_dialog();
+    }
+
+    /// Enter pressed while a dialog shows and its text field does not have focus.
+    pub fn dialog_enter(&mut self) {
+        let input = self
+            .window()
+            .map(|w| w.get_dialog_input().to_string())
+            .unwrap_or_default();
+        self.dialog_accept(input);
+    }
+
+    pub fn dialog_cancel(&mut self) {
+        let Some(dialog) = self.dialogs.pop_front() else {
+            return;
+        };
+        if let Ask::Unlock { info, .. } = dialog.ask {
+            self.engine.close(info.id);
+        }
+        self.show_dialog();
+    }
+
+    pub fn status(&mut self, text: String) {
+        let Some(window) = self.window() else { return };
+        window.set_status_left(text.into());
+        let weak = self.window.clone();
+        self.status_timer
+            .start(TimerMode::SingleShot, STATUS_TIME, move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_left("".into());
+                }
+            });
+    }
+
+    // ---------------------------------------------------------------- layout and scrolling
+
+    fn scroll(&self) -> (f32, f32) {
+        self.window()
+            .map_or((0.0, 0.0), |w| (-w.get_viewport_x(), -w.get_viewport_y()))
+    }
+
+    fn set_scroll(&self, x: f32, y: f32) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        let (vw, vh) = (window.get_view_width(), window.get_view_height());
+        let x = x.clamp(0.0, (tab.layout.width - vw).max(0.0));
+        let y = y.clamp(0.0, (tab.layout.height - vh).max(0.0));
+        window.set_viewport_x(-x);
+        window.set_viewport_y(-y);
+    }
+
+    pub fn scroll_by(&mut self, dx: f32, dy: f32) {
+        let (x, y) = self.scroll();
+        self.set_scroll(x + dx, y + dy);
+        self.update_view();
+    }
+
+    pub fn view_size(&self) -> (f32, f32) {
+        self.window()
+            .map_or((0.0, 0.0), |w| (w.get_view_width(), w.get_view_height()))
+    }
+
+    pub fn document_height(&self) -> f32 {
+        self.tab().map_or(0.0, |t| t.layout.height)
+    }
+
+    pub fn scroll_to_y(&mut self, y: f32) {
+        let (x, _) = self.scroll();
+        self.set_scroll(x, y);
+        self.update_view();
+    }
+
+    pub fn at_bottom(&self) -> bool {
+        let (_, y) = self.scroll();
+        let (_, vh) = self.view_size();
+        y + vh >= self.document_height() - 1.0
+    }
+
+    pub fn at_top(&self) -> bool {
+        self.scroll().1 <= 0.5
+    }
+
+    fn spot(&self) -> Option<Spot> {
+        let tab = self.tab()?;
+        if tab.layout.frames.is_empty() {
+            return None;
+        }
+        let (x, y) = self.scroll();
+        let (vw, _) = self.view_size();
+        let page = tab.layout.current_page(y, 0.0);
+        let f = tab.layout.frame(page)?;
+        Some(Spot {
+            page,
+            frac: (y - f.y) / f.height,
+            x_frac: (x + vw / 2.0) / tab.layout.width.max(1.0),
+        })
+    }
+
+    fn go_spot(&mut self, spot: Spot) {
+        let Some(tab) = self.tab_mut() else { return };
+        if tab.mode == PageMode::Single && tab.current != spot.page {
+            tab.current = spot.page;
+            tab.pending = Some(spot);
+            tab.view = (0.0, 0.0);
+            self.update_view();
+            return;
+        }
+        let Some(f) = tab.layout.frame(spot.page) else {
+            return;
+        };
+        let width = tab.layout.width;
+        let (vw, _) = self.view_size();
+        self.set_scroll(spot.x_frac * width - vw / 2.0, f.y + spot.frac * f.height);
+        self.update_view();
+    }
+
+    /// Recomputes the active tab's layout, keeping the reading position.
+    fn relayout(&mut self) {
+        let Some(window) = self.window() else { return };
+        let (vw, vh) = (window.get_view_width(), window.get_view_height());
+        let spot = self.spot();
+        let Some(tab) = self.tab_mut() else { return };
+        if tab.pending.is_none() {
+            // A fresh tab with no remembered position starts at its current page's top.
+            tab.pending = spot.or(Some(Spot {
+                page: tab.current,
+                frac: 0.0,
+                x_frac: 0.5,
+            }));
+        }
+        tab.view = (vw, vh);
+        tab.layout = Layout::compute(&Params {
+            sizes: &tab.sizes,
+            rotation: tab.rotation,
+            mode: tab.mode,
+            zoom: tab.zoom,
+            view_width: vw,
+            view_height: vh,
+            current: tab.current,
+        });
+        window.set_document_width(tab.layout.width);
+        window.set_document_height(tab.layout.height);
+        if let Some(spot) = tab.pending.take() {
+            let f = tab.layout.frame(spot.page).unwrap_or_default();
+            let (w, h) = (tab.layout.width, tab.layout.height);
+            let x = (spot.x_frac * w - vw / 2.0).clamp(0.0, (w - vw).max(0.0));
+            // frac 0 means "this page's top", which leaves the margin above it in view.
+            let y = if spot.frac == 0.0 {
+                tab.layout.scroll_to(spot.page, None).unwrap_or(0.0)
+            } else {
+                f.y + spot.frac * f.height
+            };
+            let y = y.clamp(0.0, (h - vh).max(0.0));
+            window.set_viewport_x(-x);
+            window.set_viewport_y(-y);
+        }
+        self.refresh_zoom_text();
+    }
+
+    fn refresh_zoom_text(&self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        window.set_zoom_text(format!("{:.0}%", tab.layout.scale / ACTUAL * 100.0).into());
+        window.set_zoom_mode(match tab.zoom {
+            Zoom::FitWidth => 0,
+            Zoom::FitPage => 1,
+            Zoom::Scale(_) => 2,
+        });
+    }
+
+    /// Brings models and render requests in line with the current scroll position. Called on
+    /// every scroll, resize and state change; cheap when nothing moved.
+    pub fn update_view(&mut self) {
+        let Some(window) = self.window() else { return };
+        let Some(ti) = self.active else { return };
+        let (vw, vh) = (window.get_view_width(), window.get_view_height());
+        if vw < 2.0 || vh < 2.0 {
+            return;
+        }
+        let needs_layout = {
+            let tab = &self.tabs[ti];
+            tab.view != (vw, vh) || tab.layout.frames.is_empty()
+        };
+        if needs_layout {
+            self.relayout();
+        }
+        let dpr = window.window().scale_factor();
+        let mode = self.settings.reading_mode;
+        let (left, top) = (-window.get_viewport_x(), -window.get_viewport_y());
+
+        // Current page.
+        let current = {
+            let tab = &self.tabs[ti];
+            if tab.mode == PageMode::Single {
+                tab.current
+            } else {
+                tab.layout.current_page(top, vh)
+            }
+        };
+        if current != self.tabs[ti].current || needs_layout {
+            self.tabs[ti].current = current;
+            self.page_changed();
         }
 
-        for page in visible {
-            self.request(page, &window);
+        let tab = &mut self.tabs[ti];
+        let signature = ((tab.layout.scale * dpr * 1000.0) as u32, tab.rotation, mode);
+        if signature != tab.signature {
+            tab.signature = signature;
+            self.next_generation += 1;
+            tab.generation = self.next_generation;
+        }
+        let generation = tab.generation;
+        let scale = tab.layout.scale * dpr;
+
+        let band = (top - vh * 0.5, top + vh * 1.5);
+        let pages = tab.layout.visible(band.0, band.1);
+        let mut missing: Vec<(f32, TileKey, Tile, [f32; 4])> = Vec::new();
+        let mut page_items = Vec::with_capacity(pages.len());
+        let mut tile_items = Vec::new();
+        let mut incomplete = HashSet::new();
+        for &p in &pages {
+            let Some(f) = tab.layout.frame(p) else {
+                continue;
+            };
+            page_items.push(page_item(p, f));
+            let dw = (f.width * dpr).ceil().max(1.0) as i32;
+            let dh = (f.height * dpr).ceil().max(1.0) as i32;
+            let x0 = (((left - 128.0) - f.x) * dpr).floor().max(0.0) as i32;
+            let x1 = ((((left + vw + 128.0) - f.x) * dpr).ceil() as i32).min(dw);
+            let y0 = ((band.0 - f.y) * dpr).floor().max(0.0) as i32;
+            let y1 = (((band.1 - f.y) * dpr).ceil() as i32).min(dh);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            let mut fresh = Vec::new();
+            for row in y0 / TILE..=(y1 - 1) / TILE {
+                for col in x0 / TILE..=(x1 - 1) / TILE {
+                    let key = TileKey {
+                        page: p,
+                        generation,
+                        col,
+                        row,
+                    };
+                    if let Some(t) = tab.tiles.get(&key) {
+                        fresh.push(tile_item(f, t));
+                    } else {
+                        let tile = Tile {
+                            x: col * TILE,
+                            y: row * TILE,
+                            width: TILE.min(dw - col * TILE),
+                            height: TILE.min(dh - row * TILE),
+                        };
+                        let frac = [
+                            tile.x as f32 / dw as f32,
+                            tile.y as f32 / dh as f32,
+                            (tile.x + tile.width) as f32 / dw as f32,
+                            (tile.y + tile.height) as f32 / dh as f32,
+                        ];
+                        let centre = f.y + (tile.y as f32 + tile.height as f32 / 2.0) / dpr;
+                        missing.push(((centre - (top + vh / 2.0)).abs(), key, tile, frac));
+                    }
+                }
+            }
+            if missing.iter().any(|m| m.1.page == p) {
+                incomplete.insert(p);
+                // Older, blurrier tiles stand in until the new ones arrive.
+                let mut old: Vec<(&TileKey, &TileImage)> = tab
+                    .tiles
+                    .iter()
+                    .filter(|(k, _)| k.page == p && k.generation != generation)
+                    .collect();
+                old.sort_by_key(|(k, _)| k.generation);
+                tile_items.extend(old.into_iter().map(|(_, t)| tile_item(f, t)));
+            }
+            tile_items.extend(fresh);
         }
 
-        let current = self
-            .pages_between(top + view_h / 3.0, top + view_h / 3.0)
-            .start;
-        window.set_status_text(
+        // Forget pixels far from the view.
+        let keep: HashSet<usize> = tab
+            .layout
+            .visible(top - vh * 2.0, top + vh * 3.0)
+            .into_iter()
+            .collect();
+        let band_pages: HashSet<usize> = pages.iter().copied().collect();
+        tab.tiles.retain(|k, _| {
+            if k.generation == generation {
+                keep.contains(&k.page)
+            } else {
+                band_pages.contains(&k.page) && incomplete.contains(&k.page)
+            }
+        });
+
+        missing.sort_by(|a, b| a.0.total_cmp(&b.0));
+        {
+            let mut wanted = self.shared.tiles.lock().unwrap();
+            wanted.clear();
+            wanted.extend(missing.iter().map(|m| (tab.info.id, m.1)));
+        }
+        let rotation = tab.rotation;
+        for (_, key, tile, frac) in missing {
+            if !tab.inflight.insert(key) {
+                continue;
+            }
+            let (engine, shared, doc) = (
+                Arc::clone(&self.engine),
+                Arc::clone(&self.shared),
+                tab.info.id,
+            );
+            self.pool.spawn(move || {
+                let result = if shared.tiles.lock().unwrap().contains(&(doc, key)) {
+                    match engine
+                        .display_list(doc, key.page)
+                        .and_then(|list| mp_engine::render_tile(&list, scale, rotation, tile))
+                    {
+                        Ok(mut image) => {
+                            mode.apply(&mut image.rgb);
+                            Rendered::Done(SharedPixelBuffer::clone_from_slice(
+                                &image.rgb,
+                                image.width,
+                                image.height,
+                            ))
+                        }
+                        Err(_) => Rendered::Failed,
+                    }
+                } else {
+                    Rendered::Skipped
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    with(|app| app.tile_done(doc, key, frac, result));
+                });
+            });
+        }
+
+        if page_items != self.shown_pages {
+            self.models.pages.set_vec(page_items.clone());
+            self.shown_pages = page_items;
+        }
+        if tile_items != self.shown_tiles {
+            self.models.tiles.set_vec(tile_items.clone());
+            self.shown_tiles = tile_items;
+        }
+        self.refresh_marks();
+        self.update_thumbs();
+    }
+
+    fn tile_done(&mut self, doc: DocId, key: TileKey, frac: [f32; 4], result: Rendered) {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.info.id == doc) else {
+            return;
+        };
+        tab.inflight.remove(&key);
+        if key.generation != tab.generation {
+            return;
+        }
+        let image = match result {
+            Rendered::Skipped => {
+                if self.shared.tiles.lock().unwrap().contains(&(doc, key)) {
+                    self.update_view();
+                }
+                return;
+            }
+            Rendered::Failed => Image::default(),
+            Rendered::Done(buffer) => {
+                self.renders += 1;
+                Image::from_rgb8(buffer)
+            }
+        };
+        tab.tiles.insert(key, TileImage { frac, image });
+        if self.tab().is_some_and(|t| t.info.id == doc) {
+            self.update_view();
+        }
+    }
+
+    fn page_changed(&mut self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        let page = tab.current;
+        window.set_page_text((page + 1).to_string().into());
+        let (w, h) = tab.sizes[page];
+        window.set_status_right(
             format!(
-                "Page {} of {}  ·  {:.0}%",
-                (current + 1).min(self.doc.page_count),
-                self.doc.page_count,
-                self.zoom * 100.0
+                "{:.2} × {:.2} in  ·  {} pages",
+                w / 72.0,
+                h / 72.0,
+                tab.page_count()
             )
             .into(),
         );
+        let history = (!tab.history.is_empty(), !tab.future.is_empty());
+        window.set_can_back(history.0);
+        window.set_can_forward(history.1);
+        let thumbs = &self.models.thumbs;
+        for row in 0..thumbs.row_count() {
+            if let Some(mut item) = thumbs.row_data(row) {
+                let current = item.index as usize == page;
+                if item.current != current {
+                    item.current = current;
+                    thumbs.set_row_data(row, item);
+                }
+            }
+        }
+        self.reveal_thumb(page);
+        self.refresh_outline_current();
     }
 
-    /// Fits the widest page to the view. Returns true if the layout changed.
-    fn fit_width(&mut self, window: &MainWindow, view_w: f32) -> bool {
-        let widest = self.sizes.iter().map(|s| s.width).fold(1.0, f32::max);
-        let zoom = ((view_w - 2.0 * MARGIN) / widest).clamp(0.05, 8.0);
-        if self.zoom > 0.0 && (zoom - self.zoom).abs() / self.zoom < 0.002 {
-            return false;
+    // ---------------------------------------------------------------- navigation
+
+    pub fn go_to(&mut self, page: usize, top: Option<f32>, record: bool) {
+        let Some(count) = self.tab().map(DocTab::page_count) else {
+            return;
+        };
+        let page = page.min(count - 1);
+        if record {
+            self.record_history();
         }
+        let tab = self.tab_mut().expect("checked above");
+        if tab.mode == PageMode::Single && tab.current != page {
+            tab.current = page;
+            tab.view = (0.0, 0.0);
+            tab.pending = Some(Spot {
+                page,
+                frac: 0.0,
+                x_frac: 0.5,
+            });
+            self.update_view();
+        }
+        let Some(tab) = self.tab() else { return };
+        if let Some(y) = tab.layout.scroll_to(page, top) {
+            let (x, _) = self.scroll();
+            self.set_scroll(x, y);
+        }
+        self.update_view();
+    }
 
-        // Keep the page under the top edge in place across the re-layout.
-        let top = -window.get_viewport_y();
-        let anchor = (!self.tops.is_empty()).then(|| {
-            let page = self.pages_between(top, top).start.min(self.tops.len() - 1);
-            let height = self.sizes[page].height * self.zoom;
-            (page, (top - self.tops[page]) / height)
-        });
+    fn record_history(&mut self) {
+        let Some(spot) = self.spot() else { return };
+        let Some(tab) = self.tab_mut() else { return };
+        if tab.history.last() != Some(&spot) {
+            tab.history.push(spot);
+            if tab.history.len() > HISTORY_LIMIT {
+                tab.history.remove(0);
+            }
+        }
+        tab.future.clear();
+    }
 
-        self.zoom = zoom;
-        let mut y = MARGIN;
-        self.tops = self
-            .sizes
+    pub fn back(&mut self) {
+        let Some(here) = self.spot() else { return };
+        let Some(tab) = self.tab_mut() else { return };
+        let Some(spot) = tab.history.pop() else {
+            return;
+        };
+        tab.future.push(here);
+        self.go_spot(spot);
+        self.page_changed();
+    }
+
+    pub fn forward(&mut self) {
+        let Some(here) = self.spot() else { return };
+        let Some(tab) = self.tab_mut() else { return };
+        let Some(spot) = tab.future.pop() else { return };
+        tab.history.push(here);
+        self.go_spot(spot);
+        self.page_changed();
+    }
+
+    /// The first page of the next (or previous) row: a page in continuous mode, a spread in
+    /// two-up and book modes.
+    fn row_step(&self, forward: bool) -> Option<usize> {
+        let tab = self.tab()?;
+        let current = tab.current;
+        if tab.mode == PageMode::Single {
+            return Some(if forward {
+                (current + 1).min(tab.page_count() - 1)
+            } else {
+                current.saturating_sub(1)
+            });
+        }
+        let y = tab.layout.frame(current)?.y;
+        let rows: Vec<(usize, f32)> = tab
+            .layout
+            .frames
             .iter()
-            .map(|s| {
-                let page_top = y;
-                y += s.height * zoom + GAP;
-                page_top
-            })
+            .enumerate()
+            .filter_map(|(i, f)| f.map(|f| (i, f.y)))
             .collect();
-        window.set_document_height(y - GAP + MARGIN);
-        window.set_document_width(widest * zoom + 2.0 * MARGIN);
-        if let Some((page, fraction)) = anchor {
-            let height = self.sizes[page].height * zoom;
-            window.set_viewport_y(-(self.tops[page] + fraction * height).max(0.0));
-        }
-
-        self.generation += 1;
-        self.shared
-            .generation
-            .store(self.generation, Ordering::Relaxed);
-        self.inflight.clear();
-        true
-    }
-
-    /// Pages that overlap the vertical band [from, to].
-    fn pages_between(&self, from: f32, to: f32) -> Range<usize> {
-        let mut first = self.tops.partition_point(|&t| t < from);
-        if first > 0 {
-            let prev = first - 1;
-            if self.tops[prev] + self.sizes[prev].height * self.zoom >= from {
-                first = prev;
-            }
-        }
-        let last = self.tops.partition_point(|&t| t <= to);
-        first..last.max(first)
-    }
-
-    fn item(&self, page: usize, view_w: f32) -> PageItem {
-        let size = self.sizes[page];
-        let (width, height) = (size.width * self.zoom, size.height * self.zoom);
-        let content_w = view_w
-            .max(self.sizes.iter().map(|s| s.width).fold(0.0, f32::max) * self.zoom + 2.0 * MARGIN);
-        PageItem {
-            index: page as i32,
-            x: (content_w - width) / 2.0,
-            y: self.tops[page],
-            width,
-            height,
-            image: self
-                .cache
-                .get(&page)
-                .map(|r| r.image.clone())
-                .unwrap_or_default(),
+        if forward {
+            rows.iter().find(|(_, fy)| *fy > y + 0.5).map(|r| r.0)
+        } else {
+            let prev = rows
+                .iter()
+                .filter(|(_, fy)| *fy < y - 0.5)
+                .map(|r| r.1)
+                .fold(f32::NEG_INFINITY, f32::max);
+            rows.iter()
+                .find(|(_, fy)| (*fy - prev).abs() < 0.5)
+                .map(|r| r.0)
+                .or(Some(0))
         }
     }
 
-    fn request(&mut self, page: usize, window: &MainWindow) {
-        let current = self
-            .cache
-            .get(&page)
-            .is_some_and(|r| r.generation == self.generation);
-        if current || !self.inflight.insert(page) {
-            return;
+    pub fn next_page(&mut self) {
+        if let Some(p) = self.row_step(true) {
+            self.go_to(p, None, false);
         }
+    }
 
-        let scale = self.zoom * window.window().scale_factor();
-        let generation = self.generation;
-        let (engine, shared, doc) = (
-            Arc::clone(&self.engine),
-            Arc::clone(&self.shared),
-            self.doc.id,
-        );
-        self.pool.spawn(move || {
-            let stale = shared.generation.load(Ordering::Relaxed) != generation
-                || !shared.wanted.lock().unwrap().contains(&page);
-            if stale {
-                let _ = slint::invoke_from_event_loop(move || {
-                    with(|v| v.skipped(page, generation));
-                });
-                return;
-            }
-            match engine
-                .display_list(doc, page)
-                .and_then(|list| mp_engine::render(&list, scale))
-            {
-                Ok(image) => {
-                    let buffer = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(
-                        &image.rgb,
-                        image.width,
-                        image.height,
-                    );
-                    let _ = slint::invoke_from_event_loop(move || {
-                        with(|v| v.rendered(page, generation, buffer));
-                    });
-                }
-                Err(e) => {
-                    eprintln!("page {}: {e}", page + 1);
-                    let _ = slint::invoke_from_event_loop(move || {
-                        with(|v| v.skipped(page, generation));
-                    });
+    pub fn prev_page(&mut self) {
+        if let Some(p) = self.row_step(false) {
+            self.go_to(p, None, false);
+        }
+    }
+
+    pub fn first_page(&mut self) {
+        self.go_to(0, None, true);
+    }
+
+    pub fn last_page(&mut self) {
+        let n = self.page_count();
+        if n > 0 {
+            self.go_to(n - 1, None, true);
+        }
+    }
+
+    pub fn page_entered(&mut self, text: &str) {
+        let Some(tab) = self.tab() else { return };
+        let current = tab.current;
+        match text.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => self.go_to(n - 1, None, true),
+            _ => {
+                if let Some(window) = self.window() {
+                    window.set_page_text((current + 1).to_string().into());
                 }
             }
+        }
+    }
+
+    /// Page down or up by most of a screen; in single-page mode, turns the page at the edges.
+    pub fn page_scroll(&mut self, forward: bool) {
+        let (_, vh) = self.view_size();
+        let single = self.tab().is_some_and(|t| t.mode == PageMode::Single);
+        if single && forward && self.at_bottom() {
+            self.next_page();
+        } else if single && !forward && self.at_top() {
+            let before = self.tab().map(|t| t.current);
+            self.prev_page();
+            if self.tab().map(|t| t.current) != before {
+                self.scroll_to_y(f32::MAX);
+            }
+        } else {
+            let step = (vh - 40.0).max(vh * 0.5);
+            self.scroll_by(0.0, if forward { step } else { -step });
+        }
+    }
+
+    /// Left and right arrows: scroll sideways when the document is wider than the view,
+    /// otherwise turn the page.
+    pub fn horizontal(&mut self, forward: bool) {
+        let (vw, _) = self.view_size();
+        let wide = self.tab().is_some_and(|t| t.layout.width > vw + 1.0);
+        if wide {
+            self.scroll_by(if forward { LINE } else { -LINE }, 0.0);
+        } else if forward {
+            self.next_page();
+        } else {
+            self.prev_page();
+        }
+    }
+
+    // ---------------------------------------------------------------- zoom, rotation, modes
+
+    pub fn set_zoom(&mut self, zoom: Zoom, anchor: Option<(f32, f32)>) {
+        let Some(window) = self.window() else { return };
+        let (vw, vh) = (window.get_view_width(), window.get_view_height());
+        let (left, top) = self.scroll();
+        let (ax, ay) = anchor.unwrap_or((left + vw / 2.0, top + vh / 2.0));
+        let Some(tab) = self.tab_mut() else { return };
+        let hit = tab.layout.hit(ax, ay);
+        tab.zoom = zoom;
+        tab.view = (0.0, 0.0);
+        if hit.is_some() {
+            tab.pending = None;
+        }
+        self.relayout();
+        let Some(tab) = self.tab() else { return };
+        if let Some((page, px, py)) = hit
+            && let Some(at) = tab.layout.to_view(
+                page,
+                &Rect {
+                    x0: px,
+                    y0: py,
+                    x1: px,
+                    y1: py,
+                },
+            )
+        {
+            self.set_scroll(at.x - (ax - left), at.y - (ay - top));
+        }
+        self.update_view();
+    }
+
+    fn scale(&self) -> f32 {
+        self.tab().map_or(ACTUAL, |t| t.layout.scale)
+    }
+
+    pub fn zoom_step(&mut self, steps: i32, anchor: Option<(f32, f32)>) {
+        let factor = self.scale() / ACTUAL;
+        let next = if steps > 0 {
+            ZOOM_STEPS.iter().copied().find(|&z| z > factor * 1.01)
+        } else {
+            ZOOM_STEPS
+                .iter()
+                .rev()
+                .copied()
+                .find(|&z| z < factor * 0.99)
+        };
+        if let Some(z) = next {
+            self.set_zoom(Zoom::Scale(z * ACTUAL), anchor);
+        }
+    }
+
+    /// Ctrl+wheel: about 12% per notch, anchored at the pointer.
+    pub fn wheel_zoom(&mut self, delta: f32, x: f32, y: f32) {
+        let notches = (delta / 60.0).clamp(-3.0, 3.0);
+        let factor = (self.scale() * 1.12f32.powf(notches)) / ACTUAL;
+        let factor = factor.clamp(ZOOM_STEPS[0], *ZOOM_STEPS.last().unwrap());
+        self.set_zoom(Zoom::Scale(factor * ACTUAL), Some((x, y)));
+    }
+
+    pub fn rotate(&mut self, degrees: i32) {
+        let Some(tab) = self.tab_mut() else { return };
+        tab.rotation = (tab.rotation + degrees).rem_euclid(360);
+        tab.view = (0.0, 0.0);
+        tab.selection = None;
+        // Old tiles would stand in sideways; plain paper is better.
+        tab.tiles.clear();
+        tab.thumbs.clear();
+        self.next_generation += 1;
+        let g = self.next_generation;
+        if let Some(tab) = self.tab_mut() {
+            tab.thumb_generation = g;
+        }
+        self.rebuild_thumbs();
+        self.update_view();
+    }
+
+    pub fn set_mode(&mut self, mode: PageMode) {
+        let Some(window) = self.window() else { return };
+        let Some(tab) = self.tab_mut() else { return };
+        tab.mode = mode;
+        tab.view = (0.0, 0.0);
+        self.settings.page_mode = mode;
+        self.save_settings();
+        window.set_page_mode(mode_index(mode));
+        self.update_view();
+    }
+
+    pub fn set_reading_mode(&mut self, mode: ReadingMode) {
+        let Some(window) = self.window() else { return };
+        self.settings.reading_mode = mode;
+        self.save_settings();
+        window.set_reading_mode(mode.index());
+        window.set_paper(paper_color(mode));
+        self.next_generation += 1;
+        let g = self.next_generation;
+        if let Some(tab) = self.tab_mut() {
+            tab.thumbs.clear();
+            tab.thumb_generation = g;
+        }
+        self.rebuild_thumbs();
+        self.update_view();
+    }
+
+    pub fn toggle_theme(&mut self) {
+        let Some(window) = self.window() else { return };
+        self.settings.dark_theme = !self.settings.dark_theme;
+        window.global::<Theme>().set_dark(self.settings.dark_theme);
+        self.save_settings();
+    }
+
+    pub fn toggle_vim(&mut self) {
+        let Some(window) = self.window() else { return };
+        self.settings.vim = !self.settings.vim;
+        window.set_vim_enabled(self.settings.vim);
+        self.save_settings();
+        self.status(if self.settings.vim {
+            "Vim keys on: j k scroll, J K turn pages, gg G, / search, : commands".into()
+        } else {
+            "Vim keys off".into()
         });
     }
 
-    fn rendered(&mut self, page: usize, generation: u64, buffer: SharedPixelBuffer<Rgb8Pixel>) {
-        if generation != self.generation {
+    pub fn vim(&self) -> bool {
+        self.settings.vim
+    }
+
+    pub fn set_sidebar(&mut self, visible: bool, tab: Option<i32>) {
+        let Some(window) = self.window() else { return };
+        window.set_sidebar_visible(visible);
+        if let Some(t) = tab {
+            window.set_sidebar_tab(t);
+        }
+        self.settings.sidebar = visible;
+        self.save_settings();
+        self.update_view();
+    }
+
+    pub fn toggle_sidebar(&mut self) {
+        let visible = self.window().is_some_and(|w| !w.get_sidebar_visible());
+        self.set_sidebar(visible, None);
+    }
+
+    pub fn toggle_fullscreen(&mut self) {
+        let Some(window) = self.window() else { return };
+        let full = !window.window().is_fullscreen();
+        window.window().set_fullscreen(full);
+    }
+
+    pub fn presenting(&self) -> bool {
+        self.presenting.is_some()
+    }
+
+    pub fn toggle_present(&mut self) {
+        let Some(window) = self.window() else { return };
+        if let Some((sidebar, mode, zoom)) = self.presenting.take() {
+            window.set_presenting(false);
+            window.set_chrome_visible(true);
+            window.window().set_fullscreen(false);
+            window.set_sidebar_visible(sidebar);
+            if let Some(tab) = self.tab_mut() {
+                tab.mode = mode;
+                tab.zoom = zoom;
+                tab.view = (0.0, 0.0);
+            }
+            window.set_page_mode(mode_index(mode));
+            self.update_view();
             return;
         }
-        self.inflight.remove(&page);
-        self.renders += 1;
-        self.cache.insert(
-            page,
-            Rendered {
-                image: Image::from_rgb8(buffer),
-                generation,
+        let Some(tab) = self.tab_mut() else { return };
+        let saved = (window.get_sidebar_visible(), tab.mode, tab.zoom);
+        tab.mode = PageMode::Single;
+        tab.zoom = Zoom::FitPage;
+        tab.view = (0.0, 0.0);
+        tab.pending = Some(Spot {
+            page: tab.current,
+            frac: 0.0,
+            x_frac: 0.5,
+        });
+        self.presenting = Some(saved);
+        window.set_find_visible(false);
+        window.set_presenting(true);
+        window.set_chrome_visible(false);
+        window.window().set_fullscreen(true);
+        self.update_view();
+        self.status("Presenting: arrows or clicks turn pages, Esc ends".into());
+    }
+
+    // ---------------------------------------------------------------- pointer
+
+    fn page_text(&mut self, page: usize) -> Option<Rc<PageText>> {
+        let tab = self.tab_mut()?;
+        if let Some(t) = tab.texts.get(&page) {
+            return Some(Rc::clone(t));
+        }
+        let doc = tab.info.id;
+        let text = self
+            .engine
+            .display_list(doc, page)
+            .and_then(|list| mp_engine::page_text(&list))
+            .unwrap_or_default();
+        let tab = self.tab_mut()?;
+        if tab.texts.len() >= TEXT_CACHE {
+            let current = tab.current;
+            tab.texts
+                .retain(|&p, _| p.abs_diff(current) < TEXT_CACHE / 4);
+        }
+        let text = Rc::new(text);
+        tab.texts.insert(page, Rc::clone(&text));
+        Some(text)
+    }
+
+    fn page_links(&mut self, page: usize) -> Rc<Vec<Link>> {
+        let Some(tab) = self.tab() else {
+            return Rc::default();
+        };
+        if let Some(l) = tab.links.get(&page) {
+            return Rc::clone(l);
+        }
+        let links = Rc::new(self.engine.links(tab.info.id, page).unwrap_or_default());
+        if let Some(tab) = self.tab_mut() {
+            if tab.links.len() > 64 {
+                tab.links.clear();
+            }
+            tab.links.insert(page, Rc::clone(&links));
+        }
+        links
+    }
+
+    fn hit(&self, x: f32, y: f32) -> Option<(usize, f32, f32)> {
+        self.tab()?.layout.hit(x, y)
+    }
+
+    fn link_at(&mut self, x: f32, y: f32) -> Option<LinkTarget> {
+        let (page, px, py) = self.hit(x, y)?;
+        self.page_links(page)
+            .iter()
+            .find(|l| l.rect.contains(px, py))
+            .map(|l| l.target.clone())
+    }
+
+    fn over_text(&mut self, x: f32, y: f32) -> bool {
+        let Some((page, px, py)) = self.hit(x, y) else {
+            return false;
+        };
+        self.page_text(page).is_some_and(|t| {
+            t.chars.iter().any(|c| {
+                px >= c.rect.x0 - 2.0
+                    && px <= c.rect.x1 + 2.0
+                    && py >= c.rect.y0 - 2.0
+                    && py <= c.rect.y1 + 2.0
+            })
+        })
+    }
+
+    pub fn hover(&mut self, x: f32, y: f32) {
+        if self.drag.is_some() || self.presenting() {
+            return;
+        }
+        let cursor = if self.link_at(x, y).is_some() {
+            2
+        } else if self.over_text(x, y) {
+            1
+        } else {
+            0
+        };
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            if let Some(w) = self.window() {
+                w.set_cursor(cursor);
+            }
+        }
+    }
+
+    pub fn pointer_down(&mut self, x: f32, y: f32, button: i32, shift: bool) {
+        if self.presenting() {
+            match button {
+                0 => self.next_page(),
+                1 => self.prev_page(),
+                _ => {}
+            }
+            return;
+        }
+        match button {
+            2 => {
+                self.drag = Some(Drag::Pan {
+                    start: self.to_screen(x, y),
+                    scroll: self.scroll(),
+                });
+            }
+            0 => {
+                let hit = self.hit(x, y);
+                let text = hit.and_then(|(page, px, py)| {
+                    let t = self.page_text(page)?;
+                    t.nearest(px, py).map(|i| (page, i))
+                });
+                match text {
+                    Some((page, index)) if !self.link_at(x, y).is_some() || shift => {
+                        let tab = self.tab_mut().expect("hit implies a tab");
+                        match tab.selection {
+                            Some(ref mut s) if shift && s.page == page => s.focus = index,
+                            _ => {
+                                tab.selection = Some(Selection {
+                                    page,
+                                    anchor: index,
+                                    focus: index,
+                                })
+                            }
+                        }
+                        self.drag = Some(Drag::Select {
+                            moved: shift,
+                            start: (x, y),
+                        });
+                    }
+                    _ => {
+                        if let Some(tab) = self.tab_mut() {
+                            tab.selection = None;
+                        }
+                        self.drag = Some(Drag::Click { start: (x, y) });
+                    }
+                }
+                self.refresh_marks();
+            }
+            _ => {}
+        }
+    }
+
+    fn to_screen(&self, x: f32, y: f32) -> (f32, f32) {
+        let (sx, sy) = self.scroll();
+        (x - sx, y - sy)
+    }
+
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
+        match self.drag {
+            Some(Drag::Pan { start, scroll }) => {
+                let (vx, vy) = self.to_screen(x, y);
+                self.set_scroll(scroll.0 - (vx - start.0), scroll.1 - (vy - start.1));
+                self.update_view();
+            }
+            Some(Drag::Select {
+                ref mut moved,
+                start,
+            }) => {
+                if (x - start.0).abs() + (y - start.1).abs() > 3.0 {
+                    *moved = true;
+                }
+                let Some(sel) = self.tab().and_then(|t| t.selection) else {
+                    return;
+                };
+                let Some(f) = self.tab().and_then(|t| t.layout.frame(sel.page)) else {
+                    return;
+                };
+                // Clamp to the selection's page so dragging past its edge keeps selecting.
+                let cx = x.clamp(f.x, f.x + f.width - 0.01);
+                let cy = y.clamp(f.y, f.bottom() - 0.01);
+                if let Some((page, px, py)) = self.hit(cx, cy)
+                    && page == sel.page
+                    && let Some(i) = self.page_text(page).and_then(|t| t.nearest(px, py))
+                    && let Some(tab) = self.tab_mut()
+                    && let Some(s) = tab.selection.as_mut()
+                {
+                    s.focus = i;
+                }
+                self.refresh_marks();
+                // Scroll when dragging past the view's edge.
+                let (_, vy) = self.to_screen(x, y);
+                let (_, vh) = self.view_size();
+                if vy < 0.0 || vy > vh {
+                    self.scroll_by(0.0, if vy < 0.0 { vy } else { vy - vh } / 2.0);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn pointer_up(&mut self, x: f32, y: f32) {
+        let drag = self.drag.take();
+        match drag {
+            Some(Drag::Select { moved: false, .. }) => {
+                if let Some(tab) = self.tab_mut() {
+                    tab.selection = None;
+                }
+                self.refresh_marks();
+                self.click(x, y);
+            }
+            Some(Drag::Click { start }) => {
+                if (x - start.0).abs() + (y - start.1).abs() <= 3.0 {
+                    self.click(x, y);
+                }
+            }
+            Some(Drag::Select { moved: true, .. }) => {
+                let n = self.selected_text().map_or(0, |t| t.chars().count());
+                if n > 0 {
+                    self.status(format!("{n} characters selected. Ctrl+C copies them."));
+                }
+            }
+            _ => {}
+        }
+        self.hover(x, y);
+    }
+
+    fn click(&mut self, x: f32, y: f32) {
+        match self.link_at(x, y) {
+            Some(LinkTarget::Page { page, top }) => self.go_to(page, top, true),
+            Some(LinkTarget::Uri(uri)) => self.confirm_uri(uri),
+            None => {}
+        }
+    }
+
+    pub fn pointer_double(&mut self, x: f32, y: f32) {
+        let Some((page, px, py)) = self.hit(x, y) else {
+            return;
+        };
+        let Some(text) = self.page_text(page) else {
+            return;
+        };
+        let Some(i) = text.nearest(px, py) else {
+            return;
+        };
+        let word = |c: char| c.is_alphanumeric() || c == '_' || c == '\'' || c == '-';
+        if !word(text.chars[i].ch) {
+            return;
+        }
+        let mut a = i;
+        while a > 0 && word(text.chars[a - 1].ch) && !text.chars[a - 1].line_end {
+            a -= 1;
+        }
+        let mut b = i;
+        while b + 1 < text.chars.len() && word(text.chars[b + 1].ch) && !text.chars[b].line_end {
+            b += 1;
+        }
+        if let Some(tab) = self.tab_mut() {
+            tab.selection = Some(Selection {
+                page,
+                anchor: a,
+                focus: b,
+            });
+        }
+        self.drag = None;
+        self.refresh_marks();
+    }
+
+    fn confirm_uri(&mut self, uri: String) {
+        let lower = uri.to_ascii_lowercase();
+        if !(lower.starts_with("http://")
+            || lower.starts_with("https://")
+            || lower.starts_with("mailto:"))
+        {
+            self.message(
+                "Link not opened",
+                format!("micropdf only opens web and mail links. This link points to:\n{uri}"),
+            );
+            return;
+        }
+        self.push_dialog(Dialog {
+            text: format!("This document wants to open:\n{uri}"),
+            ask: Ask::OpenUri(uri),
+            kind: "confirm",
+            title: "Open link?".into(),
+            ok: "Open",
+            cancel: "Cancel",
+        });
+    }
+
+    fn selected_text(&mut self) -> Option<String> {
+        let sel = self.tab()?.selection?;
+        let text = self.page_text(sel.page)?;
+        let range = sel.range();
+        (range.end <= text.chars.len()).then(|| text.text(range))
+    }
+
+    pub fn copy(&mut self) {
+        let Some(text) = self.selected_text().filter(|t| !t.is_empty()) else {
+            self.status("Nothing selected".into());
+            return;
+        };
+        let n = text.chars().count();
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+            Ok(()) => self.status(format!("Copied {n} characters")),
+            Err(e) => self.status(format!("Could not copy: {e}")),
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        let Some(page) = self.tab().map(|t| t.current) else {
+            return;
+        };
+        let Some(text) = self.page_text(page) else {
+            return;
+        };
+        if text.chars.is_empty() {
+            self.status("This page has no text".into());
+            return;
+        }
+        let last = text.chars.len() - 1;
+        if let Some(tab) = self.tab_mut() {
+            tab.selection = Some(Selection {
+                page,
+                anchor: 0,
+                focus: last,
+            });
+        }
+        self.refresh_marks();
+    }
+
+    pub fn clear_selection(&mut self) -> bool {
+        let had = self.tab_mut().and_then(|t| t.selection.take()).is_some();
+        if had {
+            self.refresh_marks();
+        }
+        had
+    }
+
+    fn refresh_marks(&mut self) {
+        let selection = self.tab().and_then(|t| t.selection);
+        let selection_rects = match selection {
+            Some(s) => self
+                .page_text(s.page)
+                .filter(|t| s.range().end <= t.chars.len())
+                .map(|t| (s.page, t.line_rects(s.range())))
+                .unwrap_or_default(),
+            None => (0, Vec::new()),
+        };
+        let Some(tab) = self.tab() else { return };
+        let band: HashSet<usize> = self.shown_pages.iter().map(|p| p.index as usize).collect();
+        let mut marks = Vec::new();
+        for (page, rect) in &tab.search.hits {
+            if !band.contains(page) {
+                continue;
+            }
+            if let Some(f) = tab.layout.to_view(*page, rect) {
+                let kind = if tab.search.current == Some((*page, *rect)) {
+                    1
+                } else {
+                    0
+                };
+                marks.push(mark_item(f, kind));
+            }
+        }
+        for rect in &selection_rects.1 {
+            if let Some(f) = tab.layout.to_view(selection_rects.0, rect) {
+                marks.push(mark_item(f, 2));
+            }
+        }
+        if marks != self.shown_marks {
+            self.models.marks.set_vec(marks.clone());
+            self.shown_marks = marks;
+        }
+    }
+
+    // ---------------------------------------------------------------- search
+
+    pub fn find_edited(&mut self, query: String) {
+        self.search_timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(220),
+            move || {
+                with(|app| app.start_search(query.clone()));
             },
         );
-        self.update();
     }
 
-    fn skipped(&mut self, page: usize, generation: u64) {
-        if generation != self.generation {
+    fn start_search(&mut self, query: String) {
+        let id = self.shared.search.fetch_add(1, Ordering::SeqCst) + 1;
+        let Some(tab) = self.tab_mut() else { return };
+        tab.search = Search {
+            query: query.clone(),
+            id,
+            ..Search::default()
+        };
+        let (doc, start, count) = (tab.info.id, tab.current, tab.page_count());
+        self.refresh_find_status();
+        self.refresh_marks();
+        if query.trim().is_empty() {
             return;
         }
-        self.inflight.remove(&page);
-        // It may have become wanted again between the check and now.
-        if self.shared.wanted.lock().unwrap().contains(&page) {
-            self.update();
+        let (engine, shared) = (Arc::clone(&self.engine), Arc::clone(&self.shared));
+        self.pool.spawn(move || {
+            for k in 0..count {
+                if shared.search.load(Ordering::SeqCst) != id {
+                    return;
+                }
+                let page = (start + k) % count;
+                let hits = engine
+                    .display_list(doc, page)
+                    .and_then(|list| mp_engine::search(&list, &query))
+                    .unwrap_or_default();
+                let last = k + 1 == count;
+                if !hits.is_empty() || last || k % 16 == 15 {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        with(|app| app.search_progress(doc, id, page, hits, k + 1, last));
+                    });
+                }
+            }
+        });
+    }
+
+    fn search_progress(
+        &mut self,
+        doc: DocId,
+        id: u64,
+        page: usize,
+        hits: Vec<Rect>,
+        searched: usize,
+        done: bool,
+    ) {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.info.id == doc) else {
+            return;
+        };
+        if tab.search.id != id {
+            return;
         }
+        tab.search.searched = searched;
+        tab.search.done = done;
+        let first = tab.search.hits.is_empty() && !hits.is_empty();
+        tab.search.hits.extend(hits.into_iter().map(|r| (page, r)));
+        tab.search.hits.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.y0.total_cmp(&b.1.y0))
+                .then(a.1.x0.total_cmp(&b.1.x0))
+        });
+        let active = self.tab().is_some_and(|t| t.info.id == doc);
+        if active && first {
+            self.find_step(true);
+        }
+        if active {
+            self.refresh_find_status();
+            self.refresh_marks();
+        }
+    }
+
+    fn refresh_find_status(&self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        let s = &tab.search;
+        let text = if s.query.trim().is_empty() {
+            String::new()
+        } else if s.hits.is_empty() {
+            if s.done {
+                "No matches".into()
+            } else {
+                "Searching…".into()
+            }
+        } else {
+            let total = format!("{}{}", s.hits.len(), if s.done { "" } else { "+" });
+            match s.current.and_then(|c| s.hits.iter().position(|h| *h == c)) {
+                Some(i) => format!("{} of {total}", i + 1),
+                None => format!("{total} matches"),
+            }
+        };
+        window.set_find_status(text.into());
+    }
+
+    /// Moves to the next (or previous) search hit after the current one, or after the current
+    /// page when no hit is current.
+    pub fn find_step(&mut self, forward: bool) {
+        let Some(tab) = self.tab_mut() else { return };
+        let hits = &tab.search.hits;
+        if hits.is_empty() {
+            return;
+        }
+        let index = match tab
+            .search
+            .current
+            .and_then(|c| hits.iter().position(|h| *h == c))
+        {
+            Some(i) if forward => (i + 1) % hits.len(),
+            Some(i) => (i + hits.len() - 1) % hits.len(),
+            None if forward => hits.iter().position(|h| h.0 >= tab.current).unwrap_or(0),
+            None => hits
+                .iter()
+                .rposition(|h| h.0 <= tab.current)
+                .unwrap_or(hits.len() - 1),
+        };
+        let (page, rect) = hits[index];
+        tab.search.current = Some((page, rect));
+        self.reveal(page, rect);
+        self.refresh_find_status();
+        self.refresh_marks();
+    }
+
+    /// Scrolls so `rect` on `page` is in view, if it is not already.
+    fn reveal(&mut self, page: usize, rect: Rect) {
+        if self
+            .tab()
+            .is_some_and(|t| t.mode == PageMode::Single && t.current != page)
+        {
+            self.go_to(page, None, false);
+        }
+        let Some(f) = self.tab().and_then(|t| t.layout.to_view(page, &rect)) else {
+            return;
+        };
+        let (x, y) = self.scroll();
+        let (vw, vh) = self.view_size();
+        let nx = if f.x < x || f.x + f.width > x + vw {
+            f.x - vw / 3.0
+        } else {
+            x
+        };
+        let ny = if f.y < y || f.bottom() > y + vh {
+            f.y - vh / 3.0
+        } else {
+            y
+        };
+        self.set_scroll(nx, ny);
+        self.update_view();
+    }
+
+    pub fn open_find(&mut self) {
+        let Some(window) = self.window() else { return };
+        if !self.has_document() {
+            return;
+        }
+        window.set_find_visible(true);
+        window.invoke_focus_find();
+    }
+
+    pub fn close_find(&mut self) {
+        let Some(window) = self.window() else { return };
+        window.set_find_visible(false);
+        window.invoke_focus_view();
+        self.shared.search.fetch_add(1, Ordering::SeqCst);
+        if let Some(tab) = self.tab_mut() {
+            tab.search = Search::default();
+        }
+        window.set_find_query("".into());
+        self.refresh_find_status();
+        self.refresh_marks();
+    }
+
+    // ---------------------------------------------------------------- sidebar
+
+    fn rebuild_thumbs(&mut self) {
+        let Some(tab) = self.tab_mut() else {
+            return;
+        };
+        let rotated = tab.rotation % 180 != 0;
+        let mut y = 0.0;
+        let mut tops = Vec::with_capacity(tab.sizes.len());
+        let items: Vec<ThumbItem> = tab
+            .sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &(w, h))| {
+                let (w, h) = if rotated { (h, w) } else { (w, h) };
+                let s = (THUMB_BOX.0 / w).min(THUMB_BOX.1 / h);
+                tops.push(y);
+                y += (h * s).round() + THUMB_EXTRA;
+                ThumbItem {
+                    index: i as i32,
+                    image: tab.thumbs.get(&i).cloned().unwrap_or_default(),
+                    label: (i + 1).to_string().into(),
+                    width: (w * s).round(),
+                    height: (h * s).round(),
+                    current: i == tab.current,
+                }
+            })
+            .collect();
+        tab.thumb_tops = tops;
+        self.models.thumbs.set_vec(items);
+    }
+
+    pub fn update_thumbs(&mut self) {
+        let Some(window) = self.window() else { return };
+        let Some(ti) = self.active else { return };
+        if !window.get_sidebar_visible() || window.get_sidebar_tab() != 0 {
+            self.shared.thumbs.lock().unwrap().clear();
+            return;
+        }
+        let dpr = window.window().scale_factor();
+        let top = -window.get_thumbs_y();
+        let height = window.get_thumbs_view_height().max(200.0);
+        let tab = &mut self.tabs[ti];
+        let first = tab
+            .thumb_tops
+            .partition_point(|&t| t < top - 300.0)
+            .saturating_sub(1);
+        let last = tab
+            .thumb_tops
+            .partition_point(|&t| t < top + height + 300.0);
+        let (doc, generation, rotation) = (tab.info.id, tab.thumb_generation, tab.rotation);
+
+        // Drop thumbnails far from the visible range.
+        let far: Vec<usize> = tab
+            .thumbs
+            .keys()
+            .copied()
+            .filter(|&p| p + 40 < first || p > last + 40)
+            .collect();
+        for p in far {
+            tab.thumbs.remove(&p);
+            if let Some(mut item) = self.models.thumbs.row_data(p) {
+                item.image = Image::default();
+                self.models.thumbs.set_row_data(p, item);
+            }
+        }
+
+        let wanted: Vec<usize> = (first..last)
+            .filter(|p| !tab.thumbs.contains_key(p))
+            .collect();
+        {
+            let mut set = self.shared.thumbs.lock().unwrap();
+            set.clear();
+            set.extend(wanted.iter().map(|&p| (doc, p, generation)));
+        }
+        for p in wanted {
+            if !tab.thumbs_inflight.insert(p) {
+                continue;
+            }
+            let Some(item) = self.models.thumbs.row_data(p) else {
+                continue;
+            };
+            let (w, h) = tab.sizes[p];
+            let (w, h) = if rotation % 180 != 0 { (h, w) } else { (w, h) };
+            let scale = item.width / w * dpr;
+            let (dw, dh) = ((w * scale).ceil() as i32, (h * scale).ceil() as i32);
+            let (engine, shared) = (Arc::clone(&self.engine), Arc::clone(&self.shared));
+            let mode = self.settings.reading_mode;
+            self.pool.spawn(move || {
+                let result = if shared
+                    .thumbs
+                    .lock()
+                    .unwrap()
+                    .contains(&(doc, p, generation))
+                {
+                    let tile = Tile {
+                        x: 0,
+                        y: 0,
+                        width: dw.max(1),
+                        height: dh.max(1),
+                    };
+                    match engine
+                        .display_list(doc, p)
+                        .and_then(|list| mp_engine::render_tile(&list, scale, rotation, tile))
+                    {
+                        Ok(mut image) => {
+                            mode.apply(&mut image.rgb);
+                            Rendered::Done(SharedPixelBuffer::clone_from_slice(
+                                &image.rgb,
+                                image.width,
+                                image.height,
+                            ))
+                        }
+                        Err(_) => Rendered::Failed,
+                    }
+                } else {
+                    Rendered::Skipped
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    with(|app| app.thumb_done(doc, p, generation, result));
+                });
+            });
+        }
+    }
+
+    fn thumb_done(&mut self, doc: DocId, page: usize, generation: u64, result: Rendered) {
+        let active = self.tab().is_some_and(|t| t.info.id == doc);
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.info.id == doc) else {
+            return;
+        };
+        tab.thumbs_inflight.remove(&page);
+        if generation != tab.thumb_generation {
+            return;
+        }
+        let image = match result {
+            Rendered::Skipped => return,
+            Rendered::Failed => Image::default(),
+            Rendered::Done(buffer) => Image::from_rgb8(buffer),
+        };
+        tab.thumbs.insert(page, image.clone());
+        if active && let Some(mut item) = self.models.thumbs.row_data(page) {
+            item.image = image;
+            self.models.thumbs.set_row_data(page, item);
+        }
+    }
+
+    /// Scrolls the thumbnail list so `page` is visible.
+    fn reveal_thumb(&self, page: usize) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        if !window.get_sidebar_visible() || window.get_sidebar_tab() != 0 {
+            return;
+        }
+        let Some(&t) = tab.thumb_tops.get(page) else {
+            return;
+        };
+        let next = tab.thumb_tops.get(page + 1).copied().unwrap_or(t + 200.0);
+        let top = -window.get_thumbs_y();
+        let height = window.get_thumbs_view_height();
+        if t < top || next > top + height {
+            window.set_thumbs_y(-(t - (height - (next - t)) / 2.0).max(0.0));
+        }
+    }
+
+    fn rebuild_outline(&mut self) {
+        let Some(tab) = self.tab_mut() else { return };
+        let mut rows = Vec::new();
+        let mut hide_below: Option<usize> = None;
+        for (i, item) in tab.outline.iter().enumerate() {
+            if let Some(d) = hide_below {
+                if item.depth > d {
+                    continue;
+                }
+                hide_below = None;
+            }
+            rows.push(i);
+            let has_children = tab.outline.get(i + 1).is_some_and(|n| n.depth > item.depth);
+            if has_children && !tab.expanded.contains(&i) {
+                hide_below = Some(item.depth);
+            }
+        }
+        tab.outline_rows = rows;
+        tab.outline_current = None;
+        self.refresh_outline_current();
+        self.fill_outline();
+    }
+
+    fn fill_outline(&self) {
+        let Some(tab) = self.tab() else { return };
+        let items: Vec<OutlineRow> = tab
+            .outline_rows
+            .iter()
+            .map(|&i| {
+                let item = &tab.outline[i];
+                OutlineRow {
+                    title: item.title.clone().into(),
+                    depth: item.depth as i32,
+                    has_children: tab.outline.get(i + 1).is_some_and(|n| n.depth > item.depth),
+                    expanded: tab.expanded.contains(&i),
+                    current: tab.outline_current == Some(i),
+                }
+            })
+            .collect();
+        self.models.outline.set_vec(items);
+    }
+
+    fn refresh_outline_current(&mut self) {
+        let Some(tab) = self.active.and_then(|i| self.tabs.get_mut(i)) else {
+            return;
+        };
+        let current = tab.current;
+        let best = tab
+            .outline_rows
+            .iter()
+            .copied()
+            .filter(|&i| {
+                matches!(tab.outline[i].target, Some(LinkTarget::Page { page, .. }) if page <= current)
+            })
+            .max_by_key(|&i| match tab.outline[i].target {
+                Some(LinkTarget::Page { page, .. }) => (page, i),
+                _ => (0, i),
+            });
+        if best != tab.outline_current {
+            let old = tab.outline_current;
+            tab.outline_current = best;
+            for (row, i) in tab.outline_rows.iter().enumerate() {
+                if (Some(*i) == old || Some(*i) == best)
+                    && let Some(mut item) = self.models.outline.row_data(row)
+                {
+                    item.current = Some(*i) == best;
+                    self.models.outline.set_row_data(row, item);
+                }
+            }
+        }
+    }
+
+    pub fn outline_clicked(&mut self, row: usize) {
+        let Some(target) = self.tab().and_then(|t| {
+            t.outline_rows
+                .get(row)
+                .map(|&i| t.outline[i].target.clone())
+        }) else {
+            return;
+        };
+        match target {
+            Some(LinkTarget::Page { page, top }) => self.go_to(page, top, true),
+            Some(LinkTarget::Uri(uri)) => self.confirm_uri(uri),
+            None => self.outline_toggle(row),
+        }
+    }
+
+    pub fn outline_toggle(&mut self, row: usize) {
+        let Some(tab) = self.tab_mut() else { return };
+        let Some(&i) = tab.outline_rows.get(row) else {
+            return;
+        };
+        if !tab.expanded.remove(&i) {
+            tab.expanded.insert(i);
+        }
+        self.rebuild_outline();
+    }
+
+    fn rebuild_info(&self) {
+        let Some(tab) = self.tab() else { return };
+        let mut rows = vec![
+            ("File".to_string(), tab.name()),
+            (
+                "Folder".into(),
+                tab.path
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            ),
+        ];
+        if let Ok(meta) = std::fs::metadata(&tab.path) {
+            rows.push(("Size".into(), format_size(meta.len())));
+        }
+        rows.push(("Pages".into(), tab.page_count().to_string()));
+        let (w, h) = tab.sizes[0];
+        rows.push((
+            "First page".into(),
+            format!(
+                "{:.2} × {:.2} in ({:.0} × {:.0} mm)",
+                w / 72.0,
+                h / 72.0,
+                w / 72.0 * 25.4,
+                h / 72.0 * 25.4
+            ),
+        ));
+        rows.extend(
+            tab.metadata
+                .iter()
+                .filter(|(_, v)| !v.trim().is_empty())
+                .cloned(),
+        );
+        let items: Vec<InfoRow> = rows
+            .into_iter()
+            .map(|(label, value)| InfoRow {
+                label: label.into(),
+                value: value.into(),
+            })
+            .collect();
+        self.models.info.set_vec(items);
+    }
+
+    // ---------------------------------------------------------------- palette
+
+    pub fn open_palette(&mut self) {
+        let Some(window) = self.window() else { return };
+        window.set_palette_visible(true);
+        window.invoke_focus_palette();
+        self.palette_edited("");
+    }
+
+    pub fn close_palette(&mut self) {
+        let Some(window) = self.window() else { return };
+        window.set_palette_visible(false);
+        window.invoke_focus_view();
+    }
+
+    pub fn palette_edited(&mut self, query: &str) {
+        let query = query.trim();
+        let mut scored: Vec<(i32, PaletteItem, PaletteAction)> = Vec::new();
+        let count = self.page_count();
+        if let Ok(n) = query.parse::<usize>()
+            && n >= 1
+            && n <= count
+        {
+            scored.push((
+                i32::MAX,
+                PaletteItem {
+                    title: format!("Go to page {n}").into(),
+                    detail: "".into(),
+                    shortcut: "Ctrl+G".into(),
+                },
+                PaletteAction::Page(n - 1),
+            ));
+        }
+        for c in palette::COMMANDS {
+            if let Some(s) = palette::score(query, c.title) {
+                scored.push((
+                    s + 2,
+                    PaletteItem {
+                        title: c.title.into(),
+                        detail: "".into(),
+                        shortcut: c.shortcut.into(),
+                    },
+                    PaletteAction::Command(c.id),
+                ));
+            }
+        }
+        if !query.is_empty() {
+            for p in &self.settings.recent {
+                if let Some(s) = palette::score(query, &file_name(p)) {
+                    scored.push((
+                        s,
+                        PaletteItem {
+                            title: file_name(p).into(),
+                            detail: "Recent file".into(),
+                            shortcut: "".into(),
+                        },
+                        PaletteAction::Recent(p.clone()),
+                    ));
+                }
+            }
+            if let Some(tab) = self.tab() {
+                for (i, item) in tab.outline.iter().enumerate() {
+                    if let Some(s) = palette::score(query, &item.title) {
+                        let detail = match item.target {
+                            Some(LinkTarget::Page { page, .. }) => {
+                                format!("Outline · page {}", page + 1)
+                            }
+                            _ => "Outline".into(),
+                        };
+                        scored.push((
+                            s - 1,
+                            PaletteItem {
+                                title: item.title.clone().into(),
+                                detail: detail.into(),
+                                shortcut: "".into(),
+                            },
+                            PaletteAction::Outline(i),
+                        ));
+                    }
+                }
+            }
+        }
+        if !query.is_empty() {
+            scored.sort_by_key(|a| std::cmp::Reverse(a.0));
+        }
+        scored.truncate(60);
+        let (items, actions): (Vec<_>, Vec<_>) = scored.into_iter().map(|(_, i, a)| (i, a)).unzip();
+        self.models.palette.set_vec(items);
+        self.palette_actions = actions;
+        if let Some(w) = self.window() {
+            w.set_palette_selected(0);
+        }
+    }
+
+    /// Returns the command to run, if the chosen entry is one; commands run outside this
+    /// borrow because some open modal dialogs.
+    pub fn palette_accept(&mut self, index: usize) -> Option<&'static str> {
+        let action = self.palette_actions.get(index)?;
+        let mut command = None;
+        let mut page = None;
+        let mut recent = None;
+        let mut outline = None;
+        match action {
+            PaletteAction::Command(id) => command = Some(*id),
+            PaletteAction::Page(p) => page = Some(*p),
+            PaletteAction::Recent(p) => recent = Some(p.clone()),
+            PaletteAction::Outline(i) => outline = Some(*i),
+        }
+        self.close_palette();
+        if let Some(p) = page {
+            self.go_to(p, None, true);
+        }
+        if let Some(p) = recent {
+            self.open(p);
+        }
+        if let Some(i) = outline
+            && let Some(target) = self.tab().and_then(|t| t.outline.get(i)?.target.clone())
+        {
+            match target {
+                LinkTarget::Page { page, top } => self.go_to(page, top, true),
+                LinkTarget::Uri(uri) => self.confirm_uri(uri),
+            }
+        }
+        command
+    }
+
+    pub fn palette_visible(&self) -> bool {
+        self.window().is_some_and(|w| w.get_palette_visible())
+    }
+
+    pub fn focus_page_field(&self) {
+        if let Some(w) = self.window()
+            && self.has_document()
+        {
+            w.invoke_focus_page_field();
+        }
+    }
+
+    pub fn next_tab(&mut self, forward: bool) {
+        let n = self.tabs.len();
+        if n < 2 {
+            return;
+        }
+        let a = self.active.unwrap_or(0);
+        self.select(if forward {
+            (a + 1) % n
+        } else {
+            (a + n - 1) % n
+        });
+    }
+
+    pub fn close_active(&mut self) {
+        if let Some(a) = self.active {
+            self.close_tab(a);
+        }
+    }
+
+    pub fn reload_active(&mut self) {
+        if let Some(a) = self.active {
+            self.reload(a);
+        }
+    }
+
+    pub fn show_properties(&mut self) {
+        if self.has_document() {
+            self.set_sidebar(true, Some(2));
+        }
+    }
+
+    pub fn active_path(&self) -> Option<PathBuf> {
+        self.tab().map(|t| t.path.clone())
+    }
+
+    pub fn active_doc(&self) -> Option<(DocId, Vec<(f32, f32)>)> {
+        self.tab().map(|t| (t.info.id, t.sizes.clone()))
+    }
+
+    pub fn engine(&self) -> Arc<Engine> {
+        Arc::clone(&self.engine)
+    }
+}
+
+fn page_item(index: usize, f: Frame) -> PageItem {
+    let (x0, y0) = (f.x.round(), f.y.round());
+    PageItem {
+        index: index as i32,
+        x: x0,
+        y: y0,
+        width: (f.x + f.width).round() - x0,
+        height: (f.y + f.height).round() - y0,
+    }
+}
+
+fn tile_item(f: Frame, t: &TileImage) -> TileItem {
+    let x0 = (f.x + t.frac[0] * f.width).round();
+    let y0 = (f.y + t.frac[1] * f.height).round();
+    let x1 = (f.x + t.frac[2] * f.width).round();
+    let y1 = (f.y + t.frac[3] * f.height).round();
+    TileItem {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+        image: t.image.clone(),
+    }
+}
+
+fn mark_item(f: Frame, kind: i32) -> MarkItem {
+    MarkItem {
+        x: f.x - 1.0,
+        y: f.y - 1.0,
+        width: f.width + 2.0,
+        height: f.height + 2.0,
+        kind,
+    }
+}
+
+fn mode_index(mode: PageMode) -> i32 {
+    match mode {
+        PageMode::Single => 0,
+        PageMode::Continuous => 1,
+        PageMode::TwoUp => 2,
+        PageMode::Book => 3,
+    }
+}
+
+fn paper_color(mode: ReadingMode) -> slint::Color {
+    let [r, g, b] = mode.paper();
+    slint::Color::from_rgb_u8(r, g, b)
+}
+
+pub fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Windows paths compare case-insensitively.
+fn same_path(a: &Path, b: &Path) -> bool {
+    a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
+}
+
+fn format_size(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.2} GB", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
+        b if b >= 1 << 10 => format!("{:.0} KB", b as f64 / 1024.0),
+        b => format!("{b} bytes"),
+    }
+}
+
+/// Opens a web or mail link with the user's default handler.
+fn shell_open(uri: &str) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (verb, file) = (wide("open"), wide(uri));
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
     }
 }

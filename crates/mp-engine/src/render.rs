@@ -2,9 +2,12 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use mupdf::{Colorspace, DisplayList, Matrix, Pixmap};
+use mupdf::{Colorspace, Context, Device, DisplayList, IRect, Matrix, Pixmap};
 
 use crate::Error;
+
+/// Share of MuPDF's fixed 256 MB resource store kept after each render (about 30 MB).
+const STORE_PERCENT: u32 = 12;
 
 /// An RGB render, rows packed with no padding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +15,16 @@ pub struct PageImage {
     pub width: u32,
     pub height: u32,
     pub rgb: Vec<u8>,
+}
+
+/// A rectangle of device pixels within a page rendered at some scale and rotation. The page's
+/// rendered bounds always start at (0, 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Tile {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -42,7 +55,7 @@ impl RenderPool {
         }
     }
 
-    /// Runs `job` on a worker. Jobs run in the order they were queued.
+    /// Runs `job` on a worker. Jobs start in the order they were queued.
     pub fn spawn(&self, job: impl FnOnce() + Send + 'static) {
         let _ = self
             .tx
@@ -70,14 +83,59 @@ impl Drop for RenderPool {
     }
 }
 
-/// Renders a display list at `scale` (1.0 = 72 dpi) on the calling thread.
+/// Renders a whole page at `scale` (1.0 = 72 dpi) on the calling thread.
 pub fn render(list: &DisplayList, scale: f32) -> Result<PageImage, Error> {
     let pixmap = list.to_pixmap(
         &Matrix::new_scale(scale, scale),
         &Colorspace::device_rgb(),
         false,
     )?;
+    shrink_store();
     Ok(page_image(&pixmap))
+}
+
+/// Size in device pixels of a page rendered at `scale` and `rotation` (degrees, multiple of 90).
+pub fn rendered_size(list: &DisplayList, scale: f32, rotation: i32) -> (i32, i32) {
+    let b = list.bounds().transform(&page_matrix(scale, rotation));
+    ((b.x1 - b.x0).ceil() as i32, (b.y1 - b.y0).ceil() as i32)
+}
+
+/// Renders one tile of a page at `scale` and `rotation` on the calling thread.
+pub fn render_tile(
+    list: &DisplayList,
+    scale: f32,
+    rotation: i32,
+    tile: Tile,
+) -> Result<PageImage, Error> {
+    let mut ctm = page_matrix(scale, rotation);
+    let bounds = list.bounds().transform(&ctm);
+    ctm.concat(Matrix::new_translate(-bounds.x0, -bounds.y0));
+
+    let rect = IRect {
+        x0: tile.x,
+        y0: tile.y,
+        x1: tile.x + tile.width,
+        y1: tile.y + tile.height,
+    };
+    let mut pixmap = Pixmap::new_with_rect(&Colorspace::device_rgb(), rect, false)?;
+    pixmap.clear_with(255)?;
+    {
+        // The device must be closed (dropped) before the pixels are read.
+        let device = Device::from_pixmap(&pixmap)?;
+        list.run(&device, &ctm, rect.into())?;
+    }
+    shrink_store();
+    Ok(page_image(&pixmap))
+}
+
+fn page_matrix(scale: f32, rotation: i32) -> Matrix {
+    let mut m = Matrix::new_scale(scale, scale);
+    m.concat(Matrix::new_rotate(rotation.rem_euclid(360) as f32));
+    m
+}
+
+fn shrink_store() {
+    Context::get().shrink_store(STORE_PERCENT);
 }
 
 fn work(rx: &Mutex<Receiver<Job>>) {

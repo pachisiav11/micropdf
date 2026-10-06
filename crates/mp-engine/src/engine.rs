@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
-use mupdf::{DisplayList, Document};
+use mupdf::link::LinkDestination;
+use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
-use crate::Error;
+use crate::{Error, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
 const LIST_CACHE_CAPACITY: usize = 48;
@@ -17,7 +18,9 @@ pub struct DocId(u32);
 #[derive(Debug, Clone, Copy)]
 pub struct DocInfo {
     pub id: DocId,
+    /// 0 until a password-protected document is unlocked with [`Engine::authenticate`].
     pub page_count: usize,
+    pub needs_password: bool,
 }
 
 /// Page size in PDF points (1/72 inch), after the page's own rotation.
@@ -34,6 +37,11 @@ enum Command {
         path: PathBuf,
         reply: Reply<DocInfo>,
     },
+    Authenticate {
+        doc: DocId,
+        password: String,
+        reply: Reply<Option<usize>>,
+    },
     PageSizes {
         doc: DocId,
         reply: Reply<Vec<PageSize>>,
@@ -42,6 +50,19 @@ enum Command {
         doc: DocId,
         page: usize,
         reply: Reply<Arc<DisplayList>>,
+    },
+    Links {
+        doc: DocId,
+        page: usize,
+        reply: Reply<Vec<Link>>,
+    },
+    Outline {
+        doc: DocId,
+        reply: Reply<Vec<OutlineItem>>,
+    },
+    Metadata {
+        doc: DocId,
+        reply: Reply<Vec<(String, String)>>,
     },
     Close {
         doc: DocId,
@@ -72,6 +93,17 @@ impl Engine {
         self.call(|reply| Command::Open { path, reply })
     }
 
+    /// Unlocks a password-protected document. Returns the page count, or None for a wrong
+    /// password.
+    pub fn authenticate(&self, doc: DocId, password: &str) -> Result<Option<usize>, Error> {
+        let password = password.to_owned();
+        self.call(|reply| Command::Authenticate {
+            doc,
+            password,
+            reply,
+        })
+    }
+
     pub fn page_sizes(&self, doc: DocId) -> Result<Vec<PageSize>, Error> {
         self.call(|reply| Command::PageSizes { doc, reply })
     }
@@ -79,6 +111,19 @@ impl Engine {
     /// Display list for one page, annotations included.
     pub fn display_list(&self, doc: DocId, page: usize) -> Result<Arc<DisplayList>, Error> {
         self.call(|reply| Command::DisplayList { doc, page, reply })
+    }
+
+    pub fn links(&self, doc: DocId, page: usize) -> Result<Vec<Link>, Error> {
+        self.call(|reply| Command::Links { doc, page, reply })
+    }
+
+    pub fn outline(&self, doc: DocId) -> Result<Vec<OutlineItem>, Error> {
+        self.call(|reply| Command::Outline { doc, reply })
+    }
+
+    /// Non-empty document information entries as (label, value).
+    pub fn metadata(&self, doc: DocId) -> Result<Vec<(String, String)>, Error> {
+        self.call(|reply| Command::Metadata { doc, reply })
     }
 
     /// Display lists already handed out stay valid after the document closes.
@@ -122,29 +167,51 @@ fn run(rx: mpsc::Receiver<Command>) {
                     // On Windows mupdf only accepts UTF-8 string paths.
                     let path = path.to_str().ok_or(mupdf::Error::InvalidUtf8)?;
                     let doc = Document::open(path)?;
-                    let page_count = doc.page_count()? as usize;
+                    let needs_password = doc.needs_password()?;
+                    let page_count = if needs_password {
+                        0
+                    } else {
+                        doc.page_count()? as usize
+                    };
                     next_id += 1;
                     let id = DocId(next_id);
                     docs.insert(id, doc);
-                    Ok(DocInfo { id, page_count })
+                    Ok(DocInfo {
+                        id,
+                        page_count,
+                        needs_password,
+                    })
                 })();
                 let _ = reply.send(result);
             }
-            Command::PageSizes { doc, reply } => {
-                let result = match docs.get(&doc) {
+            Command::Authenticate {
+                doc,
+                password,
+                reply,
+            } => {
+                let result = match docs.get_mut(&doc) {
                     None => Err(Error::UnknownDocument),
                     Some(d) => (|| {
-                        (0..d.page_count()?)
-                            .map(|i| {
-                                let b = d.load_page(i)?.bounds()?;
-                                Ok(PageSize {
-                                    width: b.x1 - b.x0,
-                                    height: b.y1 - b.y0,
-                                })
-                            })
-                            .collect()
+                        if !d.authenticate(&password)? {
+                            return Ok(None);
+                        }
+                        Ok(Some(d.page_count()? as usize))
                     })(),
                 };
+                let _ = reply.send(result);
+            }
+            Command::PageSizes { doc, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    (0..d.page_count()?)
+                        .map(|i| {
+                            let b = d.load_page(i)?.bounds()?;
+                            Ok(PageSize {
+                                width: b.x1 - b.x0,
+                                height: b.y1 - b.y0,
+                            })
+                        })
+                        .collect()
+                });
                 let _ = reply.send(result);
             }
             Command::DisplayList { doc, page, reply } => {
@@ -159,11 +226,96 @@ fn run(rx: mpsc::Receiver<Command>) {
                 };
                 let _ = reply.send(result);
             }
+            Command::Links { doc, page, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    Ok(d.load_page(page as i32)?
+                        .links()?
+                        .filter_map(|l| {
+                            Some(Link {
+                                rect: l.bounds.into(),
+                                target: link_target(l.dest, Some(&l.uri))?,
+                            })
+                        })
+                        .collect())
+                });
+                let _ = reply.send(result);
+            }
+            Command::Outline { doc, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    let mut items = Vec::new();
+                    flatten_outline(&d.outlines()?, 0, &mut items);
+                    Ok(items)
+                });
+                let _ = reply.send(result);
+            }
+            Command::Metadata { doc, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    let fields = [
+                        ("Title", MetadataName::Title),
+                        ("Author", MetadataName::Author),
+                        ("Subject", MetadataName::Subject),
+                        ("Keywords", MetadataName::Keywords),
+                        ("Creator", MetadataName::Creator),
+                        ("Producer", MetadataName::Producer),
+                        ("Created", MetadataName::CreationDate),
+                        ("Modified", MetadataName::ModDate),
+                        ("Format", MetadataName::Format),
+                        ("Encryption", MetadataName::Encryption),
+                    ];
+                    let mut out = Vec::new();
+                    for (label, name) in fields {
+                        let value = d.metadata(name)?;
+                        if !value.trim().is_empty() {
+                            out.push((label.to_owned(), value));
+                        }
+                    }
+                    Ok(out)
+                });
+                let _ = reply.send(result);
+            }
             Command::Close { doc } => {
                 docs.remove(&doc);
                 lists.remove_doc(doc);
             }
         }
+    }
+}
+
+fn with_doc<T>(
+    docs: &HashMap<DocId, Document>,
+    doc: DocId,
+    f: impl FnOnce(&Document) -> Result<T, Error>,
+) -> Result<T, Error> {
+    docs.get(&doc).map_or(Err(Error::UnknownDocument), f)
+}
+
+fn link_target(dest: Option<LinkDestination>, uri: Option<&str>) -> Option<LinkTarget> {
+    match (dest, uri) {
+        (Some(d), _) => Some(LinkTarget::Page {
+            page: d.loc.page_number as usize,
+            top: match d.kind {
+                DestinationKind::XYZ { top, .. }
+                | DestinationKind::FitH { top }
+                | DestinationKind::FitBH { top } => top,
+                DestinationKind::FitR { top, .. } => Some(top),
+                _ => None,
+            },
+        }),
+        (None, Some(uri)) if !uri.is_empty() && !uri.starts_with('#') => {
+            Some(LinkTarget::Uri(uri.to_owned()))
+        }
+        _ => None,
+    }
+}
+
+fn flatten_outline(items: &[Outline], depth: usize, out: &mut Vec<OutlineItem>) {
+    for item in items {
+        out.push(OutlineItem {
+            title: item.title.trim().to_owned(),
+            depth,
+            target: link_target(item.dest, item.uri.as_deref()),
+        });
+        flatten_outline(&item.down, depth + 1, out);
     }
 }
 

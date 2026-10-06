@@ -1,6 +1,11 @@
 - 2026-10-07 00:48: M0 — slim the MuPDF build: libmupdf.vcxproj still compiles tesseract/leptonica/zxing with those features off; fix LNK4098 msvcrt conflict warning in debug builds
 - 2026-10-07 01:53: M0 — Acrobat comparison run (bench/run.ps1 -Acrobat) — only after 03:00, user away
-- 2026-10-07 01:53: M1 — cap MuPDF resource store (fixed 256 MB in mupdf-sys wrapper) and render viewport tiles; re-bench scan-1000 against 120 MB
+- 2026-10-07 02:56: M1 — re-bench scan-1000 with tiles + store cap against 120 MB (after 03:00)
+- 2026-10-07 02:56: M1 — GUI smoke test of the new viewer: open, scroll, zoom, find, select/copy, links, tabs, palette, dialogs (after 03:00)
+- 2026-10-07 02:56: M1 — attachments panel, optional content (layers) panel
+- 2026-10-07 02:56: M1 — split view (two panes, one or two documents)
+- 2026-10-07 02:56: M1 — file association (.pdf open-with registration), touchpad pinch zoom
+- 2026-10-07 02:56: M1 — Slint testing-backend UI tests for golden paths
 - 2026-10-07 01:53: M1 — CJK fixture + system-font fallback check
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)

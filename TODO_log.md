@@ -10,3 +10,4 @@
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:50 | M0 — renderer spike: software vs FemtoVG measured, software chosen (Skia excluded: libjpeg clash)
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:50 | M0 — bench/ memory harness (run.ps1, measure.ps1, --bench-scroll)
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 01:53 | M0 — fixtures: hello, outline-links, form, encrypted, truncated, not-a-pdf; generated text-300 and scan-1000
+- Added: 2026-10-07 01:53 | Completed: 2026-10-07 02:56 | M1 — cap MuPDF resource store (shrink_store after each render) and render 512 px viewport tiles

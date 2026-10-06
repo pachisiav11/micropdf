@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, Timer, TimerMode};
+use slint::{Timer, TimerMode};
 
 use crate::{MainWindow, viewer};
 
@@ -13,8 +13,7 @@ use crate::{MainWindow, viewer};
 const STEP: f32 = 0.5;
 const SETTLE: Duration = Duration::from_secs(3);
 
-pub fn start(window: &MainWindow, out: PathBuf) {
-    let weak = window.as_weak();
+pub fn start(_window: &MainWindow, out: PathBuf) {
     let timer = Timer::default();
     let started = Instant::now();
     let mut ticks = 0u64;
@@ -24,11 +23,15 @@ pub fn start(window: &MainWindow, out: PathBuf) {
     // The timer must outlive this function; it is stopped by the event loop quitting.
     let timer = Box::leak(Box::new(timer));
     timer.start(TimerMode::Repeated, Duration::from_millis(1), move || {
-        let Some(window) = weak.upgrade() else { return };
         if done {
             return;
         }
-        if viewer::with(|_| ()).is_none() {
+        let Some((has_document, height, (_, view_height))) =
+            viewer::with(|app| (app.has_document(), app.document_height(), app.view_size()))
+        else {
+            return;
+        };
+        if !has_document {
             // No document: measure the empty window.
             done = true;
             let out = out.clone();
@@ -38,22 +41,22 @@ pub fn start(window: &MainWindow, out: PathBuf) {
             });
             return;
         }
-        let bottom = window.get_document_height() - window.get_view_height();
+        let bottom = height - view_height;
         if bottom <= 0.0 {
             return; // layout not ready yet
         }
         ticks += 1;
-        y = (y + STEP * window.get_view_height()).min(bottom);
-        window.set_viewport_y(-y);
-        viewer::with(viewer::Viewer::update);
+        y = (y + STEP * view_height).min(bottom);
+        viewer::with(|app| app.scroll_to_y(y));
         if y < bottom {
             return;
         }
 
         let scroll = started.elapsed();
-        let (pages, renders) = viewer::with(|v| (v.page_count(), v.renders())).unwrap_or_default();
+        let (pages, renders) =
+            viewer::with(|app| (app.page_count(), app.renders())).unwrap_or_default();
         let report = format!(
-            "{{\"backend\": \"{}\", \"pages\": {pages}, \"ticks\": {ticks}, \"scroll_seconds\": {:.3}, \"ticks_per_second\": {:.1}, \"renders\": {renders}}}\n",
+            "{{\"backend\": \"{}\", \"pages\": {pages}, \"ticks\": {ticks}, \"scroll_seconds\": {:.3}, \"ticks_per_second\": {:.1}, \"tiles_rendered\": {renders}}}\n",
             std::env::var("SLINT_BACKEND").unwrap_or_default(),
             scroll.as_secs_f64(),
             ticks as f64 / scroll.as_secs_f64(),
