@@ -8,8 +8,7 @@ use std::io;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW,
-    RegSetValueExW,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
 };
 use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 
@@ -41,23 +40,47 @@ fn entries(exe: &str) -> Vec<Entry> {
     let classes = |sub: &str| format!(r"Software\Classes\{sub}");
     vec![
         text(&classes(PROG_ID), "", "PDF Document"),
-        text(&classes(&format!(r"{PROG_ID}\DefaultIcon")), "", &format!("\"{exe}\",0")),
-        text(&classes(&format!(r"{PROG_ID}\shell\open\command")), "", &command),
+        text(
+            &classes(&format!(r"{PROG_ID}\DefaultIcon")),
+            "",
+            &format!("\"{exe}\",0"),
+        ),
+        text(
+            &classes(&format!(r"{PROG_ID}\shell\open\command")),
+            "",
+            &command,
+        ),
         Entry {
             key: classes(r".pdf\OpenWithProgids"),
             name: PROG_ID,
             value: Value::Empty,
         },
-        text(&classes(r"Applications\micropdf.exe"), "FriendlyAppName", "micropdf"),
-        text(&classes(r"Applications\micropdf.exe\SupportedTypes"), ".pdf", ""),
-        text(&classes(r"Applications\micropdf.exe\shell\open\command"), "", &command),
+        text(
+            &classes(r"Applications\micropdf.exe"),
+            "FriendlyAppName",
+            "micropdf",
+        ),
+        text(
+            &classes(r"Applications\micropdf.exe\SupportedTypes"),
+            ".pdf",
+            "",
+        ),
+        text(
+            &classes(r"Applications\micropdf.exe\shell\open\command"),
+            "",
+            &command,
+        ),
         text(CAPABILITIES, "ApplicationName", "micropdf"),
         text(
             CAPABILITIES,
             "ApplicationDescription",
             "Lightweight PDF reader and editor",
         ),
-        text(&format!(r"{CAPABILITIES}\FileAssociations"), ".pdf", PROG_ID),
+        text(
+            &format!(r"{CAPABILITIES}\FileAssociations"),
+            ".pdf",
+            PROG_ID,
+        ),
         text(r"Software\RegisteredApplications", "micropdf", CAPABILITIES),
     ]
 }
