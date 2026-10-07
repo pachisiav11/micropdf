@@ -160,7 +160,58 @@ fn point((x, y): (f32, f32)) -> Point {
     Point::new(x, y)
 }
 
+/// Runs `f` as one undoable step named `name`; a failed step is rolled back.
+fn operation<T>(
+    doc: &Document,
+    name: &str,
+    f: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+    pdf.begin_operation(name)?;
+    match f() {
+        Ok(value) => {
+            pdf.end_operation()?;
+            Ok(value)
+        }
+        Err(e) => {
+            let _ = pdf.abandon_operation();
+            Err(e)
+        }
+    }
+}
+
+fn label(new: &NewAnnot) -> &'static str {
+    match new {
+        NewAnnot::TextMarkup {
+            kind: AnnotKind::Highlight,
+            ..
+        } => "Highlight",
+        NewAnnot::TextMarkup {
+            kind: AnnotKind::Underline,
+            ..
+        } => "Underline",
+        NewAnnot::TextMarkup {
+            kind: AnnotKind::StrikeOut,
+            ..
+        } => "Strike out",
+        NewAnnot::TextMarkup { .. } => "Squiggly underline",
+        NewAnnot::Note { .. } => "Add note",
+        NewAnnot::FreeText { .. } => "Add text box",
+        NewAnnot::Ink { .. } => "Draw",
+        NewAnnot::Shape {
+            kind: AnnotKind::Circle,
+            ..
+        } => "Add ellipse",
+        NewAnnot::Shape { .. } => "Add rectangle",
+        NewAnnot::Line { .. } => "Add line",
+    }
+}
+
 pub fn add(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result<Annot, Error> {
+    operation(doc, label(new), || add_now(doc, page, new, style))
+}
+
+fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result<Annot, Error> {
     let mut page = pdf_page(doc, page)?;
     let subtype = match new {
         NewAnnot::TextMarkup { kind, .. } => markup_type(*kind)?,
@@ -221,14 +272,63 @@ pub fn add(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
 }
 
 pub fn delete(doc: &Document, page: usize, id: i32) -> Result<(), Error> {
-    let mut page = pdf_page(doc, page)?;
-    let annot = page
-        .annotations()
-        .find(|a| a.xref().ok() == Some(id))
-        .ok_or(Error::NotFound)?;
-    page.delete_annotation(annot)?;
-    page.update()?;
-    Ok(())
+    operation(doc, "Delete comment", || {
+        let mut page = pdf_page(doc, page)?;
+        let annot = page
+            .annotations()
+            .find(|a| a.xref().ok() == Some(id))
+            .ok_or(Error::NotFound)?;
+        page.delete_annotation(annot)?;
+        page.update()?;
+        Ok(())
+    })
+}
+
+/// The names of the steps Undo and Redo would take back or redo, if any.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct History {
+    pub undo: Option<String>,
+    pub redo: Option<String>,
+}
+
+/// Turns on undo recording. Every later edit must go through [`operation`].
+pub(crate) fn enable_journal(doc: &Document) -> Result<(), Error> {
+    match PdfDocument::try_from(doc.clone()) {
+        Ok(pdf) => Ok(pdf.enable_journal()?),
+        Err(_) => Ok(()),
+    }
+}
+
+pub fn history(doc: &Document) -> Result<History, Error> {
+    let Ok(pdf) = PdfDocument::try_from(doc.clone()) else {
+        return Ok(History::default());
+    };
+    let (current, steps) = pdf.undo_redo_state()?;
+    let name = |step: i32| -> Result<Option<String>, Error> {
+        Ok(Some(pdf.undo_redo_step(step)?.unwrap_or_default()))
+    };
+    Ok(History {
+        undo: if current > 0 {
+            name(current - 1)?
+        } else {
+            None
+        },
+        redo: if current < steps {
+            name(current)?
+        } else {
+            None
+        },
+    })
+}
+
+pub fn undo(doc: &Document) -> Result<(), Error> {
+    let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+    Ok(pdf.undo()?)
+}
+
+pub fn redo(doc: &Document) -> Result<(), Error> {
+    let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+    Ok(pdf.redo()?)
 }
 
 /// Writes the document to `target`. Incremental saves append the changes to a copy of

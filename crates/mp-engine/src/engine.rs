@@ -8,7 +8,7 @@ use mupdf::link::LinkDestination;
 use mupdf::pdf::{PdfDocument, PdfObject};
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
-use crate::annots::{self, Annot, NewAnnot, Style};
+use crate::annots::{self, Annot, History, NewAnnot, Style};
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
@@ -107,6 +107,15 @@ enum Command {
         target: PathBuf,
         incremental: bool,
         reply: Reply<()>,
+    },
+    History {
+        doc: DocId,
+        reply: Reply<History>,
+    },
+    Undo {
+        doc: DocId,
+        redo: bool,
+        reply: Reply<History>,
     },
     Close {
         doc: DocId,
@@ -234,6 +243,28 @@ impl Engine {
         })
     }
 
+    /// What Undo and Redo would do now.
+    pub fn history(&self, doc: DocId) -> Result<History, Error> {
+        self.call(|reply| Command::History { doc, reply })
+    }
+
+    /// Takes back the last edit. Any page may change; ask for new display lists.
+    pub fn undo(&self, doc: DocId) -> Result<History, Error> {
+        self.call(|reply| Command::Undo {
+            doc,
+            redo: false,
+            reply,
+        })
+    }
+
+    pub fn redo(&self, doc: DocId) -> Result<History, Error> {
+        self.call(|reply| Command::Undo {
+            doc,
+            redo: true,
+            reply,
+        })
+    }
+
     /// Display lists already handed out stay valid after the document closes.
     pub fn close(&self, doc: DocId) {
         let _ = self.sender().send(Command::Close { doc });
@@ -276,6 +307,7 @@ fn run(rx: mpsc::Receiver<Command>) {
                     // On Windows mupdf only accepts UTF-8 string paths.
                     let path = path.to_str().ok_or(mupdf::Error::InvalidUtf8)?;
                     let doc = Document::open(path)?;
+                    annots::enable_journal(&doc)?;
                     let needs_password = doc.needs_password()?;
                     let page_count = if needs_password {
                         0
@@ -456,6 +488,21 @@ fn run(rx: mpsc::Receiver<Command>) {
                     let original = paths.get(&doc).ok_or(Error::UnknownDocument)?;
                     annots::save(d, original, &target, incremental)
                 });
+                let _ = reply.send(result);
+            }
+            Command::History { doc, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, annots::history));
+            }
+            Command::Undo { doc, redo, reply } => {
+                let result = with_doc(&docs, doc, |d| {
+                    if redo {
+                        annots::redo(d)?;
+                    } else {
+                        annots::undo(d)?;
+                    }
+                    annots::history(d)
+                });
+                lists.remove_doc(doc);
                 let _ = reply.send(result);
             }
             Command::Close { doc } => {

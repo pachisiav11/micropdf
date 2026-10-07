@@ -2664,6 +2664,7 @@ name = "mupdf"
 version = "0.8.0"
 dependencies = [
  "bitflags 2.13.2",
+ "cc",
  "mupdf-sys",
  "once_cell",
  "percent-encoding",

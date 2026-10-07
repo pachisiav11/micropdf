@@ -19,3 +19,4 @@
 - Added: 2026-10-07 01:53 | Completed: 2026-10-07 09:12 | M1 — CJK fixture + system-font check; own DirectWrite font loader replaces font-kit (first page of a new file ~1.3 s faster in debug)
 - Added: 2026-10-07 02:56 | Completed: 2026-10-07 10:24 | M1 — file association: per-user registration (Open with + Default apps) from the palette
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 10:30 | M2 — engine annotations: list/add/delete (markup, note, free text, ink, shapes, line) and full or incremental save
+- Added: 2026-10-07 10:30 | Completed: 2026-10-07 10:36 | M2 — undo/redo: MuPDF journal via a C shim; each edit is one named step

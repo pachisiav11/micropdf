@@ -1786,6 +1786,45 @@ impl PdfDocument {
         unsafe { ffi_try!(mupdf_pdf_abandon_operation(context(), self.inner)) }
     }
 
+    /// Starts recording operations so they can be undone. Edits made afterwards must run
+    /// inside `begin_operation` / `end_operation`.
+    pub fn enable_journal(&self) -> Result<(), Error> {
+        // SAFETY: `inner` is a valid document; the shim catches MuPDF errors.
+        journal_call(|err| unsafe { journal::mp_pdf_enable_journal(context(), self.inner, err) })
+    }
+
+    /// (current step, number of steps): 0 is the document as opened.
+    pub fn undo_redo_state(&self) -> Result<(i32, i32), Error> {
+        let (mut current, mut steps) = (0, 0);
+        // SAFETY: as above; both out-pointers are valid.
+        journal_call(|err| unsafe {
+            journal::mp_pdf_undoredo_state(context(), self.inner, &mut current, &mut steps, err)
+        })?;
+        Ok((current, steps))
+    }
+
+    /// The name given to `begin_operation` for undo step `step` (1-based).
+    pub fn undo_redo_step(&self, step: i32) -> Result<Option<String>, Error> {
+        let mut name = std::ptr::null();
+        // SAFETY: as above; `name` receives a string owned by the journal.
+        journal_call(|err| unsafe {
+            journal::mp_pdf_undoredo_step(context(), self.inner, step, &mut name, err)
+        })?;
+        // SAFETY: a non-null name is NUL-terminated and lives as long as the journal entry.
+        Ok((!name.is_null())
+            .then(|| unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned()))
+    }
+
+    pub fn undo(&self) -> Result<(), Error> {
+        // SAFETY: as above.
+        journal_call(|err| unsafe { journal::mp_pdf_undo(context(), self.inner, err) })
+    }
+
+    pub fn redo(&self) -> Result<(), Error> {
+        // SAFETY: as above.
+        journal_call(|err| unsafe { journal::mp_pdf_redo(context(), self.inner, err) })
+    }
+
     pub fn set_outlines(&mut self, toc: &[Outline]) -> Result<(), Error> {
         self.delete_outlines()?;
 
@@ -2356,4 +2395,57 @@ mod test {
         assert_eq!(sentinel.to_string(), "(foo)");
         assert_eq!(obj.read_stream().unwrap(), b"dict payload");
     }
+}
+
+/// The wrappers in `shim/journal.c`.
+mod journal {
+    use std::os::raw::{c_char, c_int};
+
+    use mupdf_sys::{fz_context, pdf_document};
+
+    unsafe extern "C" {
+        pub fn mp_pdf_enable_journal(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_undoredo_state(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            current: *mut c_int,
+            steps: *mut c_int,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_undoredo_step(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            step: c_int,
+            name: *mut *const c_char,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_undo(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_redo(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            err: *mut *const c_char,
+        ) -> c_int;
+    }
+}
+
+fn journal_call(f: impl FnOnce(*mut *const std::os::raw::c_char) -> i32) -> Result<(), Error> {
+    let mut err = std::ptr::null();
+    if f(&mut err) == 0 {
+        return Ok(());
+    }
+    let message = if err.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the shim points `err` at the context's NUL-terminated error message.
+        unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy().into_owned()
+    };
+    Err(Error::MuPdf(crate::error::MuPdfError { code: 0, message }))
 }

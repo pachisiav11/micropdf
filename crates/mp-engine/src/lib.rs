@@ -13,7 +13,7 @@ mod render;
 mod text;
 mod types;
 
-pub use annots::{Annot, AnnotKind, NewAnnot, Style};
+pub use annots::{Annot, AnnotKind, History, NewAnnot, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::has_cjk;

@@ -193,3 +193,47 @@ fn adds_every_kind_the_toolbar_offers() {
     );
     assert!(bad.is_err());
 }
+
+#[test]
+fn undo_and_redo_step_through_edits() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.history(doc).unwrap(), mp_engine::History::default());
+
+    let highlight = NewAnnot::TextMarkup {
+        kind: AnnotKind::Highlight,
+        rects: vec![TEXT],
+    };
+    let first = engine.add_annotation(doc, 0, highlight, style()).unwrap();
+    let note = NewAnnot::Note {
+        x: 250.0,
+        y: 20.0,
+        text: "Second".into(),
+    };
+    engine.add_annotation(doc, 0, note, style()).unwrap();
+    let history = engine.history(doc).unwrap();
+    assert_eq!(history.undo.as_deref(), Some("Add note"));
+    assert_eq!(history.redo, None);
+
+    let history = engine.undo(doc).unwrap();
+    assert_eq!(engine.annotations(doc, 0).unwrap(), vec![first.clone()]);
+    assert_eq!(history.undo.as_deref(), Some("Highlight"));
+    assert_eq!(history.redo.as_deref(), Some("Add note"));
+
+    engine.undo(doc).unwrap();
+    assert!(engine.annotations(doc, 0).unwrap().is_empty());
+    assert_eq!(yellow_pixels(&engine, doc), 0);
+
+    let history = engine.redo(doc).unwrap();
+    assert_eq!(engine.annotations(doc, 0).unwrap(), vec![first.clone()]);
+    assert!(yellow_pixels(&engine, doc) > 1000);
+    assert_eq!(history.redo.as_deref(), Some("Add note"));
+
+    engine.delete_annotation(doc, 0, first.id).unwrap();
+    let history = engine.history(doc).unwrap();
+    assert_eq!(history.undo.as_deref(), Some("Delete comment"));
+    // A new edit drops the steps that could have been redone.
+    assert_eq!(history.redo, None);
+    engine.undo(doc).unwrap();
+    assert_eq!(engine.annotations(doc, 0).unwrap().len(), 1);
+}

@@ -15,5 +15,8 @@ Changes:
   `pdf_layer_config_ui_info` and `pdf_toggle_layer_config_ui` for the layers panel.
 - `Font` is `Clone` (`fz_keep_font`), `Send` and `Sync`, so micropdf's system-font loader can
   hand one loaded font to every document that asks for it.
+- `PdfDocument::enable_journal`, `undo`, `redo`, `undo_redo_state` and `undo_redo_step` — the
+  undo journal. mupdf-sys has no `fz_try` wrappers for these, so `shim/journal.c` (compiled by
+  `build.rs` with `cc`) provides them, declaring the few MuPDF 1.27 functions it calls.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
