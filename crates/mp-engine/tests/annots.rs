@@ -98,6 +98,13 @@ fn highlight_round_trips_through_full_and_incremental_saves() {
         engine.close(copy);
     }
 
+    engine.set_color(doc, 0, added.id, [0.2, 0.5, 1.0]).unwrap();
+    assert_eq!(
+        engine.annotations(doc, 0).unwrap()[0].color,
+        Some([0.2, 0.5, 1.0])
+    );
+    assert_eq!(yellow_pixels(&engine, doc), 0);
+
     engine.delete_annotation(doc, 0, added.id).unwrap();
     assert!(engine.annotations(doc, 0).unwrap().is_empty());
     assert_eq!(yellow_pixels(&engine, doc), 0);

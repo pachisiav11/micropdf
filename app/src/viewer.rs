@@ -3363,6 +3363,21 @@ impl App {
         ));
     }
 
+    /// Gives the picked comment a new colour.
+    pub fn recolor_picked(&mut self, color: [f32; 3]) {
+        let Some((doc, page, id)) = self
+            .tab()
+            .and_then(|t| t.picked.map(|(page, id)| (t.info.id, page, id)))
+        else {
+            self.status("Select a comment first".into());
+            return;
+        };
+        match self.engine.set_color(doc, page, id, color) {
+            Ok(()) => self.edited(Some(page)),
+            Err(e) => self.status(format!("Could not change the colour: {e}")),
+        }
+    }
+
     /// Deletes the picked comment. Returns false if none is picked.
     pub fn delete_picked(&mut self) -> bool {
         let Some(index) = self.tab().and_then(|t| {

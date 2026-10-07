@@ -582,6 +582,18 @@ fn steps() -> Vec<Step> {
             |w| marks(w, 3) == 1 && w.get_status_left().starts_with("Note selected"),
         ),
         step(
+            "a selected comment takes a new colour",
+            command("color-blue"),
+            |w| {
+                let color = viewer::with(|app| {
+                    let (doc, _) = app.active_doc()?;
+                    app.engine().annotations(doc, 0).ok()?.first()?.color
+                })
+                .flatten();
+                color == Some([0.1, 0.45, 0.9]) && w.get_undo_name() == "Change colour"
+            },
+        ),
+        step(
             "Delete removes the selected comment",
             key(char::from(Key::Delete)),
             |w| w.get_comments().row_count() == 0 && marks(w, 3) == 0,

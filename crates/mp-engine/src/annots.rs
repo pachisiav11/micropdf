@@ -298,6 +298,20 @@ pub fn set_contents(doc: &Document, page: usize, id: i32, text: &str) -> Result<
     })
 }
 
+pub fn set_color(doc: &Document, page: usize, id: i32, color: [f32; 3]) -> Result<(), Error> {
+    operation(doc, "Change colour", || {
+        let mut page = pdf_page(doc, page)?;
+        let mut annot = page
+            .annotations()
+            .find(|a| a.xref().ok() == Some(id))
+            .ok_or(Error::NotFound)?;
+        let [red, green, blue] = color;
+        annot.set_color(AnnotationColor::Rgb { red, green, blue })?;
+        page.update()?;
+        Ok(())
+    })
+}
+
 /// Draws comments, form fields or both into the page content, where they can no longer change.
 pub fn flatten(doc: &Document, comments: bool, fields: bool) -> Result<(), Error> {
     let name = match (comments, fields) {

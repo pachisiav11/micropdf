@@ -121,6 +121,13 @@ enum Command {
         fields: bool,
         reply: Reply<()>,
     },
+    SetColor {
+        doc: DocId,
+        page: usize,
+        id: i32,
+        color: [f32; 3],
+        reply: Reply<()>,
+    },
     EditField {
         doc: DocId,
         page: usize,
@@ -285,6 +292,22 @@ impl Engine {
             page,
             id,
             text,
+            reply,
+        })
+    }
+
+    pub fn set_color(
+        &self,
+        doc: DocId,
+        page: usize,
+        id: i32,
+        color: [f32; 3],
+    ) -> Result<(), Error> {
+        self.call(|reply| Command::SetColor {
+            doc,
+            page,
+            id,
+            color,
             reply,
         })
     }
@@ -566,6 +589,17 @@ fn run(rx: mpsc::Receiver<Command>) {
                 reply,
             } => {
                 let result = with_doc(&docs, doc, |d| annots::set_contents(d, page, id, &text));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::SetColor {
+                doc,
+                page,
+                id,
+                color,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::set_color(d, page, id, color));
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
             }
