@@ -276,6 +276,10 @@ export component MainWindow inherits Window {
     in property <string> undo-name;
     in property <string> redo-name;
     in property <bool> dirty;
+    // 0 select, 1 note, 2 text box, 3 rectangle, 4 ellipse, 5 line, 6 drawing
+    in property <int> tool;
+    // The shape being drawn, as SVG path commands in document space; empty when none.
+    in property <string> draft-path;
     in property <string> status-left;
     in property <string> status-right;
 
@@ -602,6 +606,15 @@ export component MainWindow inherits Window {
                     Rectangle {
                         horizontal-stretch: 1;
                     }
+                    tool-button := ToolButton {
+                        icon: "\u{E70F}";
+                        tip: "Comment tools";
+                        active: root.tool != 0;
+                        enabled: root.has-document;
+                        clicked => {
+                            tool-menu.show();
+                        }
+                    }
                     ToolButton {
                         icon: "\u{E7E6}";
                         tip: "Highlight selected text";
@@ -672,6 +685,21 @@ export component MainWindow inherits Window {
                         MenuEntry { text: "Book (cover alone)"; checked: root.page-mode == 3; clicked => { root.command("mode-book"); } }
                     }
                 }
+                tool-menu := PopupWindow {
+                    x: tool-button.x;
+                    y: parent.height - 4px;
+                    width: 180px;
+                    Menu {
+                        MenuEntry { text: "Select text"; checked: root.tool == 0; clicked => { root.command("tool-select"); } }
+                        MenuEntry { text: "Note"; checked: root.tool == 1; clicked => { root.command("tool-note"); } }
+                        MenuEntry { text: "Text box"; checked: root.tool == 2; clicked => { root.command("tool-text"); } }
+                        MenuEntry { text: "Rectangle"; checked: root.tool == 3; clicked => { root.command("tool-rect"); } }
+                        MenuEntry { text: "Ellipse"; checked: root.tool == 4; clicked => { root.command("tool-ellipse"); } }
+                        MenuEntry { text: "Line"; checked: root.tool == 5; clicked => { root.command("tool-line"); } }
+                        MenuEntry { text: "Draw"; checked: root.tool == 6; clicked => { root.command("tool-ink"); } }
+                    }
+                }
+
                 view-menu := PopupWindow {
                     x: view-button.x;
                     y: parent.height - 4px;
@@ -998,10 +1026,23 @@ export component MainWindow inherits Window {
                                 : mark.kind == 2 ? #4a7dff4d
                                 : #8d9cff40;
                         }
+                        if root.draft-path != "": Path {
+                            x: 0;
+                            y: 0;
+                            width: max(scroller.visible-width, root.document-width);
+                            height: max(scroller.visible-height, root.document-height);
+                            viewbox-x: 0;
+                            viewbox-y: 0;
+                            viewbox-width: self.width / 1px;
+                            viewbox-height: self.height / 1px;
+                            commands: root.draft-path;
+                            stroke: Theme.accent;
+                            stroke-width: 1.5px;
+                        }
                         TouchArea {
                             width: max(scroller.visible-width, root.document-width);
                             height: max(scroller.visible-height, root.document-height);
-                            mouse-cursor: root.cursor == 1 ? MouseCursor.text : root.cursor == 2 ? MouseCursor.pointer : MouseCursor.default;
+                            mouse-cursor: root.tool != 0 ? MouseCursor.crosshair : root.cursor == 1 ? MouseCursor.text : root.cursor == 2 ? MouseCursor.pointer : MouseCursor.default;
                             pointer-event(e) => {
                                 if (e.kind == PointerEventKind.down) {
                                     root.focus-view();
@@ -1320,7 +1361,7 @@ export component MainWindow inherits Window {
                             root.dialog-cancel();
                             return accept;
                         }
-                        if (e.text == Key.Return && root.dialog-kind != "password") {
+                        if (e.text == Key.Return && root.dialog-kind != "password" && root.dialog-kind != "input") {
                             root.dialog-accept(root.dialog-input);
                             return accept;
                         }
@@ -1342,11 +1383,11 @@ export component MainWindow inherits Window {
                             wrap: word-wrap;
                         }
                         dialog-edit := LineEdit {
-                            visible: root.dialog-kind == "password";
-                            height: root.dialog-kind == "password" ? 34px : 0px;
-                            input-type: password;
+                            visible: root.dialog-kind == "password" || root.dialog-kind == "input";
+                            height: self.visible ? 34px : 0px;
+                            input-type: root.dialog-kind == "password" ? InputType.password : InputType.text;
                             text <=> root.dialog-input;
-                            accessible-label: "Password";
+                            accessible-label: root.dialog-kind == "password" ? "Password" : root.dialog-title;
                             accepted(t) => {
                                 root.dialog-accept(t);
                             }

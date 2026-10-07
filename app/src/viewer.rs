@@ -199,6 +199,15 @@ enum Ask {
     Restore(Vec<PathBuf>),
     /// Close the tab for this file and drop its edits.
     Discard(PathBuf),
+    Note {
+        page: usize,
+        x: f32,
+        y: f32,
+    },
+    TextBox {
+        page: usize,
+        rect: Rect,
+    },
     Quit,
     Message,
 }
@@ -227,6 +236,11 @@ enum Drag {
     Pan {
         start: (f32, f32),
         scroll: (f32, f32),
+    },
+    /// A shape or stroke being drawn, in page space; shapes keep only start and end.
+    Draw {
+        page: usize,
+        points: Vec<(f32, f32)>,
     },
     Click {
         start: (f32, f32),
@@ -267,6 +281,7 @@ pub struct App {
     dialogs: VecDeque<Dialog>,
     palette_actions: Vec<PaletteAction>,
     drag: Option<Drag>,
+    tool: Tool,
     cursor: i32,
     status_timer: Timer,
     search_timer: Timer,
@@ -337,6 +352,7 @@ impl App {
             dialogs: VecDeque::new(),
             palette_actions: Vec::new(),
             drag: None,
+            tool: Tool::Select,
             cursor: 0,
             status_timer: Timer::default(),
             search_timer: Timer::default(),
@@ -911,7 +927,7 @@ impl App {
                 window.set_dialog_cancel_text(d.cancel.into());
                 window.set_dialog_input("".into());
                 window.set_dialog_kind(d.kind.into());
-                if d.kind == "password" {
+                if d.kind == "password" || d.kind == "input" {
                     window.invoke_focus_dialog();
                 } else {
                     window.invoke_focus_view();
@@ -952,6 +968,16 @@ impl App {
             Ask::Discard(path) => {
                 if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
                     self.discard_tab(i);
+                }
+            }
+            Ask::Note { page, x, y } => {
+                let new = NewAnnot::Note { x, y, text: input };
+                self.add_comment(page, new, [1.0, 0.85, 0.0]);
+            }
+            Ask::TextBox { page, rect } => {
+                if !input.trim().is_empty() {
+                    let new = NewAnnot::FreeText { rect, text: input };
+                    self.add_comment(page, new, [1.0, 1.0, 0.8]);
                 }
             }
             Ask::Quit => {
@@ -1826,6 +1852,26 @@ impl App {
                     scroll: self.scroll(),
                 });
             }
+            0 if self.tool != Tool::Select => {
+                let Some((page, px, py)) = self.hit(x, y) else {
+                    return;
+                };
+                if self.tool == Tool::Note {
+                    self.push_dialog(Dialog {
+                        ask: Ask::Note { page, x: px, y: py },
+                        kind: "input",
+                        title: "Add a note".into(),
+                        text: String::new(),
+                        ok: "Add",
+                        cancel: "Cancel",
+                    });
+                } else {
+                    self.drag = Some(Drag::Draw {
+                        page,
+                        points: vec![(px, py)],
+                    });
+                }
+            }
             0 => {
                 let hit = self.hit(x, y);
                 let text = hit.and_then(|(page, px, py)| {
@@ -1869,6 +1915,27 @@ impl App {
     }
 
     pub fn pointer_move(&mut self, x: f32, y: f32) {
+        if let Some(Drag::Draw { page, .. }) = self.drag {
+            let Some(f) = self.tab().and_then(|t| t.layout.frame(page)) else {
+                return;
+            };
+            let cx = x.clamp(f.x, f.x + f.width - 0.01);
+            let cy = y.clamp(f.y, f.bottom() - 0.01);
+            let Some((_, px, py)) = self.hit(cx, cy) else {
+                return;
+            };
+            let ink = self.tool == Tool::Ink;
+            if let Some(Drag::Draw { points, .. }) = self.drag.as_mut() {
+                if ink {
+                    points.push((px, py));
+                } else {
+                    points.truncate(1);
+                    points.push((px, py));
+                }
+            }
+            self.show_draft();
+            return;
+        }
         match self.drag {
             Some(Drag::Pan { start, scroll }) => {
                 let (vx, vy) = self.to_screen(x, y);
@@ -1913,6 +1980,13 @@ impl App {
 
     pub fn pointer_up(&mut self, x: f32, y: f32) {
         let drag = self.drag.take();
+        if let Some(Drag::Draw { page, points }) = drag {
+            if let Some(w) = self.window() {
+                w.set_draft_path("".into());
+            }
+            self.finish_draw(page, points);
+            return;
+        }
         match drag {
             Some(Drag::Select { moved: false, .. }) => {
                 if let Some(tab) = self.tab_mut() {
@@ -2945,6 +3019,132 @@ impl App {
         }
     }
 
+    pub fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        if let Some(w) = self.window() {
+            w.set_tool(tool as i32);
+        }
+        if tool != Tool::Select {
+            self.clear_selection();
+        }
+    }
+
+    pub fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    fn add_comment(&mut self, page: usize, new: NewAnnot, color: [f32; 3]) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        let style = Style {
+            color,
+            author: std::env::var("USERNAME").unwrap_or_default(),
+        };
+        match self.engine.add_annotation(doc, page, new, style) {
+            Ok(_) => self.edited(Some(page)),
+            Err(e) => self.status(format!("Could not add the comment: {e}")),
+        }
+    }
+
+    /// Draws the shape being dragged out, in document space.
+    fn show_draft(&self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        let Some(Drag::Draw { page, points }) = &self.drag else {
+            return;
+        };
+        let view = |&(x, y): &(f32, f32)| {
+            let r = Rect {
+                x0: x,
+                y0: y,
+                x1: x,
+                y1: y,
+            };
+            tab.layout.to_view(*page, &r).map(|f| (f.x, f.y))
+        };
+        let points: Vec<(f32, f32)> = points.iter().filter_map(view).collect();
+        let (Some(&(ax, ay)), Some(&(bx, by))) = (points.first(), points.last()) else {
+            return;
+        };
+        let path = match self.tool {
+            Tool::Ink | Tool::Line => {
+                let mut path = format!("M {ax} {ay}");
+                for (x, y) in &points[1..] {
+                    path += &format!(" L {x} {y}");
+                }
+                path
+            }
+            Tool::Ellipse => {
+                let (rx, ry) = ((bx - ax).abs() / 2.0, (by - ay).abs() / 2.0);
+                let (cx, cy) = ((ax + bx) / 2.0, (ay + by) / 2.0);
+                format!(
+                    "M {} {cy} A {rx} {ry} 0 1 0 {} {cy} A {rx} {ry} 0 1 0 {} {cy} Z",
+                    cx - rx,
+                    cx + rx,
+                    cx - rx
+                )
+            }
+            _ => format!("M {ax} {ay} L {bx} {ay} L {bx} {by} L {ax} {by} Z"),
+        };
+        window.set_draft_path(path.into());
+    }
+
+    fn finish_draw(&mut self, page: usize, points: Vec<(f32, f32)>) {
+        let (Some(&a), Some(&b)) = (points.first(), points.last()) else {
+            return;
+        };
+        let rect = Rect {
+            x0: a.0.min(b.0),
+            y0: a.1.min(b.1),
+            x1: a.0.max(b.0),
+            y1: a.1.max(b.1),
+        };
+        let small = rect.width() < 4.0 && rect.height() < 4.0;
+        let red = [0.85, 0.15, 0.15];
+        match self.tool {
+            Tool::Ink if points.len() > 1 => {
+                let new = NewAnnot::Ink {
+                    strokes: vec![points],
+                    width: 2.0,
+                };
+                self.add_comment(page, new, [0.1, 0.35, 0.9]);
+            }
+            _ if small => self.status("Drag to draw the shape".into()),
+            Tool::Line => {
+                let new = NewAnnot::Line {
+                    from: a,
+                    to: b,
+                    width: 1.5,
+                };
+                self.add_comment(page, new, red);
+            }
+            Tool::Rect | Tool::Ellipse => {
+                let kind = if self.tool == Tool::Rect {
+                    AnnotKind::Square
+                } else {
+                    AnnotKind::Circle
+                };
+                let new = NewAnnot::Shape {
+                    kind,
+                    rect,
+                    width: 1.5,
+                };
+                self.add_comment(page, new, red);
+            }
+            Tool::TextBox => self.push_dialog(Dialog {
+                ask: Ask::TextBox { page, rect },
+                kind: "input",
+                title: "Add a text box".into(),
+                text: String::new(),
+                ok: "Add",
+                cancel: "Cancel",
+            }),
+            _ => {}
+        }
+    }
+
     pub fn comment_clicked(&mut self, index: usize) {
         let Some((page, top)) = self
             .tab()
@@ -3196,6 +3396,18 @@ pub fn file_name(path: &Path) -> String {
 fn file_stamp(path: &Path) -> Option<(u64, SystemTime)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()?))
+}
+
+/// What a left drag on a page does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Select,
+    Note,
+    TextBox,
+    Rect,
+    Ellipse,
+    Line,
+    Ink,
 }
 
 fn kind_name(kind: AnnotKind) -> &'static str {

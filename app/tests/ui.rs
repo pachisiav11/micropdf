@@ -116,6 +116,32 @@ fn click_page(w: &MainWindow, index: i32, x: f32, y: f32) {
     w.invoke_pointer_up(dx, dy);
 }
 
+/// Drags through `points` (points from the top-left of hello.pdf's 300x200 page 1).
+fn drag_hello(w: &MainWindow, points: &[(f32, f32)]) {
+    let p = w
+        .get_pages()
+        .iter()
+        .find(|p| p.index == 0)
+        .expect("page is laid out");
+    let at = |(x, y): (f32, f32)| (p.x + x / 300.0 * p.width, p.y + y / 200.0 * p.height);
+    let (x, y) = at(points[0]);
+    w.invoke_pointer_down(x, y, 0, false);
+    for &point in &points[1..] {
+        let (x, y) = at(point);
+        w.invoke_pointer_move(x, y);
+    }
+    let (x, y) = at(*points.last().unwrap());
+    w.invoke_pointer_up(x, y);
+}
+
+/// The comment list's last row, as "kind: text".
+fn last_comment(w: &MainWindow) -> String {
+    let rows = w.get_comments();
+    rows.row_data(rows.row_count().wrapping_sub(1))
+        .map(|r| format!("{}: {}", r.kind, r.text))
+        .unwrap_or_default()
+}
+
 fn steps() -> Vec<Step> {
     let zoom_before = Rc::new(RefCell::new(String::new()));
     let zoom_after = Rc::clone(&zoom_before);
@@ -424,6 +450,40 @@ fn steps() -> Vec<Step> {
             "the list deletes a comment",
             |w| w.invoke_comment_delete(2),
             |w| comments() == 2 && w.get_comments().row_count() == 2,
+        ),
+        step(
+            "the rectangle tool draws a rectangle",
+            |w| {
+                w.invoke_command("tool-rect".into());
+                drag_hello(w, &[(20.0, 20.0), (80.0, 50.0), (120.0, 70.0)]);
+            },
+            |w| w.get_tool() == 3 && comments() == 3 && last_comment(w) == "Rectangle: ",
+        ),
+        step(
+            "the drawing tool draws a stroke",
+            |w| {
+                w.invoke_command("tool-ink".into());
+                drag_hello(w, &[(20.0, 150.0), (60.0, 170.0), (100.0, 150.0)]);
+            },
+            |w| comments() == 4 && last_comment(w) == "Drawing: " && w.get_draft_path().is_empty(),
+        ),
+        step(
+            "the note tool asks for the text",
+            |w| {
+                w.invoke_command("tool-note".into());
+                drag_hello(w, &[(250.0, 20.0)]);
+            },
+            |w| w.get_dialog_kind() == "input" && w.get_dialog_title() == "Add a note",
+        ),
+        step(
+            "the note is added",
+            |w| w.invoke_dialog_accept("Check this".into()),
+            |w| comments() == 5 && last_comment(w) == "Note: Check this",
+        ),
+        step(
+            "Escape returns to selecting text",
+            key(char::from(Key::Escape)),
+            |w| w.get_tool() == 0,
         ),
         step(
             "close without saving drops the edits",

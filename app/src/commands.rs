@@ -9,7 +9,7 @@ use slint::platform::Key;
 
 use crate::layout::{PageMode, Zoom};
 use crate::recolor::ReadingMode;
-use crate::viewer::{self, ACTUAL, App, LINE};
+use crate::viewer::{self, ACTUAL, App, LINE, Tool};
 
 /// Runs a command. Commands that show a system dialog run outside the app borrow.
 pub fn run(id: &str) {
@@ -89,6 +89,13 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "undo" => app.undo(false),
         "redo" => app.undo(true),
         "save" => app.save(),
+        "tool-select" => app.set_tool(Tool::Select),
+        "tool-note" => app.set_tool(Tool::Note),
+        "tool-text" => app.set_tool(Tool::TextBox),
+        "tool-rect" => app.set_tool(Tool::Rect),
+        "tool-ellipse" => app.set_tool(Tool::Ellipse),
+        "tool-line" => app.set_tool(Tool::Line),
+        "tool-ink" => app.set_tool(Tool::Ink),
         "highlight" => app.markup(AnnotKind::Highlight),
         "underline" => app.markup(AnnotKind::Underline),
         "strikeout" => app.markup(AnnotKind::StrikeOut),
@@ -263,7 +270,9 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
     if is(Key::Escape) {
         app.vim_count.clear();
         app.vim_pending = None;
-        if app.presenting() {
+        if app.tool() != Tool::Select {
+            app.set_tool(Tool::Select);
+        } else if app.presenting() {
             app.toggle_present();
         } else if !app.clear_selection() {
             app.close_find();
