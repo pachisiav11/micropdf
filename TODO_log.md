@@ -17,3 +17,4 @@
 - Added: 2026-10-07 02:56 | Completed: 2026-10-07 03:27 | M1 — attachments panel, optional content (layers) panel
 - Added: 2026-10-07 02:56 | Completed: 2026-10-07 09:12 | M1 — Slint testing-backend UI test of the golden path (app/tests/ui.rs, 48 steps, headless)
 - Added: 2026-10-07 01:53 | Completed: 2026-10-07 09:12 | M1 — CJK fixture + system-font check; own DirectWrite font loader replaces font-kit (first page of a new file ~1.3 s faster in debug)
+- Added: 2026-10-07 02:56 | Completed: 2026-10-07 10:24 | M1 — file association: per-user registration (Open with + Default apps) from the palette

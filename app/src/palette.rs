@@ -55,6 +55,8 @@ pub const COMMANDS: &[Command] = &[
     c("present", "Presentation mode", "Ctrl+L"),
     c("print", "Print", "Ctrl+P"),
     c("reload", "Reload from disk", "F5"),
+    c("register-pdf", "Add micropdf to Windows PDF apps", ""),
+    c("unregister-pdf", "Remove micropdf from Windows PDF apps", ""),
 ];
 
 /// Scores `candidate` against `query` as a subsequence match, case-insensitively. Higher is

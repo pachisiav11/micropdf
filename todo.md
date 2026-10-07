@@ -1,7 +1,7 @@
 - 2026-10-07 00:48: M0 — slim the MuPDF build: libmupdf.vcxproj still compiles tesseract/leptonica/zxing with those features off; fix LNK4098 msvcrt conflict warning in debug builds
 - 2026-10-07 03:27: M1 — GUI check of clipboard copy and print (selection, password, restore and presentation are covered by app/tests/ui.rs)
-- 2026-10-07 02:56: M1 — split view (two panes, one or two documents)
-- 2026-10-07 02:56: M1 — file association (.pdf open-with registration), touchpad pinch zoom
+- 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
+- 2026-10-07 10:24: M1 — GUI check: "Add micropdf to Windows PDF apps" lists it in Default apps; touchpad pinch zooms (Windows sends it as Ctrl+wheel)
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)

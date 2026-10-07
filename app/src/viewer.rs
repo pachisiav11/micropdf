@@ -2837,7 +2837,7 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// Opens a web or mail link with the user's default handler.
-fn shell_open(uri: &str) {
+pub fn shell_open(uri: &str) {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();

@@ -15,6 +15,24 @@ pub fn run(id: &str) {
     match id {
         "open" => open_dialog(),
         "print" => crate::print::start(),
+        "register-pdf" => {
+            let message = match crate::assoc::register() {
+                Ok(()) => {
+                    viewer::shell_open(crate::assoc::DEFAULT_APPS_URI);
+                    "micropdf is now a PDF app. Pick it in Default apps to open PDFs with it."
+                        .to_owned()
+                }
+                Err(e) => format!("Could not register micropdf: {e}"),
+            };
+            viewer::with(|app| app.status(message));
+        }
+        "unregister-pdf" => {
+            let message = match crate::assoc::unregister() {
+                Ok(()) => "micropdf is no longer listed as a PDF app.".to_owned(),
+                Err(e) => format!("Could not remove the registration: {e}"),
+            };
+            viewer::with(|app| app.status(message));
+        }
         _ => {
             let follow_up = viewer::with(|app| command(app, id)).flatten();
             if let Some(next) = follow_up {
