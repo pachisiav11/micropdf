@@ -236,6 +236,13 @@ fn undo_and_redo_step_through_edits() {
     assert!(yellow_pixels(&engine, doc) > 1000);
     assert_eq!(history.redo.as_deref(), Some("Add note"));
 
+    assert_eq!(history.position, 1);
+
+    // Saving keeps the history.
+    let saved = Scratch::new("history.pdf");
+    engine.save(doc, &saved.0, false).unwrap();
+    assert_eq!(engine.history(doc).unwrap(), history);
+
     engine.delete_annotation(doc, 0, first.id).unwrap();
     let history = engine.history(doc).unwrap();
     assert_eq!(history.undo.as_deref(), Some("Delete comment"));

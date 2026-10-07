@@ -28,3 +28,4 @@
 - Added: 2026-10-07 11:01 | Completed: 2026-10-07 11:11 | M2 — XFDF form data: export and import from the palette, nested field names, one undoable step
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 11:14 | M2 — select a comment on the page or in the list; Delete removes it, double-click edits its text, Esc clears
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 11:15 | M2 — change the selected comment's colour (yellow, red, green, blue) from the palette
+- Added: 2026-10-07 11:16 | Completed: 2026-10-07 11:18 | M2 — the unsaved marker clears when undo or redo returns to the saved state

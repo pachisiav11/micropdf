@@ -165,6 +165,8 @@ struct DocTab {
     /// The file's size and time after this app last wrote it, so the watcher skips own saves.
     saved: Option<(u64, SystemTime)>,
     edits: History,
+    /// `edits.position` when the file was last written; usize::MAX once that state is gone.
+    saved_position: usize,
     /// Every comment in the document, by page.
     comments: Vec<(usize, Annot)>,
     /// The scan that will replace `comments`, while one runs.
@@ -534,6 +536,7 @@ impl App {
             dirty: false,
             saved: None,
             edits: History::default(),
+            saved_position: 0,
             comments: Vec::new(),
             comments_scan: None,
             picked: None,
@@ -889,6 +892,7 @@ impl App {
         tab.dirty = false;
         tab.saved = None;
         tab.edits = History::default();
+        tab.saved_position = 0;
         tab.comments.clear();
         tab.picked = None;
         tab.view = (0.0, 0.0);
@@ -2962,12 +2966,22 @@ impl App {
 
     /// Redraws the active tab after an edit changed `page`, or any page when None.
     fn edited(&mut self, page: Option<usize>) {
+        self.changed(page, false);
+    }
+
+    /// Redraws after an edit, or after undo or redo when `undo` is set; those can return to
+    /// the saved state.
+    fn changed(&mut self, page: Option<usize>, undo: bool) {
         let thumb_generation = self.bump();
         let Some(tab) = self.tab() else { return };
         let edits = self.engine.history(tab.info.id).unwrap_or_default();
         let Some(tab) = self.tab_mut() else { return };
+        if !undo && edits.position <= tab.saved_position {
+            // The new step replaced the saved state's steps; no undo reaches it again.
+            tab.saved_position = usize::MAX;
+        }
+        tab.dirty = edits.position != tab.saved_position;
         tab.edits = edits;
-        tab.dirty = true;
         // A new tile generation; the old tiles show until the new ones arrive.
         tab.signature = (0, 0, ReadingMode::Normal);
         tab.thumbs.clear();
@@ -3466,7 +3480,7 @@ impl App {
         };
         match result {
             Ok(_) => {
-                self.edited(None);
+                self.changed(None, true);
                 let verb = if redo { "Redid" } else { "Undid" };
                 self.status(format!("{verb}: {step}"));
             }
@@ -3487,6 +3501,7 @@ impl App {
                 if let Some(tab) = self.tab_mut() {
                     tab.dirty = false;
                     tab.saved = file_stamp(&path);
+                    tab.saved_position = tab.edits.position;
                 }
                 self.refresh_names();
                 self.status(format!("Saved {}", file_name(&path)));

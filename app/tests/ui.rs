@@ -427,6 +427,14 @@ fn steps() -> Vec<Step> {
                 && comments_in(&scratch("edit.pdf")) == 1
         }),
         step(
+            "undo after saving marks the tab edited",
+            command("undo"),
+            |w| w.get_dirty() && active_title(w).starts_with('\u{2022}'),
+        ),
+        step("redo returns to the saved state", command("redo"), |w| {
+            !w.get_dirty() && !active_title(w).starts_with('\u{2022}')
+        }),
+        step(
             "save as writes a new file and switches to it",
             |w| {
                 w.invoke_command("select-all".into());

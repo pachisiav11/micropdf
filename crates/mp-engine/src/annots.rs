@@ -330,6 +330,9 @@ pub fn flatten(doc: &Document, comments: bool, fields: bool) -> Result<(), Error
 pub struct History {
     pub undo: Option<String>,
     pub redo: Option<String>,
+    /// How many steps are applied; equal positions mean equal content unless a new edit
+    /// replaced steps that had been undone.
+    pub position: usize,
 }
 
 /// Turns on undo recording. Every later edit must go through [`operation`].
@@ -359,6 +362,7 @@ pub fn history(doc: &Document) -> Result<History, Error> {
         } else {
             None
         },
+        position: current.max(0) as usize,
     })
 }
 
