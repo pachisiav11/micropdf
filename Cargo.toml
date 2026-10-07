@@ -11,10 +11,10 @@ repository = "https://github.com/pachisiav11/micropdf"
 publish = false
 
 [workspace.dependencies]
-# No bundled CJK/Noto fonts (system fonts fill gaps); no Tesseract (Windows OCR is used instead).
+# No bundled CJK/Noto fonts and no font-kit: mp-engine's own loader finds installed fonts
+# (crates/mp-engine/src/fonts.rs). No Tesseract (Windows OCR is used instead).
 mupdf = { version = "0.8", default-features = false, features = [
     "base14-fonts",
-    "system-fonts",
     "js",
     "html",
     "img",

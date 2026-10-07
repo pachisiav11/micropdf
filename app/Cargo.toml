@@ -29,3 +29,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 
 [build-dependencies]
 slint-build = "1.18"
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.18.1"

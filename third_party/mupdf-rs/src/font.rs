@@ -164,6 +164,19 @@ impl Font {
     }
 }
 
+// SAFETY: fz_font reference counts are updated under MuPDF's locks, and a font's lazily
+// filled caches are guarded by FZ_LOCK_FREETYPE, so fonts may be shared across threads.
+unsafe impl Send for Font {}
+unsafe impl Sync for Font {}
+
+impl Clone for Font {
+    fn clone(&self) -> Self {
+        // SAFETY: `inner` is a valid font; the new handle owns one more reference.
+        unsafe { fz_keep_font(context(), self.inner) };
+        Self { inner: self.inner }
+    }
+}
+
 impl Drop for Font {
     fn drop(&mut self) {
         if !self.inner.is_null() {

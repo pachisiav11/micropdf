@@ -1,0 +1,418 @@
+//! Golden-path UI test: the real window, controller, engine and render pool on Slint's headless
+//! testing backend. The backend's event loop can start only once per process, so this file holds
+//! a single test that runs its steps in order from a timer.
+
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use i_slint_backend_testing::{AccessibleRole, ElementQuery};
+use micropdf::settings::Settings;
+use micropdf::{MainWindow, viewer, wire};
+use slint::platform::Key;
+use slint::{ComponentHandle, Model};
+
+const STEP_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures")
+        .join(name)
+}
+
+struct Step {
+    name: &'static str,
+    act: Box<dyn Fn(&MainWindow)>,
+    done: Box<dyn Fn(&MainWindow) -> bool>,
+}
+
+fn step(
+    name: &'static str,
+    act: impl Fn(&MainWindow) + 'static,
+    done: impl Fn(&MainWindow) -> bool + 'static,
+) -> Step {
+    Step {
+        name,
+        act: Box::new(act),
+        done: Box::new(done),
+    }
+}
+
+fn command(id: &'static str) -> impl Fn(&MainWindow) {
+    move |w: &MainWindow| w.invoke_command(id.into())
+}
+
+fn key(text: impl Into<String>) -> impl Fn(&MainWindow) {
+    let text: String = text.into();
+    move |w: &MainWindow| {
+        w.invoke_key_input(text.as_str().into(), false, false, false);
+    }
+}
+
+fn open(name: &'static str) -> impl Fn(&MainWindow) {
+    move |_: &MainWindow| {
+        viewer::with(|app| app.open(fixture(name)));
+    }
+}
+
+fn tab_count(w: &MainWindow) -> usize {
+    w.get_tabs().row_count()
+}
+
+fn page(w: &MainWindow) -> String {
+    w.get_page_text().to_string()
+}
+
+fn marks(w: &MainWindow, kind: i32) -> usize {
+    w.get_marks().iter().filter(|m| m.kind == kind).count()
+}
+
+/// Clicks at (x, y) points from the top-left of page `index`, unrotated, in document space.
+fn click_page(w: &MainWindow, index: i32, x: f32, y: f32) {
+    let p = w
+        .get_pages()
+        .iter()
+        .find(|p| p.index == index)
+        .expect("page is laid out");
+    let (dx, dy) = (p.x + x / 612.0 * p.width, p.y + y / 792.0 * p.height);
+    w.invoke_pointer_down(dx, dy, 0, false);
+    w.invoke_pointer_up(dx, dy);
+}
+
+fn steps() -> Vec<Step> {
+    let zoom_before = Rc::new(RefCell::new(String::new()));
+    let zoom_after = Rc::clone(&zoom_before);
+    let scroll_before = Rc::new(RefCell::new(0.0f32));
+    let scroll_after = Rc::clone(&scroll_before);
+    let palette_zoom = Rc::new(RefCell::new(String::new()));
+    let palette_zoom_after = Rc::clone(&palette_zoom);
+    let tabs_before = Rc::new(Cell::new(0usize));
+    let tabs_after = Rc::clone(&tabs_before);
+    let tabs_reopened = Rc::clone(&tabs_before);
+    vec![
+        step("empty window", |_| {}, |w| !w.get_has_document()),
+        step("open hello.pdf", open("hello.pdf"), |w| {
+            w.get_has_document() && w.get_page_count() == 1 && page(w) == "1"
+        }),
+        step("tiles render", |_| {}, |w| w.get_tiles().row_count() > 0),
+        step("find opens", command("find"), |w| w.get_find_visible()),
+        step(
+            "find highlights the match",
+            |w| w.invoke_find_edited("micropdf".into()),
+            |w| w.get_find_status() == "1 of 1" && marks(w, 1) == 1,
+        ),
+        step("find closes and clears", command("find-close"), |w| {
+            !w.get_find_visible() && w.get_marks().row_count() == 0
+        }),
+        step("select all marks the text", command("select-all"), |w| {
+            marks(w, 2) > 0
+        }),
+        step(
+            "selection holds the page text",
+            |_| {},
+            |_| {
+                viewer::with(|app| app.selected_text()).flatten().as_deref()
+                    == Some("Hello micropdf")
+            },
+        ),
+        step(
+            "zoom in changes the zoom",
+            move |w| {
+                *zoom_before.borrow_mut() = w.get_zoom_text().to_string();
+                w.invoke_command("zoom-in".into());
+            },
+            move |w| w.get_zoom_text() != *zoom_after.borrow(),
+        ),
+        step("actual size is 100%", command("zoom-100"), |w| {
+            w.get_zoom_text() == "100%"
+        }),
+        step(
+            "open outline-links.pdf in a second tab",
+            open("outline-links.pdf"),
+            |w| tab_count(w) == 2 && w.get_active_tab() == 1 && w.get_page_count() == 3,
+        ),
+        step(
+            "outline lists three chapters",
+            command("show-outline"),
+            |w| w.get_outline().row_count() == 3 && w.get_sidebar_tab() == 1,
+        ),
+        step(
+            "outline entry jumps to its page",
+            |w| w.invoke_outline_clicked(2),
+            |w| page(w) == "3" && w.get_can_back(),
+        ),
+        step("back returns", command("back"), |w| page(w) == "1"),
+        step("next page", command("next-page"), |w| page(w) == "2"),
+        step("last page", command("last-page"), |w| page(w) == "3"),
+        step("first page", command("first-page"), |w| page(w) == "1"),
+        step(
+            "page field jumps",
+            |w| w.invoke_page_entered("2".into()),
+            |w| page(w) == "2",
+        ),
+        step(
+            "vim keys scroll",
+            move |w| {
+                w.invoke_command("toggle-vim".into());
+                *scroll_before.borrow_mut() = w.get_viewport_y();
+                w.invoke_key_input("j".into(), false, false, false);
+            },
+            move |w| w.get_vim_enabled() && w.get_viewport_y() < *scroll_after.borrow(),
+        ),
+        step("vim off", command("toggle-vim"), |w| !w.get_vim_enabled()),
+        step("dark pages", command("read-dark"), |w| {
+            w.get_reading_mode() != 0
+        }),
+        step("normal pages", command("read-normal"), |w| {
+            w.get_reading_mode() == 0
+        }),
+        step("two-up layout", command("mode-two-up"), |w| {
+            w.get_pages().row_count() >= 2
+        }),
+        step("continuous layout", command("mode-continuous"), |w| {
+            w.get_page_mode() == 1
+        }),
+        step(
+            "palette filters commands",
+            move |w| {
+                *palette_zoom.borrow_mut() = w.get_zoom_text().to_string();
+                w.invoke_command("palette".into());
+                w.invoke_palette_edited("zoom in".into());
+            },
+            |w| {
+                w.get_palette_visible()
+                    && w.get_palette_items()
+                        .row_data(0)
+                        .is_some_and(|i| i.title == "Zoom in")
+            },
+        ),
+        step(
+            "palette runs a command",
+            |w| w.invoke_palette_accept(0),
+            move |w| !w.get_palette_visible() && w.get_zoom_text() != *palette_zoom_after.borrow(),
+        ),
+        step("presentation starts", command("present"), |w| {
+            w.get_presenting() && !w.get_chrome_visible()
+        }),
+        step(
+            "Escape ends presentation",
+            key(char::from(Key::Escape)),
+            |w| !w.get_presenting() && w.get_chrome_visible(),
+        ),
+        step(
+            "encrypted file asks for a password",
+            open("encrypted.pdf"),
+            |w| w.get_dialog_kind() == "password",
+        ),
+        step(
+            "wrong password asks again",
+            |w| w.invoke_dialog_accept("nope".into()),
+            |w| w.get_dialog_kind() == "password" && w.get_dialog_text().contains("did not unlock"),
+        ),
+        step(
+            "right password opens it",
+            |w| w.invoke_dialog_accept("user".into()),
+            |w| w.get_dialog_kind().is_empty() && tab_count(w) == 3 && w.get_page_count() == 1,
+        ),
+        step("attachments panel", open("attachment.pdf"), |w| {
+            tab_count(w) == 4
+                && w.get_attachments()
+                    .row_data(0)
+                    .is_some_and(|a| a.name == "notes.txt")
+        }),
+        step("layers panel", open("layers.pdf"), |w| {
+            tab_count(w) == 5 && w.get_layers().row_count() == 2
+        }),
+        step(
+            "a hidden layer can be shown",
+            |w| {
+                let notes = w
+                    .get_layers()
+                    .iter()
+                    .position(|l| l.name == "Notes")
+                    .unwrap();
+                w.invoke_layer_toggle(notes as i32);
+            },
+            |w| w.get_layers().iter().all(|l| l.visible),
+        ),
+        step(
+            "switching tabs restores that tab's sidebar data",
+            |w| w.invoke_select_tab(3),
+            |w| w.get_active_tab() == 3 && w.get_layers().row_count() == 0,
+        ),
+        step("broken file shows a message", open("truncated.pdf"), |w| {
+            // MuPDF repairs some truncated files; either outcome is fine, a crash is not.
+            w.get_dialog_kind() == "message" || tab_count(w) == 6
+        }),
+        step(
+            "message closes",
+            |w| {
+                if w.get_dialog_kind() == "message" {
+                    w.invoke_dialog_accept("".into());
+                }
+            },
+            |w| w.get_dialog_kind().is_empty(),
+        ),
+        step("not a PDF shows a message", open("not-a-pdf.pdf"), |w| {
+            w.get_dialog_kind() == "message"
+        }),
+        step(
+            "message closes again",
+            |w| w.invoke_dialog_accept("".into()),
+            |w| w.get_dialog_kind().is_empty(),
+        ),
+        step(
+            "close tab",
+            move |w| {
+                tabs_before.set(tab_count(w));
+                w.invoke_command("close-tab".into());
+            },
+            move |w| tab_count(w) + 1 == tabs_after.get(),
+        ),
+        step("reopen closed tab", command("reopen-tab"), move |w| {
+            tab_count(w) == tabs_reopened.get()
+        }),
+        step(
+            "restore offers the last session",
+            |_| {
+                viewer::with(|app| app.offer_restore(vec![fixture("hello.pdf")]));
+            },
+            |w| w.get_dialog_kind() == "confirm" && w.get_dialog_title() == "Reopen your files?",
+        ),
+        step(
+            "restore reopens; an open file is selected, not opened twice",
+            |w| w.invoke_dialog_accept("".into()),
+            |w| w.get_dialog_kind().is_empty() && w.get_active_tab() == 0,
+        ),
+        step(
+            "outline-links.pdf, page 1",
+            |w| {
+                w.invoke_select_tab(1);
+                w.invoke_command("first-page".into());
+            },
+            |w| w.get_active_tab() == 1 && page(w) == "1",
+        ),
+        step(
+            "an internal link jumps",
+            |w| click_page(w, 0, 145.0, 792.0 - 645.0),
+            |w| page(w) == "3",
+        ),
+        step(
+            "a web link asks first",
+            |w| {
+                w.invoke_command("back".into());
+                click_page(w, 0, 145.0, 792.0 - 615.0);
+            },
+            |w| {
+                w.get_dialog_kind() == "confirm"
+                    && w.get_dialog_text().contains("https://example.com/")
+            },
+        ),
+        step(
+            "declining keeps the page",
+            |w| w.invoke_dialog_cancel(),
+            |w| w.get_dialog_kind().is_empty() && page(w) == "1",
+        ),
+        step(
+            "every button has an accessible name",
+            |_| {},
+            |w| {
+                let buttons = ElementQuery::from_root(w)
+                    .match_descendants()
+                    .match_accessible_role(AccessibleRole::Button)
+                    .find_all();
+                assert!(buttons.len() > 10, "found only {} buttons", buttons.len());
+                let unnamed: Vec<String> = buttons
+                    .into_iter()
+                    .filter(|e| e.accessible_label().is_none_or(|l| l.trim().is_empty()))
+                    .map(|e| format!("{:?} {:?}", e.id(), e.type_name()))
+                    .collect();
+                assert!(unnamed.is_empty(), "buttons without names: {unnamed:?}");
+                true
+            },
+        ),
+    ]
+}
+
+struct Runner {
+    window: slint::Weak<MainWindow>,
+    steps: Vec<Step>,
+    index: usize,
+    started: Option<Instant>,
+    failure: Option<String>,
+}
+
+thread_local! {
+    static RUNNER: RefCell<Option<Runner>> = const { RefCell::new(None) };
+}
+
+static FINISHED: AtomicBool = AtomicBool::new(false);
+
+/// Runs the current step's action once, then checks it until it is done or times out.
+fn tick() {
+    RUNNER.with_borrow_mut(|runner| {
+        let r = runner.as_mut().expect("runner installed");
+        let Some(w) = r.window.upgrade() else { return };
+        let Some(s) = r.steps.get(r.index) else {
+            FINISHED.store(true, Ordering::SeqCst);
+            let _ = slint::quit_event_loop();
+            return;
+        };
+        let started = *r.started.get_or_insert_with(|| {
+            (s.act)(&w);
+            Instant::now()
+        });
+        if (s.done)(&w) {
+            r.index += 1;
+            r.started = None;
+        } else if started.elapsed() > STEP_TIMEOUT {
+            r.failure = Some(format!(
+                "step {} \"{}\" timed out (page {:?}, zoom {:?}, tabs {}, dialog {:?}: {:?}, status {:?})",
+                r.index + 1,
+                s.name,
+                w.get_page_text(),
+                w.get_zoom_text(),
+                tab_count(&w),
+                w.get_dialog_kind(),
+                w.get_dialog_text(),
+                w.get_status_left(),
+            ));
+            FINISHED.store(true, Ordering::SeqCst);
+            let _ = slint::quit_event_loop();
+        }
+    });
+}
+
+#[test]
+fn golden_path() {
+    i_slint_backend_testing::init_integration_test_with_system_time();
+    let window = MainWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(1100.0, 760.0));
+    viewer::install(viewer::App::new(&window, Settings::default(), false));
+    wire(&window);
+    window.show().unwrap();
+
+    RUNNER.set(Some(Runner {
+        window: window.as_weak(),
+        steps: steps(),
+        index: 0,
+        started: None,
+        failure: None,
+    }));
+    // The testing backend's timers do not wake its event loop, so a thread posts the ticks.
+    let ticker = std::thread::spawn(|| {
+        while !FINISHED.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(2));
+            let _ = slint::invoke_from_event_loop(tick);
+        }
+    });
+    slint::run_event_loop().unwrap();
+    ticker.join().unwrap();
+    if let Some(message) = RUNNER.with_borrow_mut(|r| r.as_mut().and_then(|r| r.failure.take())) {
+        panic!("{message}");
+    }
+}

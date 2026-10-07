@@ -96,6 +96,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn start() -> Self {
+        crate::fonts::install();
         let (tx, rx) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("mp-engine".into())

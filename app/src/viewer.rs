@@ -1913,7 +1913,7 @@ impl App {
         });
     }
 
-    fn selected_text(&mut self) -> Option<String> {
+    pub fn selected_text(&mut self) -> Option<String> {
         let sel = self.tab()?.selection?;
         let text = self.page_text(sel.page)?;
         let range = sel.range();

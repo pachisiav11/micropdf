@@ -6,6 +6,8 @@ truncated.pdf      hello.pdf cut before its xref table (MuPDF must repair it).
 not-a-pdf.pdf      plain text with a .pdf name (must fail cleanly).
 attachment.pdf     one page; embeds notes.txt in the EmbeddedFiles name tree.
 layers.pdf         one page; two optional content groups, "Grid" on and "Notes" off.
+cjk.pdf            one page; Chinese, Japanese and Korean lines in fonts that are not embedded,
+                   so they render only through installed system fonts.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
@@ -121,6 +123,39 @@ def layers() -> bytes:
     return serialize(objs)
 
 
+def cjk() -> bytes:
+    # 1 catalog, 2 pages, 3 page, 4 contents, then per script: Type0 font, CIDFont, descriptor
+    scripts = [
+        (b"STSong-Light", b"UniGB-UCS2-H", b"GB1", "中文文本"),
+        (b"KozMinPro-Regular", b"UniJIS-UCS2-H", b"Japan1", "日本語"),
+        (b"HYSMyeongJo-Medium", b"UniKS-UCS2-H", b"Korea1", "한국어"),
+    ]
+    content = b""
+    fonts = b""
+    objs: list[bytes] = []
+    for n, (name, cmap, ordering, text) in enumerate(scripts):
+        first = 5 + 3 * n
+        fonts += b"/F%d %d 0 R " % (n + 1, first)
+        content += b"BT /F%d 36 Tf 40 %d Td <%s> Tj ET\n" % (
+            n + 1, 300 - 90 * n, text.encode("utf-16-be").hex().upper().encode())
+        objs += [
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /%s /Encoding /%s /DescendantFonts [%d 0 R] >>"
+            % (name, cmap, first + 1),
+            b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /%s /CIDSystemInfo << /Registry (Adobe) "
+            b"/Ordering (%s) /Supplement 2 >> /FontDescriptor %d 0 R /DW 1000 >>" % (name, ordering, first + 2),
+            b"<< /Type /FontDescriptor /FontName /%s /Flags 6 /FontBBox [-25 -254 1000 880] "
+            b"/ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 93 >>" % name,
+        ]
+    return serialize([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 360] /Contents 4 0 R "
+        b"/Resources << /Font << %s>> >> >>" % fonts,
+        stream(content.rstrip()),
+        *objs,
+    ])
+
+
 def main() -> None:
     (FIXTURES / "outline-links.pdf").write_bytes(outline_links())
     (FIXTURES / "form.pdf").write_bytes(form())
@@ -129,7 +164,9 @@ def main() -> None:
     (FIXTURES / "not-a-pdf.pdf").write_bytes(b"This is a text file, not a PDF.\n")
     (FIXTURES / "attachment.pdf").write_bytes(attachment())
     (FIXTURES / "layers.pdf").write_bytes(layers())
-    print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf")
+    (FIXTURES / "cjk.pdf").write_bytes(cjk())
+    print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf, "
+          "cjk.pdf")
 
 
 if __name__ == "__main__":

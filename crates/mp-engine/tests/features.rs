@@ -204,3 +204,38 @@ fn lists_and_toggles_layers() {
     let plain = engine.open(fixture("hello.pdf")).unwrap();
     assert!(engine.layers(plain.id).unwrap().is_empty());
 }
+
+#[test]
+fn cjk_text_without_embedded_fonts_draws_with_system_fonts() {
+    use mp_engine::CjkFontOrdering::{AdobeGb, AdobeJapan, AdobeKorea};
+
+    let engine = Engine::start();
+    let doc = engine.open(fixture("cjk.pdf")).unwrap();
+    let list = engine.display_list(doc.id, 0).unwrap();
+    let text = mp_engine::page_text(&list).unwrap();
+    let text = text.text(0..text.chars.len());
+    let lines = [
+        "\u{4e2d}\u{6587}\u{6587}\u{672c}",
+        "\u{65e5}\u{672c}\u{8a9e}",
+        "\u{d55c}\u{ad6d}\u{c5b4}",
+    ];
+    for line in lines {
+        assert!(text.contains(line), "{line} in {text:?}");
+    }
+
+    // The page is 300x360 pt; line n sits on baseline 300 - 90n in 36 pt type.
+    let image = mp_engine::render(&list, 1.0).unwrap();
+    assert_eq!((image.width, image.height), (300, 360));
+    for (n, ordering) in [AdobeGb, AdobeJapan, AdobeKorea].into_iter().enumerate() {
+        if !mp_engine::has_cjk(ordering) {
+            eprintln!("no installed font for {ordering:?}; skipping its line");
+            continue;
+        }
+        let baseline = 360 - (300 - 90 * n);
+        let dark = (baseline - 30..baseline)
+            .flat_map(|y| (40..180).map(move |x| (y * 300 + x) * 3))
+            .filter(|&i| image.rgb[i] < 128)
+            .count();
+        assert!(dark > 300, "line {} drew only {dark} dark pixels", lines[n]);
+    }
+}
