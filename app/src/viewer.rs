@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use mp_engine::{
-    Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, History, Layer, Link, LinkTarget,
-    NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile,
+    Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
+    Layer, Link, LinkTarget, NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
@@ -207,6 +207,12 @@ enum Ask {
     TextBox {
         page: usize,
         rect: Rect,
+    },
+    /// New text for a form field; `value` fills the input at first.
+    Field {
+        page: usize,
+        id: i32,
+        value: String,
     },
     Quit,
     Message,
@@ -925,7 +931,11 @@ impl App {
                 window.set_dialog_text(d.text.clone().into());
                 window.set_dialog_ok(d.ok.into());
                 window.set_dialog_cancel_text(d.cancel.into());
-                window.set_dialog_input("".into());
+                let input = match &d.ask {
+                    Ask::Field { value, .. } => value.clone(),
+                    _ => String::new(),
+                };
+                window.set_dialog_input(input.into());
                 window.set_dialog_kind(d.kind.into());
                 if d.kind == "password" || d.kind == "input" {
                     window.invoke_focus_dialog();
@@ -980,6 +990,7 @@ impl App {
                     self.add_comment(page, new, [1.0, 1.0, 0.8]);
                 }
             }
+            Ask::Field { page, id, .. } => self.edit_field(page, id, FieldEdit::Value(input)),
             Ask::Quit => {
                 for tab in &mut self.tabs {
                     tab.dirty = false;
@@ -2012,6 +2023,10 @@ impl App {
     }
 
     fn click(&mut self, x: f32, y: f32) {
+        if let Some((page, field)) = self.field_at(x, y) {
+            self.use_field(page, field);
+            return;
+        }
         match self.link_at(x, y) {
             Some(LinkTarget::Page { page, top }) => self.go_to(page, top, true),
             Some(LinkTarget::Uri(uri)) => self.confirm_uri(uri),
@@ -3142,6 +3157,75 @@ impl App {
                 cancel: "Cancel",
             }),
             _ => {}
+        }
+    }
+
+    fn field_at(&self, x: f32, y: f32) -> Option<(usize, Field)> {
+        let (page, px, py) = self.hit(x, y)?;
+        let doc = self.tab()?.info.id;
+        let fields = self.engine.fields(doc, page).ok()?;
+        fields
+            .into_iter()
+            .find(|f| f.rect.contains(px, py))
+            .map(|f| (page, f))
+    }
+
+    fn use_field(&mut self, page: usize, field: Field) {
+        if field.read_only {
+            self.status("This field is read-only".into());
+            return;
+        }
+        let label = if field.name.is_empty() {
+            "this field".to_owned()
+        } else {
+            format!("\u{201C}{}\u{201D}", field.name)
+        };
+        match field.kind {
+            FieldKind::Checkbox | FieldKind::Radio => {
+                self.edit_field(page, field.id, FieldEdit::Toggle);
+            }
+            FieldKind::Text | FieldKind::Choice => {
+                let text = if field.options.is_empty() {
+                    String::new()
+                } else {
+                    format!("Choices: {}", field.options.join(", "))
+                };
+                self.push_dialog(Dialog {
+                    ask: Ask::Field {
+                        page,
+                        id: field.id,
+                        value: field.value,
+                    },
+                    kind: "input",
+                    title: format!("Fill in {label}"),
+                    text,
+                    ok: "Fill in",
+                    cancel: "Cancel",
+                });
+            }
+            FieldKind::Signature => self.status("Signing is not supported yet".into()),
+            FieldKind::Button | FieldKind::Other => {}
+        }
+    }
+
+    fn edit_field(&mut self, page: usize, id: i32, edit: FieldEdit) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        match self.engine.edit_field(doc, page, id, edit) {
+            // Calculated fields may change other pages.
+            Ok(()) => self.edited(None),
+            Err(e) => self.status(format!("Could not fill in the field: {e}")),
+        }
+    }
+
+    pub fn reset_form(&mut self) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        match self.engine.reset_form(doc) {
+            Ok(()) => self.edited(None),
+            Err(e) => self.status(format!("Could not reset the form: {e}")),
         }
     }
 

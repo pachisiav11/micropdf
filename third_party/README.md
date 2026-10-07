@@ -18,5 +18,7 @@ Changes:
 - `PdfDocument::enable_journal`, `undo`, `redo`, `undo_redo_state` and `undo_redo_step` — the
   undo journal. mupdf-sys has no `fz_try` wrappers for these, so `shim/journal.c` (compiled by
   `build.rs` with `cc`) provides them, declaring the few MuPDF 1.27 functions it calls.
+- `PdfWidget::toggle` and `choice_options` — wrap `pdf_toggle_widget` and
+  `pdf_choice_widget_options` through the same shim.
 
 Upstream these changes before bumping the version, then drop the vendored copy.

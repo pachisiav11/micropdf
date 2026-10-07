@@ -233,6 +233,48 @@ impl PdfWidget {
         .map(|accepted| accepted != 0)
     }
 
+    /// Flips a checkbox or radio button. Returns false, changing nothing, for other types.
+    pub fn toggle(&mut self) -> Result<bool, Error> {
+        self.annot.ensure_attached()?;
+        let mut toggled = 0;
+        let annot = self.annot.inner.as_ptr();
+        crate::pdf::document::journal_call(|err| unsafe {
+            shim::mp_pdf_toggle_widget(context(), annot, &mut toggled, err)
+        })?;
+        Ok(toggled != 0)
+    }
+
+    /// The choices of a list or combo box, as shown.
+    pub fn choice_options(&self) -> Result<Vec<String>, Error> {
+        self.annot.ensure_attached()?;
+        let annot = self.annot.inner.as_ptr();
+        let mut count = 0;
+        crate::pdf::document::journal_call(|err| unsafe {
+            shim::mp_pdf_choice_widget_options(
+                context(),
+                annot,
+                std::ptr::null_mut(),
+                &mut count,
+                err,
+            )
+        })?;
+        let mut opts = vec![std::ptr::null::<std::os::raw::c_char>(); count.max(0) as usize];
+        crate::pdf::document::journal_call(|err| unsafe {
+            shim::mp_pdf_choice_widget_options(
+                context(),
+                annot,
+                opts.as_mut_ptr(),
+                &mut count,
+                err,
+            )
+        })?;
+        Ok(opts
+            .into_iter()
+            .filter(|p| !p.is_null())
+            .map(|p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+            .collect())
+    }
+
     pub fn reset(&mut self, doc: &mut PdfDocument) -> Result<(), Error> {
         self.annot.ensure_attached()?;
         self.assert_document_owner(doc)?;
@@ -260,5 +302,27 @@ impl Iterator for PdfWidgetIter<'_> {
         let next = unsafe { pdf_next_widget(context(), current.as_ptr()) };
         self.next = NonNull::new(next);
         Some(unsafe { PdfWidget::from_raw_keep_ref(current.as_ptr()) })
+    }
+}
+
+mod shim {
+    use std::os::raw::{c_char, c_int};
+
+    use mupdf_sys::{fz_context, pdf_annot};
+
+    unsafe extern "C" {
+        pub fn mp_pdf_toggle_widget(
+            ctx: *mut fz_context,
+            widget: *mut pdf_annot,
+            toggled: *mut c_int,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_choice_widget_options(
+            ctx: *mut fz_context,
+            widget: *mut pdf_annot,
+            opts: *mut *const c_char,
+            count: *mut c_int,
+            err: *mut *const c_char,
+        ) -> c_int;
     }
 }

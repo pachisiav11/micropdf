@@ -92,6 +92,17 @@ fn comments_in(path: &std::path::Path) -> usize {
     n
 }
 
+/// The value of form field `index` on page 1 of the active tab.
+fn field_value(index: usize) -> String {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        let fields = app.engine().fields(doc, 0).ok()?;
+        fields.get(index).map(|f| f.value.clone())
+    })
+    .flatten()
+    .unwrap_or_else(|| "?".into())
+}
+
 fn tab_count(w: &MainWindow) -> usize {
     w.get_tabs().row_count()
 }
@@ -502,6 +513,27 @@ fn steps() -> Vec<Step> {
                 closed
             },
         ),
+        step("open a form", open("form.pdf"), |w| {
+            active_title(w) == "form.pdf" && w.get_pages().row_count() > 0
+        }),
+        step(
+            "clicking a text field asks for its value",
+            |w| click_page(w, 0, 200.0, 91.0),
+            |w| w.get_dialog_kind() == "input" && w.get_dialog_title().contains("name"),
+        ),
+        step(
+            "the field takes the value",
+            |w| w.invoke_dialog_accept("Ada Lovelace".into()),
+            |_| field_value(0) == "Ada Lovelace",
+        ),
+        step(
+            "clicking a checkbox checks it",
+            |w| click_page(w, 0, 158.0, 132.0),
+            |w| field_value(1) == "Yes" && w.get_undo_name() == "Check box",
+        ),
+        step("reset clears the form", command("reset-form"), |_| {
+            field_value(0).is_empty() && field_value(1) == "Off"
+        }),
         step(
             "every button has an accessible name",
             |_| {},

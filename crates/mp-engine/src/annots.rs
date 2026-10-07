@@ -161,7 +161,7 @@ fn point((x, y): (f32, f32)) -> Point {
 }
 
 /// Runs `f` as one undoable step named `name`; a failed step is rolled back.
-fn operation<T>(
+pub(crate) fn operation<T>(
     doc: &Document,
     name: &str,
     f: impl FnOnce() -> Result<T, Error>,

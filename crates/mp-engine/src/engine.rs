@@ -9,6 +9,7 @@ use mupdf::pdf::{PdfDocument, PdfObject};
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
 use crate::annots::{self, Annot, History, NewAnnot, Style};
+use crate::forms::{self, Field, FieldEdit};
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
@@ -100,6 +101,22 @@ enum Command {
         doc: DocId,
         page: usize,
         id: i32,
+        reply: Reply<()>,
+    },
+    Fields {
+        doc: DocId,
+        page: usize,
+        reply: Reply<Vec<Field>>,
+    },
+    EditField {
+        doc: DocId,
+        page: usize,
+        id: i32,
+        edit: FieldEdit,
+        reply: Reply<()>,
+    },
+    ResetForm {
+        doc: DocId,
         reply: Reply<()>,
     },
     Save {
@@ -230,6 +247,33 @@ impl Engine {
             id,
             reply,
         })
+    }
+
+    /// The page's form widgets.
+    pub fn fields(&self, doc: DocId, page: usize) -> Result<Vec<Field>, Error> {
+        self.call(|reply| Command::Fields { doc, page, reply })
+    }
+
+    /// Fills in or toggles a field. Ask for new display lists afterwards; calculated fields
+    /// on other pages may change too.
+    pub fn edit_field(
+        &self,
+        doc: DocId,
+        page: usize,
+        id: i32,
+        edit: FieldEdit,
+    ) -> Result<(), Error> {
+        self.call(|reply| Command::EditField {
+            doc,
+            page,
+            id,
+            edit,
+            reply,
+        })
+    }
+
+    pub fn reset_form(&self, doc: DocId) -> Result<(), Error> {
+        self.call(|reply| Command::ResetForm { doc, reply })
     }
 
     /// Writes the document to `target`; see [`crate::annots::save`] for `incremental`.
@@ -451,6 +495,25 @@ fn run(rx: mpsc::Receiver<Command>) {
                     }
                     Ok(layers(d))
                 });
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
+            }
+            Command::Fields { doc, page, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, |d| forms::list(d, page)));
+            }
+            Command::EditField {
+                doc,
+                page,
+                id,
+                edit,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| forms::edit(d, page, id, &edit));
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
+            }
+            Command::ResetForm { doc, reply } => {
+                let result = with_doc(&docs, doc, forms::reset);
                 lists.remove_doc(doc);
                 let _ = reply.send(result);
             }

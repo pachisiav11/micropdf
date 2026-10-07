@@ -89,6 +89,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "undo" => app.undo(false),
         "redo" => app.undo(true),
         "save" => app.save(),
+        "reset-form" => app.reset_form(),
         "tool-select" => app.set_tool(Tool::Select),
         "tool-note" => app.set_tool(Tool::Note),
         "tool-text" => app.set_tool(Tool::TextBox),

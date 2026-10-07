@@ -2436,7 +2436,9 @@ mod journal {
     }
 }
 
-fn journal_call(f: impl FnOnce(*mut *const std::os::raw::c_char) -> i32) -> Result<(), Error> {
+pub(crate) fn journal_call(
+    f: impl FnOnce(*mut *const std::os::raw::c_char) -> i32,
+) -> Result<(), Error> {
     let mut err = std::ptr::null();
     if f(&mut err) == 0 {
         return Ok(());

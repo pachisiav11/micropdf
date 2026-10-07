@@ -59,6 +59,7 @@ pub const COMMANDS: &[Command] = &[
     c("highlight", "Highlight selected text", ""),
     c("underline", "Underline selected text", ""),
     c("strikeout", "Strike out selected text", ""),
+    c("reset-form", "Reset form fields", ""),
     c("tool-select", "Tool: select text", "Esc"),
     c("tool-note", "Tool: note", ""),
     c("tool-text", "Tool: text box", ""),

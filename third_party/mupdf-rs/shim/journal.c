@@ -1,15 +1,16 @@
 /*
- * fz_try wrappers for the parts of MuPDF's undo journal that mupdf-sys does not wrap
- * (it does wrap pdf_begin_operation, pdf_end_operation and pdf_abandon_operation).
+ * fz_try wrappers for the parts of MuPDF's undo journal and form widgets that mupdf-sys does
+ * not wrap (it does wrap pdf_begin_operation, pdf_end_operation and pdf_abandon_operation).
  *
  * mupdf-sys does not export its include directory, so the few declarations needed are
  * repeated here. They match MuPDF 1.27 (mupdf/fitz/context.h, mupdf/fitz/system.h and
- * mupdf/pdf/object.h). On Windows MuPDF uses plain setjmp/longjmp (HAVE_SIGSETJMP is 0).
+ * mupdf/pdf/object.h, mupdf/pdf/annot.h and mupdf/pdf/form.h). On Windows MuPDF uses plain setjmp/longjmp (HAVE_SIGSETJMP is 0).
  */
 #include <setjmp.h>
 
 typedef struct fz_context fz_context;
 typedef struct pdf_document pdf_document;
+typedef struct pdf_annot pdf_annot;
 
 jmp_buf *fz_push_try(fz_context *ctx);
 int fz_do_try(fz_context *ctx);
@@ -21,6 +22,8 @@ int pdf_undoredo_state(fz_context *ctx, pdf_document *doc, int *steps);
 const char *pdf_undoredo_step(fz_context *ctx, pdf_document *doc, int step);
 void pdf_undo(fz_context *ctx, pdf_document *doc);
 void pdf_redo(fz_context *ctx, pdf_document *doc);
+int pdf_toggle_widget(fz_context *ctx, pdf_annot *widget);
+int pdf_choice_widget_options(fz_context *ctx, pdf_annot *tw, int exportval, const char *opts[]);
 
 /* The expansion of MuPDF's fz_try / fz_catch macros. */
 #define TRY(ctx) if (!setjmp(*fz_push_try(ctx))) if (fz_do_try(ctx)) do
@@ -60,6 +63,21 @@ int mp_pdf_undo(fz_context *ctx, pdf_document *doc, const char **err)
 int mp_pdf_redo(fz_context *ctx, pdf_document *doc, const char **err)
 {
 	TRY(ctx) { pdf_redo(ctx, doc); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	return 0;
+}
+
+int mp_pdf_toggle_widget(fz_context *ctx, pdf_annot *widget, int *toggled, const char **err)
+{
+	TRY(ctx) { *toggled = pdf_toggle_widget(ctx, widget); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	return 0;
+}
+
+/* With opts NULL, only counts the options. The strings belong to the document. */
+int mp_pdf_choice_widget_options(fz_context *ctx, pdf_annot *widget, const char **opts, int *count, const char **err)
+{
+	TRY(ctx) { *count = pdf_choice_widget_options(ctx, widget, 0, opts); }
 	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
 	return 0;
 }
