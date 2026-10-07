@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use mp_engine::AnnotKind;
 use slint::platform::Key;
 
 use crate::layout::{PageMode, Zoom};
@@ -14,6 +15,7 @@ use crate::viewer::{self, ACTUAL, App, LINE};
 pub fn run(id: &str) {
     match id {
         "open" => open_dialog(),
+        "save-as" => save_as_dialog(),
         "print" => crate::print::start(),
         "register-pdf" => {
             let message = match crate::assoc::register() {
@@ -83,6 +85,12 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "show-outline" => app.set_sidebar(true, Some(1)),
         "properties" => app.show_properties(),
         "copy" => app.copy(),
+        "undo" => app.undo(false),
+        "redo" => app.undo(true),
+        "save" => app.save(),
+        "highlight" => app.markup(AnnotKind::Highlight),
+        "underline" => app.markup(AnnotKind::Underline),
+        "strikeout" => app.markup(AnnotKind::StrikeOut),
         "select-all" => app.select_all(),
         "fullscreen" => app.toggle_fullscreen(),
         "present" => {
@@ -93,7 +101,9 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "reload" => app.reload_active(),
         "palette" => app.open_palette(),
         "palette-close" => app.close_palette(),
-        "open" | "print" => return Some(if id == "open" { "open" } else { "print" }),
+        "open" => return Some("open"),
+        "print" => return Some("print"),
+        "save-as" => return Some("save-as"),
         _ => {}
     }
     None
@@ -128,6 +138,33 @@ fn open_dialog() {
         if let Some(files) = files {
             let _ = slint::invoke_from_event_loop(move || {
                 viewer::with(|app| app.open_paths(files));
+            });
+        }
+    });
+}
+
+static SAVE_DIALOG: AtomicBool = AtomicBool::new(false);
+
+fn save_as_dialog() {
+    let Some(path) = viewer::with(|app| app.active_path()).flatten() else {
+        return;
+    };
+    if SAVE_DIALOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Save as")
+            .add_filter("PDF documents", &["pdf"])
+            .set_file_name(viewer::file_name(&path));
+        if let Some(dir) = path.parent() {
+            dialog = dialog.set_directory(dir);
+        }
+        let target = dialog.save_file();
+        SAVE_DIALOG.store(false, Ordering::SeqCst);
+        if let Some(target) = target {
+            let _ = slint::invoke_from_event_loop(move || {
+                viewer::with(|app| app.save_as(target));
             });
         }
     });
@@ -182,6 +219,11 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
             "p" if shift => "palette",
             "p" => "print",
             "c" => "copy",
+            "z" if shift => "redo",
+            "z" => "undo",
+            "y" => "redo",
+            "s" if shift => "save-as",
+            "s" => "save",
             "a" => "select-all",
             "d" => "properties",
             "l" => "present",

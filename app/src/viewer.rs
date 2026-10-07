@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use mp_engine::{
-    Attachment, DocId, DocInfo, Engine, Layer, Link, LinkTarget, OutlineItem, PageText, Rect,
-    RenderPool, Tile,
+    AnnotKind, Attachment, DocId, DocInfo, Engine, History, Layer, Link, LinkTarget, NewAnnot,
+    OutlineItem, PageText, Rect, RenderPool, Style, Tile,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
@@ -160,11 +160,25 @@ struct DocTab {
     metadata: Vec<(String, String)>,
     attachments: Vec<Attachment>,
     layers: Vec<Layer>,
+    /// Edits not yet written to the file.
+    dirty: bool,
+    /// The file's size and time after this app last wrote it, so the watcher skips own saves.
+    saved: Option<(u64, SystemTime)>,
+    edits: History,
 }
 
 impl DocTab {
     fn name(&self) -> String {
         file_name(&self.path)
+    }
+
+    /// The name with a dot in front while there are unsaved edits.
+    fn title(&self) -> String {
+        if self.dirty {
+            format!("\u{2022} {}", self.name())
+        } else {
+            self.name()
+        }
     }
 
     fn page_count(&self) -> usize {
@@ -173,9 +187,15 @@ impl DocTab {
 }
 
 enum Ask {
-    Unlock { info: DocInfo, path: PathBuf },
+    Unlock {
+        info: DocInfo,
+        path: PathBuf,
+    },
     OpenUri(String),
     Restore(Vec<PathBuf>),
+    /// Close the tab for this file and drop its edits.
+    Discard(PathBuf),
+    Quit,
     Message,
 }
 
@@ -474,6 +494,9 @@ impl App {
             metadata,
             attachments,
             layers,
+            dirty: false,
+            saved: None,
+            edits: History::default(),
         };
         self.tabs.push(tab);
         self.settings.add_recent(&path);
@@ -488,9 +511,25 @@ impl App {
     }
 
     pub fn close_tab(&mut self, index: usize) {
-        if index >= self.tabs.len() {
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        if tab.dirty {
+            let (path, name) = (tab.path.clone(), tab.name());
+            self.push_dialog(Dialog {
+                ask: Ask::Discard(path),
+                kind: "confirm",
+                title: "Close without saving?".into(),
+                text: format!("{name} has changes that are not saved."),
+                ok: "Close without saving",
+                cancel: "Keep open",
+            });
             return;
         }
+        self.discard_tab(index);
+    }
+
+    fn discard_tab(&mut self, index: usize) {
         let tab = self.tabs.remove(index);
         self.settings.remember_page(&tab.path, tab.current);
         self.engine.close(tab.info.id);
@@ -559,7 +598,7 @@ impl App {
         self.refresh_tabs();
         let tab = &mut self.tabs[index];
         window.set_has_document(true);
-        window.set_window_title(format!("{} — micropdf", tab.name()).into());
+        window.set_window_title(format!("{} — micropdf", tab.title()).into());
         window.set_page_count(tab.page_count() as i32);
         window.set_page_mode(mode_index(tab.mode));
         window.set_find_query(tab.search.query.clone().into());
@@ -586,7 +625,7 @@ impl App {
             .tabs
             .iter()
             .map(|t| TabItem {
-                title: t.name().into(),
+                title: t.title().into(),
                 tooltip: t.path.display().to_string().into(),
             })
             .collect();
@@ -728,11 +767,28 @@ impl App {
                     let paths: Vec<PathBuf> = app.reload_paths.drain().collect();
                     for p in paths {
                         if let Some(i) = app.tabs.iter().position(|t| same_path(&t.path, &p)) {
-                            app.reload(i);
+                            app.reload_changed(i);
                         }
                     }
                 });
             });
+    }
+
+    /// Reloads a tab whose file changed on disk, unless the change is this app's own save or
+    /// a reload would drop unsaved edits.
+    fn reload_changed(&mut self, index: usize) {
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        if tab.saved.is_some() && tab.saved == file_stamp(&tab.path) {
+            return;
+        }
+        if tab.dirty {
+            let name = tab.name();
+            self.status(format!("{name} changed on disk; your edits are kept"));
+            return;
+        }
+        self.reload(index);
     }
 
     pub fn reload(&mut self, index: usize) {
@@ -785,12 +841,16 @@ impl App {
         tab.metadata = metadata;
         tab.attachments = attachments;
         tab.layers = layers;
+        tab.dirty = false;
+        tab.saved = None;
+        tab.edits = History::default();
         tab.view = (0.0, 0.0);
         tab.pending = spot.map(|mut s| {
             s.page = s.page.min(tab.sizes.len() - 1);
             s
         });
         let query = tab.search.query.clone();
+        self.refresh_names();
         if active {
             if let Some(window) = self.window() {
                 window.set_page_count(self.tabs[index].page_count() as i32);
@@ -873,6 +933,17 @@ impl App {
             },
             Ask::OpenUri(uri) => shell_open(&uri),
             Ask::Restore(files) => self.open_paths(files),
+            Ask::Discard(path) => {
+                if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
+                    self.discard_tab(i);
+                }
+            }
+            Ask::Quit => {
+                for tab in &mut self.tabs {
+                    tab.dirty = false;
+                }
+                let _ = slint::quit_event_loop();
+            }
             Ask::Message => {}
         }
         self.show_dialog();
@@ -2730,6 +2801,177 @@ impl App {
         });
     }
 
+    // ---------------------------------------------------------------- editing
+
+    /// Window title and tab strip, after a tab's name or unsaved state changed.
+    fn refresh_names(&self) {
+        self.refresh_tabs();
+        if let (Some(window), Some(tab)) = (self.window(), self.tab()) {
+            window.set_window_title(format!("{} — micropdf", tab.title()).into());
+        }
+    }
+
+    /// Redraws the active tab after an edit changed `page`, or any page when None.
+    fn edited(&mut self, page: Option<usize>) {
+        let thumb_generation = self.bump();
+        let Some(tab) = self.tab() else { return };
+        let edits = self.engine.history(tab.info.id).unwrap_or_default();
+        let Some(tab) = self.tab_mut() else { return };
+        tab.edits = edits;
+        tab.dirty = true;
+        // A new tile generation; the old tiles show until the new ones arrive.
+        tab.signature = (0, 0, ReadingMode::Normal);
+        tab.thumbs.clear();
+        tab.thumbs_inflight.clear();
+        tab.thumb_generation = thumb_generation;
+        match page {
+            Some(p) => {
+                tab.texts.remove(&p);
+                tab.links.remove(&p);
+            }
+            None => {
+                tab.texts.clear();
+                tab.links.clear();
+                tab.selection = None;
+            }
+        }
+        self.refresh_names();
+        self.rebuild_thumbs();
+        self.refresh_marks();
+        self.update_view();
+    }
+
+    /// Highlights, underlines or strikes out the selected text.
+    pub fn markup(&mut self, kind: AnnotKind) {
+        let Some(sel) = self.tab().and_then(|t| t.selection) else {
+            self.status("Select text first".into());
+            return;
+        };
+        let Some(text) = self.page_text(sel.page) else {
+            return;
+        };
+        let range = sel.range();
+        if range.end > text.chars.len() {
+            return;
+        }
+        let rects = text.line_rects(range);
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        let style = Style {
+            color: markup_color(kind),
+            author: std::env::var("USERNAME").unwrap_or_default(),
+        };
+        let new = NewAnnot::TextMarkup { kind, rects };
+        match self.engine.add_annotation(doc, sel.page, new, style) {
+            Ok(_) => {
+                if let Some(tab) = self.tab_mut() {
+                    tab.selection = None;
+                }
+                self.edited(Some(sel.page));
+            }
+            Err(e) => self.status(format!("Could not add the comment: {e}")),
+        }
+    }
+
+    pub fn undo(&mut self, redo: bool) {
+        let Some(tab) = self.tab() else { return };
+        let (doc, step) = if redo {
+            (tab.info.id, tab.edits.redo.clone())
+        } else {
+            (tab.info.id, tab.edits.undo.clone())
+        };
+        let Some(step) = step else {
+            self.status(
+                if redo {
+                    "Nothing to redo"
+                } else {
+                    "Nothing to undo"
+                }
+                .into(),
+            );
+            return;
+        };
+        let result = if redo {
+            self.engine.redo(doc)
+        } else {
+            self.engine.undo(doc)
+        };
+        match result {
+            Ok(_) => {
+                self.edited(None);
+                let verb = if redo { "Redid" } else { "Undid" };
+                self.status(format!("{verb}: {step}"));
+            }
+            Err(e) => self.status(format!("Could not undo: {e}")),
+        }
+    }
+
+    /// Writes the active tab's edits into its file, appended after the original bytes.
+    pub fn save(&mut self) {
+        let Some(tab) = self.tab() else { return };
+        if !tab.dirty {
+            self.status("No changes to save".into());
+            return;
+        }
+        let (doc, path) = (tab.info.id, tab.path.clone());
+        match self.engine.save(doc, &path, true) {
+            Ok(()) => {
+                if let Some(tab) = self.tab_mut() {
+                    tab.dirty = false;
+                    tab.saved = file_stamp(&path);
+                }
+                self.refresh_names();
+                self.status(format!("Saved {}", file_name(&path)));
+            }
+            Err(e) => self.message("Could not save", format!("{}\n\n{e}", path.display())),
+        }
+    }
+
+    /// Writes the active tab, edits included, to a new file and switches the tab to it.
+    pub fn save_as(&mut self, target: PathBuf) {
+        let Some(index) = self.active else { return };
+        let (doc, old) = (self.tabs[index].info.id, self.tabs[index].path.clone());
+        if same_path(&old, &target) {
+            self.save();
+            return;
+        }
+        if let Err(e) = self.engine.save(doc, &target, false) {
+            self.message("Could not save", format!("{}\n\n{e}", target.display()));
+            return;
+        }
+        self.tabs[index].path = target.clone();
+        self.unwatch(&old);
+        self.watch(&target);
+        self.settings.add_recent(&target);
+        self.reload(index);
+        self.tabs[index].saved = file_stamp(&target);
+        self.save_session();
+        self.status(format!("Saved {}", file_name(&target)));
+    }
+
+    /// Whether the window may close now; if edits would be lost, asks first and says no.
+    pub fn confirm_quit(&mut self) -> bool {
+        let dirty = self.tabs.iter().filter(|t| t.dirty).count();
+        if dirty == 0 {
+            return true;
+        }
+        let text = if dirty == 1 {
+            "One file has changes that are not saved.".to_owned()
+        } else {
+            format!("{dirty} files have changes that are not saved.")
+        };
+        self.push_dialog(Dialog {
+            ask: Ask::Quit,
+            kind: "confirm",
+            title: "Quit without saving?".into(),
+            text,
+            ok: "Quit without saving",
+            cancel: "Keep open",
+        });
+        false
+    }
+
     pub fn close_active(&mut self) {
         if let Some(a) = self.active {
             self.close_tab(a);
@@ -2823,6 +3065,19 @@ pub fn file_name(path: &Path) -> String {
 }
 
 /// Windows paths compare case-insensitively.
+fn file_stamp(path: &Path) -> Option<(u64, SystemTime)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+fn markup_color(kind: AnnotKind) -> [f32; 3] {
+    match kind {
+        AnnotKind::Underline => [0.1, 0.45, 0.9],
+        AnnotKind::StrikeOut => [0.85, 0.15, 0.15],
+        _ => [1.0, 0.85, 0.0],
+    }
+}
+
 fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
 }

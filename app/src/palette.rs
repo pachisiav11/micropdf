@@ -16,6 +16,8 @@ const fn c(id: &'static str, title: &'static str, shortcut: &'static str) -> Com
 
 pub const COMMANDS: &[Command] = &[
     c("open", "Open file", "Ctrl+O"),
+    c("save", "Save", "Ctrl+S"),
+    c("save-as", "Save as", "Ctrl+Shift+S"),
     c("close-tab", "Close tab", "Ctrl+W"),
     c("reopen-tab", "Reopen closed tab", "Ctrl+Shift+T"),
     c("next-tab", "Next tab", "Ctrl+Tab"),
@@ -51,6 +53,11 @@ pub const COMMANDS: &[Command] = &[
     c("properties", "Document properties", "Ctrl+D"),
     c("copy", "Copy selected text", "Ctrl+C"),
     c("select-all", "Select all text on this page", "Ctrl+A"),
+    c("undo", "Undo", "Ctrl+Z"),
+    c("redo", "Redo", "Ctrl+Y"),
+    c("highlight", "Highlight selected text", ""),
+    c("underline", "Underline selected text", ""),
+    c("strikeout", "Strike out selected text", ""),
     c("fullscreen", "Full screen", "F11"),
     c("present", "Presentation mode", "Ctrl+L"),
     c("print", "Print", "Ctrl+P"),

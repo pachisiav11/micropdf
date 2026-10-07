@@ -57,6 +57,41 @@ fn open(name: &'static str) -> impl Fn(&MainWindow) {
     }
 }
 
+/// A scratch copy of hello.pdf to edit, and the target of Save As.
+fn scratch(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("micropdf-ui-{}-{name}", std::process::id()))
+}
+
+fn active_title(w: &MainWindow) -> String {
+    w.get_tabs()
+        .row_data(w.get_active_tab() as usize)
+        .map(|t| t.title.to_string())
+        .unwrap_or_default()
+}
+
+/// Comments on page 1 of the active tab, as the engine has them now.
+fn comments() -> usize {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        app.engine().annotations(doc, 0).ok().map(|a| a.len())
+    })
+    .flatten()
+    .unwrap_or(usize::MAX)
+}
+
+/// Comments on page 1 of the file at `path`, read from disk.
+fn comments_in(path: &std::path::Path) -> usize {
+    let engine = viewer::with(|app| app.engine()).unwrap();
+    let Ok(info) = engine.open(path) else {
+        return usize::MAX;
+    };
+    let n = engine
+        .annotations(info.id, 0)
+        .map_or(usize::MAX, |a| a.len());
+    engine.close(info.id);
+    n
+}
+
 fn tab_count(w: &MainWindow) -> usize {
     w.get_tabs().row_count()
 }
@@ -91,6 +126,8 @@ fn steps() -> Vec<Step> {
     let tabs_before = Rc::new(Cell::new(0usize));
     let tabs_after = Rc::clone(&tabs_before);
     let tabs_reopened = Rc::clone(&tabs_before);
+    let tabs_edited = Rc::new(Cell::new(0usize));
+    let tabs_edited_after = Rc::clone(&tabs_edited);
     vec![
         step("empty window", |_| {}, |w| !w.get_has_document()),
         step("open hello.pdf", open("hello.pdf"), |w| {
@@ -314,6 +351,73 @@ fn steps() -> Vec<Step> {
             "declining keeps the page",
             |w| w.invoke_dialog_cancel(),
             |w| w.get_dialog_kind().is_empty() && page(w) == "1",
+        ),
+        step(
+            "open an editable copy",
+            |_| {
+                std::fs::copy(fixture("hello.pdf"), scratch("edit.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("edit.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("edit.pdf")) && comments() == 0,
+        ),
+        step(
+            "highlight the selection",
+            |w| {
+                w.invoke_command("select-all".into());
+                w.invoke_command("highlight".into());
+            },
+            |w| comments() == 1 && active_title(w).starts_with('\u{2022}') && marks(w, 2) == 0,
+        ),
+        step("undo takes it back", command("undo"), |w| {
+            comments() == 0 && w.get_status_left() == "Undid: Highlight"
+        }),
+        step("redo puts it back", command("redo"), |_| comments() == 1),
+        step("save writes it into the file", command("save"), |w| {
+            !active_title(w).starts_with('\u{2022}') && comments_in(&scratch("edit.pdf")) == 1
+        }),
+        step(
+            "save as writes a new file and switches to it",
+            |w| {
+                w.invoke_command("select-all".into());
+                w.invoke_command("underline".into());
+                viewer::with(|app| app.save_as(scratch("copy.pdf")));
+            },
+            |w| {
+                active_title(w) == viewer::file_name(&scratch("copy.pdf"))
+                    && comments() == 2
+                    && comments_in(&scratch("edit.pdf")) == 1
+            },
+        ),
+        step(
+            "closing an edited tab asks first",
+            |w| {
+                w.invoke_command("select-all".into());
+                w.invoke_command("strikeout".into());
+                w.invoke_command("close-tab".into());
+            },
+            |w| w.get_dialog_kind() == "confirm" && w.get_dialog_title() == "Close without saving?",
+        ),
+        step(
+            "keep open keeps the tab",
+            |w| w.invoke_dialog_cancel(),
+            |w| w.get_dialog_kind().is_empty() && active_title(w).starts_with('\u{2022}'),
+        ),
+        step(
+            "close without saving drops the edits",
+            move |w| {
+                tabs_edited.set(tab_count(w));
+                w.invoke_command("close-tab".into());
+                w.invoke_dialog_accept("".into());
+            },
+            move |w| {
+                let closed = tab_count(w) + 1 == tabs_edited_after.get();
+                if closed {
+                    assert_eq!(comments_in(&scratch("copy.pdf")), 2);
+                    let _ = std::fs::remove_file(scratch("edit.pdf"));
+                    let _ = std::fs::remove_file(scratch("copy.pdf"));
+                }
+                closed
+            },
         ),
         step(
             "every button has an accessible name",

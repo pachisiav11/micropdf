@@ -16,6 +16,13 @@ slint::include_modules!();
 
 /// Connects every UI callback to the controller.
 pub fn wire(window: &MainWindow) {
+    window.window().on_close_requested(|| {
+        if viewer::with(viewer::App::confirm_quit).unwrap_or(true) {
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            slint::CloseRequestResponse::KeepWindowShown
+        }
+    });
     window.on_view_changed(|| {
         viewer::with(viewer::App::update_view);
     });
