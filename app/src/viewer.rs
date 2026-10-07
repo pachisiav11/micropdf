@@ -169,6 +169,8 @@ struct DocTab {
     comments: Vec<(usize, Annot)>,
     /// The scan that will replace `comments`, while one runs.
     comments_scan: Option<u64>,
+    /// The comment picked on the page or in the list, by page and id.
+    picked: Option<(usize, i32)>,
 }
 
 impl DocTab {
@@ -534,6 +536,7 @@ impl App {
             edits: History::default(),
             comments: Vec::new(),
             comments_scan: None,
+            picked: None,
         };
         self.tabs.push(tab);
         self.scan_comments(self.tabs.len() - 1);
@@ -887,6 +890,7 @@ impl App {
         tab.saved = None;
         tab.edits = History::default();
         tab.comments.clear();
+        tab.picked = None;
         tab.view = (0.0, 0.0);
         tab.pending = spot.map(|mut s| {
             s.page = s.page.min(tab.sizes.len() - 1);
@@ -2041,6 +2045,15 @@ impl App {
             self.use_field(page, field);
             return;
         }
+        let comment = self.comment_at(x, y);
+        let had = self.tab_mut().and_then(|t| t.picked.take()).is_some();
+        if let Some(index) = comment {
+            self.pick_comment(index);
+            return;
+        }
+        if had {
+            self.refresh_marks();
+        }
         match self.link_at(x, y) {
             Some(LinkTarget::Page { page, top }) => self.go_to(page, top, true),
             Some(LinkTarget::Uri(uri)) => self.confirm_uri(uri),
@@ -2049,6 +2062,10 @@ impl App {
     }
 
     pub fn pointer_double(&mut self, x: f32, y: f32) {
+        if let Some(index) = self.comment_at(x, y) {
+            self.comment_edit(index);
+            return;
+        }
         let Some((page, px, py)) = self.hit(x, y) else {
             return;
         };
@@ -2145,7 +2162,10 @@ impl App {
     }
 
     pub fn clear_selection(&mut self) -> bool {
-        let had = self.tab_mut().and_then(|t| t.selection.take()).is_some();
+        let Some(tab) = self.tab_mut() else {
+            return false;
+        };
+        let had = tab.selection.take().is_some() | tab.picked.take().is_some();
         if had {
             self.refresh_marks();
         }
@@ -2182,6 +2202,12 @@ impl App {
             if let Some(f) = tab.layout.to_view(selection_rects.0, rect) {
                 marks.push(mark_item(f, 2));
             }
+        }
+        if let Some((page, id)) = tab.picked
+            && let Some((_, a)) = tab.comments.iter().find(|(p, a)| *p == page && a.id == id)
+            && let Some(f) = tab.layout.to_view(page, &a.rect)
+        {
+            marks.push(mark_item(f, 3));
         }
         if marks != self.shown_marks {
             self.models.marks.set_vec(marks.clone());
@@ -3311,6 +3337,47 @@ impl App {
             return;
         };
         self.go_to(page, Some(top), true);
+        self.pick_comment(index);
+    }
+
+    /// The comment under a document-space point; the topmost if several overlap.
+    fn comment_at(&self, x: f32, y: f32) -> Option<usize> {
+        let (page, px, py) = self.hit(x, y)?;
+        self.tab()?
+            .comments
+            .iter()
+            .rposition(|(p, a)| *p == page && a.rect.contains(px, py))
+    }
+
+    fn pick_comment(&mut self, index: usize) {
+        let Some(tab) = self.tab_mut() else { return };
+        let Some((page, a)) = tab.comments.get(index) else {
+            return;
+        };
+        tab.picked = Some((*page, a.id));
+        tab.selection = None;
+        let kind = kind_name(a.kind);
+        self.refresh_marks();
+        self.status(format!(
+            "{kind} selected. Delete removes it; double-click edits its text."
+        ));
+    }
+
+    /// Deletes the picked comment. Returns false if none is picked.
+    pub fn delete_picked(&mut self) -> bool {
+        let Some(index) = self.tab().and_then(|t| {
+            let (page, id) = t.picked?;
+            t.comments
+                .iter()
+                .position(|(p, a)| *p == page && a.id == id)
+        }) else {
+            return false;
+        };
+        if let Some(tab) = self.tab_mut() {
+            tab.picked = None;
+        }
+        self.comment_delete(index);
+        true
     }
 
     pub fn comment_delete(&mut self, index: usize) {

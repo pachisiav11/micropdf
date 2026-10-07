@@ -577,6 +577,16 @@ fn steps() -> Vec<Step> {
             |w| last_comment(w) == "Note: Second",
         ),
         step(
+            "clicking a comment selects it",
+            |w| click_page(w, 0, 460.0, 110.0),
+            |w| marks(w, 3) == 1 && w.get_status_left().starts_with("Note selected"),
+        ),
+        step(
+            "Delete removes the selected comment",
+            key(char::from(Key::Delete)),
+            |w| w.get_comments().row_count() == 0 && marks(w, 3) == 0,
+        ),
+        step(
             "flattening removes the fields",
             command("flatten-form"),
             |w| field_value(0) == "?" && w.get_undo_name() == "Flatten form fields",

@@ -323,6 +323,9 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
         }
         return Handled;
     }
+    if is(Key::Delete) && app.delete_picked() {
+        return Handled;
+    }
     if is(Key::F3) {
         app.find_step(!shift);
         return Handled;

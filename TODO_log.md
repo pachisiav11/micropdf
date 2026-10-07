@@ -26,3 +26,4 @@
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 11:01 | M2 — form filling: list fields, fill in text and choice fields, toggle checkboxes and radio buttons, reset the form; each change undoable
 - Added: 2026-10-07 10:52 | Completed: 2026-10-07 11:04 | M2 — edit a comment's text from the comment list; flatten form fields or comments into the page
 - Added: 2026-10-07 11:01 | Completed: 2026-10-07 11:11 | M2 — XFDF form data: export and import from the palette, nested field names, one undoable step
+- Added: 2026-10-07 10:30 | Completed: 2026-10-07 11:14 | M2 — select a comment on the page or in the list; Delete removes it, double-click edits its text, Esc clears
