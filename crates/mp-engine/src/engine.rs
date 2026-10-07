@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
@@ -8,6 +8,7 @@ use mupdf::link::LinkDestination;
 use mupdf::pdf::{PdfDocument, PdfObject};
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
+use crate::annots::{self, Annot, NewAnnot, Style};
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
@@ -82,6 +83,30 @@ enum Command {
         doc: DocId,
         index: usize,
         reply: Reply<Vec<Layer>>,
+    },
+    Annotations {
+        doc: DocId,
+        page: usize,
+        reply: Reply<Vec<Annot>>,
+    },
+    AddAnnotation {
+        doc: DocId,
+        page: usize,
+        new: NewAnnot,
+        style: Style,
+        reply: Reply<Annot>,
+    },
+    DeleteAnnotation {
+        doc: DocId,
+        page: usize,
+        id: i32,
+        reply: Reply<()>,
+    },
+    Save {
+        doc: DocId,
+        target: PathBuf,
+        incremental: bool,
+        reply: Reply<()>,
     },
     Close {
         doc: DocId,
@@ -167,6 +192,48 @@ impl Engine {
         self.call(|reply| Command::ToggleLayer { doc, index, reply })
     }
 
+    /// Annotations on `page` (not links, form fields or popups).
+    pub fn annotations(&self, doc: DocId, page: usize) -> Result<Vec<Annot>, Error> {
+        self.call(|reply| Command::Annotations { doc, page, reply })
+    }
+
+    /// Adds an annotation. Ask for a new display list of the page afterwards.
+    pub fn add_annotation(
+        &self,
+        doc: DocId,
+        page: usize,
+        new: NewAnnot,
+        style: Style,
+    ) -> Result<Annot, Error> {
+        self.call(|reply| Command::AddAnnotation {
+            doc,
+            page,
+            new,
+            style,
+            reply,
+        })
+    }
+
+    pub fn delete_annotation(&self, doc: DocId, page: usize, id: i32) -> Result<(), Error> {
+        self.call(|reply| Command::DeleteAnnotation {
+            doc,
+            page,
+            id,
+            reply,
+        })
+    }
+
+    /// Writes the document to `target`; see [`crate::annots::save`] for `incremental`.
+    pub fn save(&self, doc: DocId, target: &Path, incremental: bool) -> Result<(), Error> {
+        let target = target.to_path_buf();
+        self.call(|reply| Command::Save {
+            doc,
+            target,
+            incremental,
+            reply,
+        })
+    }
+
     /// Display lists already handed out stay valid after the document closes.
     pub fn close(&self, doc: DocId) {
         let _ = self.sender().send(Command::Close { doc });
@@ -198,6 +265,7 @@ impl Drop for Engine {
 
 fn run(rx: mpsc::Receiver<Command>) {
     let mut docs: HashMap<DocId, Document> = HashMap::new();
+    let mut paths: HashMap<DocId, PathBuf> = HashMap::new();
     let mut lists = ListCache::default();
     let mut next_id = 0;
 
@@ -217,6 +285,7 @@ fn run(rx: mpsc::Receiver<Command>) {
                     next_id += 1;
                     let id = DocId(next_id);
                     docs.insert(id, doc);
+                    paths.insert(id, path.into());
                     Ok(DocInfo {
                         id,
                         page_count,
@@ -353,7 +422,44 @@ fn run(rx: mpsc::Receiver<Command>) {
                 lists.remove_doc(doc);
                 let _ = reply.send(result);
             }
+            Command::Annotations { doc, page, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, |d| annots::list(d, page)));
+            }
+            Command::AddAnnotation {
+                doc,
+                page,
+                new,
+                style,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::add(d, page, &new, &style));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::DeleteAnnotation {
+                doc,
+                page,
+                id,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::delete(d, page, id));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::Save {
+                doc,
+                target,
+                incremental,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| {
+                    let original = paths.get(&doc).ok_or(Error::UnknownDocument)?;
+                    annots::save(d, original, &target, incremental)
+                });
+                let _ = reply.send(result);
+            }
             Command::Close { doc } => {
+                paths.remove(&doc);
                 docs.remove(&doc);
                 lists.remove_doc(doc);
             }
@@ -471,6 +577,11 @@ impl ListCache {
                 self.lists.remove(&key);
             }
         }
+    }
+
+    fn remove_page(&mut self, doc: DocId, page: usize) {
+        self.lists.remove(&(doc, page));
+        self.order.retain(|k| *k != (doc, page));
     }
 
     fn remove_doc(&mut self, doc: DocId) {

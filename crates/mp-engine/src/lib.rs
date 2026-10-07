@@ -5,6 +5,7 @@
 //! out as `Arc<DisplayList>` and a pool of render workers (each with its own cloned
 //! `fz_context`, managed by the `mupdf` crate) turns them into pixels and text.
 
+mod annots;
 mod engine;
 mod error;
 mod fonts;
@@ -12,6 +13,7 @@ mod render;
 mod text;
 mod types;
 
+pub use annots::{Annot, AnnotKind, NewAnnot, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::has_cjk;

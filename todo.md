@@ -5,6 +5,9 @@
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
+- 2026-10-07 10:30: M2 — undo/redo: C shim over pdf_begin_operation/pdf_undo/pdf_redo (mupdf-rs has no journal API)
+- 2026-10-07 10:30: M2 — comment tools in the UI: toolbar mode, highlight from selection, note, shapes, ink, comment list, Save / Save As
+- 2026-10-07 10:30: M2 — atomic save over the open file (temp file + ReplaceFileW; MuPDF must open files with FILE_SHARE_DELETE)
 - 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)
