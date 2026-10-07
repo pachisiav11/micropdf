@@ -555,6 +555,9 @@ impl App {
         self.shared.thumbs.lock().unwrap().clear();
         window.set_has_document(false);
         window.set_window_title("micropdf".into());
+        window.set_dirty(false);
+        window.set_undo_name("".into());
+        window.set_redo_name("".into());
         window.set_active_tab(-1);
         window.set_page_count(0);
         window.set_page_text("".into());
@@ -595,7 +598,7 @@ impl App {
         }
         self.active = Some(index);
         self.drag = None;
-        self.refresh_tabs();
+        self.refresh_names();
         let tab = &mut self.tabs[index];
         window.set_has_document(true);
         window.set_window_title(format!("{} — micropdf", tab.title()).into());
@@ -2808,6 +2811,9 @@ impl App {
         self.refresh_tabs();
         if let (Some(window), Some(tab)) = (self.window(), self.tab()) {
             window.set_window_title(format!("{} — micropdf", tab.title()).into());
+            window.set_dirty(tab.dirty);
+            window.set_undo_name(tab.edits.undo.clone().unwrap_or_default().into());
+            window.set_redo_name(tab.edits.redo.clone().unwrap_or_default().into());
         }
     }
 

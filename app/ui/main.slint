@@ -266,6 +266,10 @@ export component MainWindow inherits Window {
     in property <bool> vim-enabled;
     in property <bool> can-back;
     in property <bool> can-forward;
+    // Names of the steps Undo and Redo would take; empty when there is none.
+    in property <string> undo-name;
+    in property <string> redo-name;
+    in property <bool> dirty;
     in property <string> status-left;
     in property <string> status-right;
 
@@ -462,6 +466,30 @@ export component MainWindow inherits Window {
                             root.command("open");
                         }
                     }
+                    ToolButton {
+                        icon: "\u{E74E}";
+                        tip: "Save (Ctrl+S)";
+                        enabled: root.dirty;
+                        clicked => {
+                            root.command("save");
+                        }
+                    }
+                    ToolButton {
+                        icon: "\u{E7A7}";
+                        tip: root.undo-name != "" ? "Undo " + root.undo-name + " (Ctrl+Z)" : "Undo (Ctrl+Z)";
+                        enabled: root.undo-name != "";
+                        clicked => {
+                            root.command("undo");
+                        }
+                    }
+                    ToolButton {
+                        icon: "\u{E7A6}";
+                        tip: root.redo-name != "" ? "Redo " + root.redo-name + " (Ctrl+Y)" : "Redo (Ctrl+Y)";
+                        enabled: root.redo-name != "";
+                        clicked => {
+                            root.command("redo");
+                        }
+                    }
                     Rectangle { width: 6px; }
                     ToolButton {
                         icon: "\u{E72B}";
@@ -565,6 +593,31 @@ export component MainWindow inherits Window {
                     Rectangle {
                         horizontal-stretch: 1;
                     }
+                    ToolButton {
+                        icon: "\u{E7E6}";
+                        tip: "Highlight selected text";
+                        enabled: root.has-document;
+                        clicked => {
+                            root.command("highlight");
+                        }
+                    }
+                    ToolButton {
+                        icon: "\u{E8DC}";
+                        tip: "Underline selected text";
+                        enabled: root.has-document;
+                        clicked => {
+                            root.command("underline");
+                        }
+                    }
+                    ToolButton {
+                        icon: "\u{EDE0}";
+                        tip: "Strike out selected text";
+                        enabled: root.has-document;
+                        clicked => {
+                            root.command("strikeout");
+                        }
+                    }
+                    Rectangle { width: 6px; }
                     ToolButton {
                         icon: "\u{E721}";
                         tip: "Find (Ctrl+F)";

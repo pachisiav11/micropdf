@@ -368,12 +368,21 @@ fn steps() -> Vec<Step> {
             },
             |w| comments() == 1 && active_title(w).starts_with('\u{2022}') && marks(w, 2) == 0,
         ),
+        step(
+            "the toolbar offers to undo it",
+            |_| {},
+            |w| w.get_dirty() && w.get_undo_name() == "Highlight" && w.get_redo_name().is_empty(),
+        ),
         step("undo takes it back", command("undo"), |w| {
-            comments() == 0 && w.get_status_left() == "Undid: Highlight"
+            comments() == 0
+                && w.get_status_left() == "Undid: Highlight"
+                && w.get_redo_name() == "Highlight"
         }),
         step("redo puts it back", command("redo"), |_| comments() == 1),
         step("save writes it into the file", command("save"), |w| {
-            !active_title(w).starts_with('\u{2022}') && comments_in(&scratch("edit.pdf")) == 1
+            !active_title(w).starts_with('\u{2022}')
+                && !w.get_dirty()
+                && comments_in(&scratch("edit.pdf")) == 1
         }),
         step(
             "save as writes a new file and switches to it",
