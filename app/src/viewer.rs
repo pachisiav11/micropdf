@@ -149,6 +149,8 @@ struct DocTab {
     thumbs_inflight: HashSet<usize>,
     texts: HashMap<usize, Rc<PageText>>,
     links: HashMap<usize, Rc<Vec<Link>>>,
+    /// Form widgets by page; cleared on every edit, since values and calculations change.
+    fields: HashMap<usize, Rc<Vec<Field>>>,
     search: Search,
     selection: Option<Selection>,
     history: Vec<Spot>,
@@ -524,6 +526,7 @@ impl App {
             thumbs_inflight: HashSet::new(),
             texts: HashMap::new(),
             links: HashMap::new(),
+            fields: HashMap::new(),
             search: Search::default(),
             selection: None,
             history: Vec::new(),
@@ -886,6 +889,7 @@ impl App {
         tab.thumbs_inflight.clear();
         tab.texts.clear();
         tab.links.clear();
+        tab.fields.clear();
         tab.selection = None;
         tab.outline = outline;
         tab.metadata = metadata;
@@ -1861,7 +1865,10 @@ impl App {
         if self.drag.is_some() || self.presenting() {
             return;
         }
-        let cursor = if self.link_at(x, y).is_some() {
+        let cursor = if self.link_at(x, y).is_some()
+            || self.comment_at(x, y).is_some()
+            || self.field_at(x, y).is_some()
+        {
             2
         } else if self.over_text(x, y) {
             1
@@ -2994,6 +3001,7 @@ impl App {
         tab.thumbs.clear();
         tab.thumbs_inflight.clear();
         tab.thumb_generation = thumb_generation;
+        tab.fields.clear();
         match page {
             Some(p) => {
                 tab.texts.remove(&p);
@@ -3221,14 +3229,21 @@ impl App {
         }
     }
 
-    fn field_at(&self, x: f32, y: f32) -> Option<(usize, Field)> {
+    fn field_at(&mut self, x: f32, y: f32) -> Option<(usize, Field)> {
         let (page, px, py) = self.hit(x, y)?;
-        let doc = self.tab()?.info.id;
-        let fields = self.engine.fields(doc, page).ok()?;
+        let tab = self.tab()?;
+        let fields = match tab.fields.get(&page) {
+            Some(f) => Rc::clone(f),
+            None => {
+                let f = Rc::new(self.engine.fields(tab.info.id, page).unwrap_or_default());
+                self.tab_mut()?.fields.insert(page, Rc::clone(&f));
+                f
+            }
+        };
         fields
-            .into_iter()
+            .iter()
             .find(|f| f.rect.contains(px, py))
-            .map(|f| (page, f))
+            .map(|f| (page, f.clone()))
     }
 
     fn use_field(&mut self, page: usize, field: Field) {

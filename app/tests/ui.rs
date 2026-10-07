@@ -550,6 +550,14 @@ fn steps() -> Vec<Step> {
             |w| field_value(1) == "Yes" && w.get_undo_name() == "Check box",
         ),
         step(
+            "a field shows the hand cursor",
+            |w| {
+                let p = w.get_pages().iter().find(|p| p.index == 0).unwrap();
+                w.invoke_hover(p.x + 200.0 / 612.0 * p.width, p.y + 91.0 / 792.0 * p.height);
+            },
+            |w| w.get_cursor() == 2,
+        ),
+        step(
             "export the form data",
             |_| viewer::with(|app| app.export_form(scratch("form.xfdf"))).unwrap(),
             |_| {
