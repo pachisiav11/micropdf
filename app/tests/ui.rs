@@ -576,7 +576,7 @@ fn steps() -> Vec<Step> {
                 if done {
                     let _ = std::fs::remove_file(scratch("form.xfdf"));
                 }
-                done && w.get_status_left().starts_with("Filled in 2 fields")
+                done && w.get_status_left().starts_with("Filled in 3 fields")
             },
         ),
         step("reset again", command("reset-form"), |_| {

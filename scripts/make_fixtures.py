@@ -1,7 +1,7 @@
 """Writes the small, committed test PDFs into fixtures/.
 
 outline-links.pdf  3 pages; outline with 3 entries; page 1 links to page 3 and to a URL.
-form.pdf           AcroForm with a text field and a checkbox.
+form.pdf           AcroForm with a text field, a checkbox and a combo box.
 truncated.pdf      hello.pdf cut before its xref table (MuPDF must repair it).
 not-a-pdf.pdf      plain text with a .pdf name (must fail cleanly).
 attachment.pdf     one page; embeds notes.txt in the EmbeddedFiles name tree.
@@ -65,16 +65,17 @@ def outline_links() -> bytes:
 
 
 def form() -> bytes:
-    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6 text field, 7 checkbox, 8-9 checkbox appearances
+    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6 text field, 7 checkbox, 8-9 checkbox appearances,
+    # 10 combo box
     on = stream(b"q 0 0 0 rg BT /ZaDb 12 Tf 2 3 Td (4) Tj ET Q", b"/Type /XObject /Subtype /Form /BBox [0 0 16 16] ")
     off = stream(b"", b"/Type /XObject /Subtype /Form /BBox [0 0 16 16] ")
     objs = [
-        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R] /NeedAppearances true "
+        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R 10 0 R] /NeedAppearances true "
         b"/DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
-        b"/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R] >>",
-        stream(b"BT /F1 14 Tf 72 700 Td (Name:) Tj 0 -40 Td (I agree:) Tj ET"),
+        b"/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R 10 0 R] >>",
+        stream(b"BT /F1 14 Tf 72 700 Td (Name:) Tj 0 -40 Td (I agree:) Tj 0 -40 Td (Colour:) Tj ET"),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V () /Rect [150 690 400 712] "
         b"/F 4 /P 3 0 R /DA (/Helv 12 Tf 0 g) /MK << /BC [0.5 0.5 0.5] >> >>",
@@ -82,6 +83,9 @@ def form() -> bytes:
         b"/F 4 /P 3 0 R /MK << /BC [0.5 0.5 0.5] >> /AP << /N << /Yes 8 0 R /Off 9 0 R >> >> >>",
         on,
         off,
+        b"<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (colour) /V (Green) "
+        b"/Opt [(Red) (Green) (Blue)] /Rect [150 612 300 630] /F 4 /P 3 0 R /DA (/Helv 12 Tf 0 g) "
+        b"/MK << /BC [0.5 0.5 0.5] >> >>",
     ]
     return serialize(objs)
 

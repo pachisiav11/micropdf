@@ -1,18 +1,18 @@
 %PDF-1.7
 %‚„œ”
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R] /NeedAppearances true /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>
+<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R 10 0 R] /NeedAppearances true /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>
 endobj
 2 0 obj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R] >>
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R 10 0 R] >>
 endobj
 4 0 obj
-<< /Length 59 >>
+<< /Length 81 >>
 stream
-BT /F1 14 Tf 72 700 Td (Name:) Tj 0 -40 Td (I agree:) Tj ET
+BT /F1 14 Tf 72 700 Td (Name:) Tj 0 -40 Td (I agree:) Tj 0 -40 Td (Colour:) Tj ET
 endstream
 endobj
 5 0 obj
@@ -36,20 +36,24 @@ stream
 
 endstream
 endobj
+10 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (colour) /V (Green) /Opt [(Red) (Green) (Blue)] /Rect [150 612 300 630] /F 4 /P 3 0 R /DA (/Helv 12 Tf 0 g) /MK << /BC [0.5 0.5 0.5] >> >>
+endobj
 xref
-0 10
+0 11
 0000000000 65535 f 
 0000000015 00000 n 
-0000000180 00000 n 
-0000000237 00000 n 
-0000000385 00000 n 
-0000000494 00000 n 
-0000000564 00000 n 
-0000000727 00000 n 
-0000000922 00000 n 
-0000001064 00000 n 
+0000000187 00000 n 
+0000000244 00000 n 
+0000000399 00000 n 
+0000000530 00000 n 
+0000000600 00000 n 
+0000000763 00000 n 
+0000000958 00000 n 
+0000001100 00000 n 
+0000001197 00000 n 
 trailer
-<< /Size 10 /Root 1 0 R >>
+<< /Size 11 /Root 1 0 R >>
 startxref
-1161
+1407
 %%EOF

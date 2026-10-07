@@ -16,19 +16,29 @@ fn fills_in_toggles_and_resets_fields() {
     let kinds: Vec<_> = fields.iter().map(|f| (f.kind, f.name.as_str())).collect();
     assert_eq!(
         kinds,
-        [(FieldKind::Text, "name"), (FieldKind::Checkbox, "agree")]
+        [
+            (FieldKind::Text, "name"),
+            (FieldKind::Checkbox, "agree"),
+            (FieldKind::Choice, "colour")
+        ]
     );
-    let (name, agree) = (fields[0].id, fields[1].id);
+    let (name, agree, colour) = (fields[0].id, fields[1].id, fields[2].id);
     assert_eq!(fields[0].value, "");
     assert!(!fields[0].read_only);
+    assert_eq!(fields[2].options, ["Red", "Green", "Blue"]);
+    assert_eq!(fields[2].value, "Green");
 
     engine
         .edit_field(doc, 0, name, FieldEdit::Value("Ada Lovelace".into()))
+        .unwrap();
+    engine
+        .edit_field(doc, 0, colour, FieldEdit::Value("Blue".into()))
         .unwrap();
     engine.edit_field(doc, 0, agree, FieldEdit::Toggle).unwrap();
     let fields = engine.fields(doc, 0).unwrap();
     assert_eq!(fields[0].value, "Ada Lovelace");
     assert_eq!(fields[1].value, "Yes");
+    assert_eq!(fields[2].value, "Blue");
     // The filled-in text is drawn.
     let list = engine.display_list(doc, 0).unwrap();
     let text = mp_engine::page_text(&list).unwrap();
@@ -101,7 +111,7 @@ fn form_data_round_trips_through_xfdf() {
     assert!(xfdf.contains(r#"<field name="agree"><value>Yes</value></field>"#));
 
     engine.reset_form(doc).unwrap();
-    assert_eq!(engine.import_xfdf(doc, xfdf).unwrap(), 2);
+    assert_eq!(engine.import_xfdf(doc, xfdf).unwrap(), 3);
     let fields = engine.fields(doc, 0).unwrap();
     assert_eq!(fields[0].value, "A & <B>");
     assert_eq!(fields[1].value, "Yes");
