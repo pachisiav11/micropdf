@@ -132,6 +132,16 @@ enum Command {
         doc: DocId,
         reply: Reply<()>,
     },
+    ExportXfdf {
+        doc: DocId,
+        file: String,
+        reply: Reply<String>,
+    },
+    ImportXfdf {
+        doc: DocId,
+        xml: String,
+        reply: Reply<usize>,
+    },
     Save {
         doc: DocId,
         target: PathBuf,
@@ -314,6 +324,16 @@ impl Engine {
 
     pub fn reset_form(&self, doc: DocId) -> Result<(), Error> {
         self.call(|reply| Command::ResetForm { doc, reply })
+    }
+
+    /// The form's values as XFDF; `file` is the PDF's name, recorded in the XFDF.
+    pub fn export_xfdf(&self, doc: DocId, file: String) -> Result<String, Error> {
+        self.call(|reply| Command::ExportXfdf { doc, file, reply })
+    }
+
+    /// Fills the form from XFDF. Returns how many fields took a value.
+    pub fn import_xfdf(&self, doc: DocId, xml: String) -> Result<usize, Error> {
+        self.call(|reply| Command::ImportXfdf { doc, xml, reply })
     }
 
     /// Writes the document to `target`; see [`crate::annots::save`] for `incremental`.
@@ -570,6 +590,14 @@ fn run(rx: mpsc::Receiver<Command>) {
                 reply,
             } => {
                 let result = with_doc(&docs, doc, |d| forms::edit(d, page, id, &edit));
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
+            }
+            Command::ExportXfdf { doc, file, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, |d| forms::export_xfdf(d, &file)));
+            }
+            Command::ImportXfdf { doc, xml, reply } => {
+                let result = with_doc(&docs, doc, |d| forms::import_xfdf(d, &xml));
                 lists.remove_doc(doc);
                 let _ = reply.send(result);
             }

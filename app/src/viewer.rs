@@ -3260,6 +3260,38 @@ impl App {
         });
     }
 
+    /// Writes the active tab's form values to `target` as XFDF.
+    pub fn export_form(&mut self, target: PathBuf) {
+        let Some(tab) = self.tab() else { return };
+        let (doc, name) = (tab.info.id, tab.name());
+        let result = self
+            .engine
+            .export_xfdf(doc, name)
+            .map_err(|e| e.to_string())
+            .and_then(|xml| std::fs::write(&target, xml).map_err(|e| e.to_string()));
+        match result {
+            Ok(()) => self.status(format!("Exported form data to {}", file_name(&target))),
+            Err(e) => self.message("Could not export form data", e),
+        }
+    }
+
+    /// Fills the active tab's form from the XFDF file at `path`.
+    pub fn import_form(&mut self, path: PathBuf) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        let result = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|xml| self.engine.import_xfdf(doc, xml).map_err(|e| e.to_string()));
+        match result {
+            Ok(n) => {
+                self.edited(None);
+                self.status(format!("Filled in {n} fields from {}", file_name(&path)));
+            }
+            Err(e) => self.message("Could not import form data", e),
+        }
+    }
+
     pub fn reset_form(&mut self) {
         let Some(doc) = self.tab().map(|t| t.info.id) else {
             return;

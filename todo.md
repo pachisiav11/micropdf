@@ -6,7 +6,7 @@
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
 - 2026-10-07 10:30: M2 — comments: change a comment's colour; select and move a comment on the page; GUI check of the tool outline
-- 2026-10-07 11:01: M2 — forms: edit fields in place on the page (not a dialog), Tab between fields, list boxes, JavaScript calculate/format, FDF/XFDF import and export
+- 2026-10-07 11:01: M2 — forms: edit fields in place on the page (not a dialog), Tab between fields, list boxes, JavaScript calculate/format, FDF import/export, comments in XFDF
 - 2026-10-07 10:30: M2 — atomic save over the open file (temp file + ReplaceFileW; MuPDF must open files with FILE_SHARE_DELETE)
 - 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)

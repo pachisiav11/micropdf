@@ -531,8 +531,30 @@ fn steps() -> Vec<Step> {
             |w| click_page(w, 0, 158.0, 132.0),
             |w| field_value(1) == "Yes" && w.get_undo_name() == "Check box",
         ),
+        step(
+            "export the form data",
+            |_| viewer::with(|app| app.export_form(scratch("form.xfdf"))).unwrap(),
+            |_| {
+                std::fs::read_to_string(scratch("form.xfdf"))
+                    .is_ok_and(|x| x.contains("<value>Ada Lovelace</value>"))
+            },
+        ),
         step("reset clears the form", command("reset-form"), |_| {
             field_value(0).is_empty() && field_value(1) == "Off"
+        }),
+        step(
+            "import fills it in again",
+            |_| viewer::with(|app| app.import_form(scratch("form.xfdf"))).unwrap(),
+            |w| {
+                let done = field_value(0) == "Ada Lovelace" && field_value(1) == "Yes";
+                if done {
+                    let _ = std::fs::remove_file(scratch("form.xfdf"));
+                }
+                done && w.get_status_left().starts_with("Filled in 2 fields")
+            },
+        ),
+        step("reset again", command("reset-form"), |_| {
+            field_value(0).is_empty()
         }),
         step(
             "a note on the form",

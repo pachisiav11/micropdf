@@ -2638,6 +2638,7 @@ version = "0.0.0"
 dependencies = [
  "dwrote",
  "mupdf",
+ "roxmltree",
 ]
 
 [[package]]

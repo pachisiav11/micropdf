@@ -82,3 +82,40 @@ fn flattening_keeps_the_look_and_drops_the_fields() {
     engine.undo(doc).unwrap();
     assert_eq!(engine.annotations(doc, 0).unwrap().len(), 1);
 }
+
+#[test]
+fn form_data_round_trips_through_xfdf() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("form.pdf")).unwrap().id;
+    let fields = engine.fields(doc, 0).unwrap();
+    engine
+        .edit_field(doc, 0, fields[0].id, FieldEdit::Value("A & <B>".into()))
+        .unwrap();
+    engine
+        .edit_field(doc, 0, fields[1].id, FieldEdit::Toggle)
+        .unwrap();
+
+    let xfdf = engine.export_xfdf(doc, "form.pdf".into()).unwrap();
+    assert!(xfdf.contains(r#"<f href="form.pdf"/>"#), "{xfdf}");
+    assert!(xfdf.contains(r#"<field name="name"><value>A &amp; &lt;B&gt;</value></field>"#));
+    assert!(xfdf.contains(r#"<field name="agree"><value>Yes</value></field>"#));
+
+    engine.reset_form(doc).unwrap();
+    assert_eq!(engine.import_xfdf(doc, xfdf).unwrap(), 2);
+    let fields = engine.fields(doc, 0).unwrap();
+    assert_eq!(fields[0].value, "A & <B>");
+    assert_eq!(fields[1].value, "Yes");
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Import form data")
+    );
+
+    // Nested XFDF fields name their children relative to the parent.
+    let nested = r#"<xfdf xmlns="http://ns.adobe.com/xfdf/"><fields>
+        <field name="name"><value>Nested</value></field>
+        <field name="group"><field name="unknown"><value>x</value></field></field>
+        </fields></xfdf>"#;
+    assert_eq!(engine.import_xfdf(doc, nested.into()).unwrap(), 1);
+    assert_eq!(engine.fields(doc, 0).unwrap()[0].value, "Nested");
+    assert!(engine.import_xfdf(doc, "not xml".into()).is_err());
+}

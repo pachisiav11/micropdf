@@ -121,3 +121,90 @@ pub fn reset(doc: &Document) -> Result<(), Error> {
         Ok(())
     })
 }
+
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The form's values as XFDF, the XML form-data format Acrobat reads. `file` names the PDF.
+pub fn export_xfdf(doc: &Document, file: &str) -> Result<String, Error> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <xfdf xmlns=\"http://ns.adobe.com/xfdf/\" xml:space=\"preserve\">\n",
+    );
+    out += &format!("<f href=\"{}\"/>\n<fields>\n", escape(file));
+    for page in 0..doc.page_count()? as usize {
+        for field in list(doc, page)? {
+            let fillable = matches!(
+                field.kind,
+                FieldKind::Text | FieldKind::Checkbox | FieldKind::Radio | FieldKind::Choice
+            );
+            // Radio buttons and repeated widgets share one field.
+            if fillable && !field.name.is_empty() && seen.insert(field.name.clone()) {
+                out += &format!(
+                    "<field name=\"{}\"><value>{}</value></field>\n",
+                    escape(&field.name),
+                    escape(&field.value)
+                );
+            }
+        }
+    }
+    out += "</fields>\n</xfdf>\n";
+    Ok(out)
+}
+
+/// Field values in XFDF, keyed by full name. Nested fields join their names with dots.
+fn parse_xfdf(xml: &str) -> Result<Vec<(String, String)>, Error> {
+    let tree = roxmltree::Document::parse(xml).map_err(|_| Error::Invalid("not an XFDF file"))?;
+    let mut values = Vec::new();
+    for node in tree.descendants().filter(|n| n.has_tag_name("field")) {
+        let Some(value) = node.children().find(|n| n.has_tag_name("value")) else {
+            continue;
+        };
+        let mut names: Vec<&str> = node
+            .ancestors()
+            .filter(|n| n.has_tag_name("field"))
+            .filter_map(|n| n.attribute("name"))
+            .collect();
+        names.reverse();
+        values.push((names.join("."), value.text().unwrap_or_default().to_owned()));
+    }
+    Ok(values)
+}
+
+/// Fills the form from XFDF as one undoable step. Returns how many fields took a value.
+pub fn import_xfdf(doc: &Document, xml: &str) -> Result<usize, Error> {
+    let values: std::collections::HashMap<String, String> = parse_xfdf(xml)?.into_iter().collect();
+    operation(doc, "Import form data", || {
+        let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        let mut filled = std::collections::HashSet::new();
+        for i in 0..doc.page_count()? {
+            let mut page = pdf_page(doc, i as usize)?;
+            for mut widget in page.widgets() {
+                let Some(name) = widget.name()? else { continue };
+                let Some(value) = values.get(&name) else {
+                    continue;
+                };
+                if widget.is_readonly()? {
+                    continue;
+                }
+                if widget.set_value(&mut pdf, value, false)? {
+                    filled.insert(name);
+                }
+            }
+            page.update()?;
+        }
+        Ok(filled.len())
+    })
+}

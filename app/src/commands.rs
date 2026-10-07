@@ -16,6 +16,8 @@ pub fn run(id: &str) {
     match id {
         "open" => open_dialog(),
         "save-as" => save_as_dialog(),
+        "export-form" => form_data_dialog(true),
+        "import-form" => form_data_dialog(false),
         "print" => crate::print::start(),
         "register-pdf" => {
             let message = match crate::assoc::register() {
@@ -115,6 +117,8 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "open" => return Some("open"),
         "print" => return Some("print"),
         "save-as" => return Some("save-as"),
+        "export-form" => return Some("export-form"),
+        "import-form" => return Some("import-form"),
         _ => {}
     }
     None
@@ -176,6 +180,43 @@ fn save_as_dialog() {
         if let Some(target) = target {
             let _ = slint::invoke_from_event_loop(move || {
                 viewer::with(|app| app.save_as(target));
+            });
+        }
+    });
+}
+
+/// Asks for an XFDF file to export the form data to, or to import it from.
+fn form_data_dialog(export: bool) {
+    let Some(path) = viewer::with(|app| app.active_path()).flatten() else {
+        return;
+    };
+    if SAVE_DIALOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut dialog = rfd::FileDialog::new().add_filter("XFDF form data", &["xfdf"]);
+        if let Some(dir) = path.parent() {
+            dialog = dialog.set_directory(dir);
+        }
+        let target = if export {
+            let name = path.with_extension("xfdf");
+            dialog
+                .set_title("Export form data")
+                .set_file_name(viewer::file_name(&name))
+                .save_file()
+        } else {
+            dialog.set_title("Import form data").pick_file()
+        };
+        SAVE_DIALOG.store(false, Ordering::SeqCst);
+        if let Some(target) = target {
+            let _ = slint::invoke_from_event_loop(move || {
+                viewer::with(|app| {
+                    if export {
+                        app.export_form(target);
+                    } else {
+                        app.import_form(target);
+                    }
+                });
             });
         }
     });

@@ -11,3 +11,5 @@ publish.workspace = true
 # DirectWrite font names for the system-font loader (src/fonts.rs).
 dwrote = { version = "0.11.5", default-features = false }
 mupdf.workspace = true
+# Reads XFDF form data (src/forms.rs); already in the tree through Slint's SVG support.
+roxmltree = "0.21"
