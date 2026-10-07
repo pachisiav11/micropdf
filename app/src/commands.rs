@@ -90,6 +90,8 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "redo" => app.undo(true),
         "save" => app.save(),
         "reset-form" => app.reset_form(),
+        "flatten-form" => app.flatten(false, true),
+        "flatten-comments" => app.flatten(true, false),
         "tool-select" => app.set_tool(Tool::Select),
         "tool-note" => app.set_tool(Tool::Note),
         "tool-text" => app.set_tool(Tool::TextBox),

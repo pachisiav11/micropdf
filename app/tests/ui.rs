@@ -535,6 +535,31 @@ fn steps() -> Vec<Step> {
             field_value(0).is_empty() && field_value(1) == "Off"
         }),
         step(
+            "a note on the form",
+            |w| {
+                w.invoke_command("tool-note".into());
+                click_page(w, 0, 450.0, 100.0);
+                w.invoke_dialog_accept("First".into());
+                w.invoke_command("tool-select".into());
+            },
+            |w| last_comment(w) == "Note: First",
+        ),
+        step(
+            "editing a comment shows its text",
+            |w| w.invoke_comment_edit(0),
+            |w| w.get_dialog_kind() == "input" && w.get_dialog_input() == "First",
+        ),
+        step(
+            "the comment takes the new text",
+            |w| w.invoke_dialog_accept("Second".into()),
+            |w| last_comment(w) == "Note: Second",
+        ),
+        step(
+            "flattening removes the fields",
+            command("flatten-form"),
+            |w| field_value(0) == "?" && w.get_undo_name() == "Flatten form fields",
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

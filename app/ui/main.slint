@@ -350,6 +350,7 @@ export component MainWindow inherits Window {
     callback attachment-save(int);
     callback layer-toggle(int);
     callback comment-clicked(int);
+    callback comment-edit(int);
     callback comment-delete(int);
 
     public function focus-view() {
@@ -895,6 +896,25 @@ export component MainWindow inherits Window {
                                                 text: comment.text;
                                                 color: Theme.text;
                                                 overflow: elide;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 28px;
+                                            border-radius: Theme.radius-sm;
+                                            background: edit-touch.has-hover ? Theme.bg-active : transparent;
+                                            accessible-role: button;
+                                            accessible-label: "Edit comment text";
+                                            accessible-action-default => {
+                                                root.comment-edit(i);
+                                            }
+                                            Icon {
+                                                text: "\u{E70F}";
+                                                color: Theme.text-muted;
+                                            }
+                                            edit-touch := TouchArea {
+                                                clicked => {
+                                                    root.comment-edit(i);
+                                                }
                                             }
                                         }
                                         Rectangle {

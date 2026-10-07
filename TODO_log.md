@@ -24,3 +24,4 @@
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 10:52 | M2 — comment list in the sidebar: every page scanned off the UI thread, jump to and delete a comment
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 10:56 | M2 — comment tools: note, text box, rectangle, ellipse, line and ink with a live outline while dragging; Esc returns to text selection
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 11:01 | M2 — form filling: list fields, fill in text and choice fields, toggle checkboxes and radio buttons, reset the form; each change undoable
+- Added: 2026-10-07 10:52 | Completed: 2026-10-07 11:04 | M2 — edit a comment's text from the comment list; flatten form fields or comments into the page

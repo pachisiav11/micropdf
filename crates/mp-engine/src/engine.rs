@@ -108,6 +108,19 @@ enum Command {
         page: usize,
         reply: Reply<Vec<Field>>,
     },
+    SetContents {
+        doc: DocId,
+        page: usize,
+        id: i32,
+        text: String,
+        reply: Reply<()>,
+    },
+    Flatten {
+        doc: DocId,
+        comments: bool,
+        fields: bool,
+        reply: Reply<()>,
+    },
     EditField {
         doc: DocId,
         page: usize,
@@ -245,6 +258,33 @@ impl Engine {
             doc,
             page,
             id,
+            reply,
+        })
+    }
+
+    /// Replaces a comment's text.
+    pub fn set_contents(
+        &self,
+        doc: DocId,
+        page: usize,
+        id: i32,
+        text: String,
+    ) -> Result<(), Error> {
+        self.call(|reply| Command::SetContents {
+            doc,
+            page,
+            id,
+            text,
+            reply,
+        })
+    }
+
+    /// Draws comments and/or form fields into the page content; see [`crate::annots::flatten`].
+    pub fn flatten(&self, doc: DocId, comments: bool, fields: bool) -> Result<(), Error> {
+        self.call(|reply| Command::Flatten {
+            doc,
+            comments,
+            fields,
             reply,
         })
     }
@@ -495,6 +535,27 @@ fn run(rx: mpsc::Receiver<Command>) {
                     }
                     Ok(layers(d))
                 });
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
+            }
+            Command::SetContents {
+                doc,
+                page,
+                id,
+                text,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::set_contents(d, page, id, &text));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::Flatten {
+                doc,
+                comments,
+                fields,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::flatten(d, comments, fields));
                 lists.remove_doc(doc);
                 let _ = reply.send(result);
             }

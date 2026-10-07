@@ -208,6 +208,12 @@ enum Ask {
         page: usize,
         rect: Rect,
     },
+    /// New text for a comment.
+    Comment {
+        page: usize,
+        id: i32,
+        value: String,
+    },
     /// New text for a form field; `value` fills the input at first.
     Field {
         page: usize,
@@ -932,7 +938,7 @@ impl App {
                 window.set_dialog_ok(d.ok.into());
                 window.set_dialog_cancel_text(d.cancel.into());
                 let input = match &d.ask {
-                    Ask::Field { value, .. } => value.clone(),
+                    Ask::Field { value, .. } | Ask::Comment { value, .. } => value.clone(),
                     _ => String::new(),
                 };
                 window.set_dialog_input(input.into());
@@ -991,6 +997,14 @@ impl App {
                 }
             }
             Ask::Field { page, id, .. } => self.edit_field(page, id, FieldEdit::Value(input)),
+            Ask::Comment { page, id, .. } => {
+                if let Some(doc) = self.tab().map(|t| t.info.id) {
+                    match self.engine.set_contents(doc, page, id, input) {
+                        Ok(()) => self.edited(Some(page)),
+                        Err(e) => self.status(format!("Could not change the comment: {e}")),
+                    }
+                }
+            }
             Ask::Quit => {
                 for tab in &mut self.tabs {
                     tab.dirty = false;
@@ -3217,6 +3231,33 @@ impl App {
             Ok(()) => self.edited(None),
             Err(e) => self.status(format!("Could not fill in the field: {e}")),
         }
+    }
+
+    pub fn flatten(&mut self, comments: bool, fields: bool) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        match self.engine.flatten(doc, comments, fields) {
+            Ok(()) => self.edited(None),
+            Err(e) => self.status(format!("Could not flatten: {e}")),
+        }
+    }
+
+    pub fn comment_edit(&mut self, index: usize) {
+        let Some((page, id, value, kind)) = self.tab().and_then(|t| {
+            let (p, a) = t.comments.get(index)?;
+            Some((*p, a.id, a.contents.clone(), a.kind))
+        }) else {
+            return;
+        };
+        self.push_dialog(Dialog {
+            ask: Ask::Comment { page, id, value },
+            kind: "input",
+            title: format!("Edit {}", kind_name(kind).to_lowercase()),
+            text: String::new(),
+            ok: "Save",
+            cancel: "Cancel",
+        });
     }
 
     pub fn reset_form(&mut self) {

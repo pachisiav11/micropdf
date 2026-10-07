@@ -284,6 +284,33 @@ pub fn delete(doc: &Document, page: usize, id: i32) -> Result<(), Error> {
     })
 }
 
+/// Replaces the text of a comment.
+pub fn set_contents(doc: &Document, page: usize, id: i32, text: &str) -> Result<(), Error> {
+    operation(doc, "Edit comment", || {
+        let mut page = pdf_page(doc, page)?;
+        let mut annot = page
+            .annotations()
+            .find(|a| a.xref().ok() == Some(id))
+            .ok_or(Error::NotFound)?;
+        annot.set_contents(text)?;
+        page.update()?;
+        Ok(())
+    })
+}
+
+/// Draws comments, form fields or both into the page content, where they can no longer change.
+pub fn flatten(doc: &Document, comments: bool, fields: bool) -> Result<(), Error> {
+    let name = match (comments, fields) {
+        (true, false) => "Flatten comments",
+        (false, true) => "Flatten form fields",
+        _ => "Flatten",
+    };
+    operation(doc, name, || {
+        let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        Ok(pdf.bake(comments, fields)?)
+    })
+}
+
 /// The names of the steps Undo and Redo would take back or redo, if any.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
