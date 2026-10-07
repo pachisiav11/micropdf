@@ -21,3 +21,4 @@
 - Added: 2026-10-07 00:18 | Completed: 2026-10-07 10:30 | M2 — engine annotations: list/add/delete (markup, note, free text, ink, shapes, line) and full or incremental save
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 10:36 | M2 — undo/redo: MuPDF journal via a C shim; each edit is one named step
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 10:45 | M2 — viewer edits: highlight/underline/strike-out from the selection, undo/redo, Save (incremental) and Save As, unsaved marker, close and quit guards
+- Added: 2026-10-07 10:30 | Completed: 2026-10-07 10:52 | M2 — comment list in the sidebar: every page scanned off the UI thread, jump to and delete a comment

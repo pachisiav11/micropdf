@@ -83,6 +83,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "sidebar" => app.toggle_sidebar(),
         "show-thumbs" => app.set_sidebar(true, Some(0)),
         "show-outline" => app.set_sidebar(true, Some(1)),
+        "show-comments" => app.set_sidebar(true, Some(5)),
         "properties" => app.show_properties(),
         "copy" => app.copy(),
         "undo" => app.undo(false),

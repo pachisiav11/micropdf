@@ -95,4 +95,10 @@ pub fn wire(window: &MainWindow) {
     window.on_layer_toggle(|i| {
         viewer::with(|app| app.layer_toggle(i as usize));
     });
+    window.on_comment_clicked(|i| {
+        viewer::with(|app| app.comment_clicked(i as usize));
+    });
+    window.on_comment_delete(|i| {
+        viewer::with(|app| app.comment_delete(i as usize));
+    });
 }

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use mp_engine::{
-    AnnotKind, Attachment, DocId, DocInfo, Engine, History, Layer, Link, LinkTarget, NewAnnot,
-    OutlineItem, PageText, Rect, RenderPool, Style, Tile,
+    Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, History, Layer, Link, LinkTarget,
+    NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
@@ -24,8 +24,8 @@ use crate::palette;
 use crate::recolor::ReadingMode;
 use crate::settings::Settings;
 use crate::{
-    AttachmentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem, PaletteItem,
-    TabItem, Theme, ThumbItem, TileItem,
+    AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem,
+    PaletteItem, TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -165,6 +165,10 @@ struct DocTab {
     /// The file's size and time after this app last wrote it, so the watcher skips own saves.
     saved: Option<(u64, SystemTime)>,
     edits: History,
+    /// Every comment in the document, by page.
+    comments: Vec<(usize, Annot)>,
+    /// The scan that will replace `comments`, while one runs.
+    comments_scan: Option<u64>,
 }
 
 impl DocTab {
@@ -241,6 +245,7 @@ struct Models {
     recent: Rc<VecModel<PaletteItem>>,
     attachments: Rc<VecModel<AttachmentRow>>,
     layers: Rc<VecModel<LayerRow>>,
+    comments: Rc<VecModel<CommentRow>>,
 }
 
 pub struct App {
@@ -292,6 +297,7 @@ impl App {
             recent: Rc::new(VecModel::default()),
             attachments: Rc::new(VecModel::default()),
             layers: Rc::new(VecModel::default()),
+            comments: Rc::new(VecModel::default()),
         };
         window.set_tabs(ModelRc::from(models.tabs.clone()));
         window.set_pages(ModelRc::from(models.pages.clone()));
@@ -304,6 +310,7 @@ impl App {
         window.set_recent_items(ModelRc::from(models.recent.clone()));
         window.set_attachments(ModelRc::from(models.attachments.clone()));
         window.set_layers(ModelRc::from(models.layers.clone()));
+        window.set_comments(ModelRc::from(models.comments.clone()));
 
         window.global::<Theme>().set_dark(settings.dark_theme);
         window.set_vim_enabled(settings.vim);
@@ -497,8 +504,11 @@ impl App {
             dirty: false,
             saved: None,
             edits: History::default(),
+            comments: Vec::new(),
+            comments_scan: None,
         };
         self.tabs.push(tab);
+        self.scan_comments(self.tabs.len() - 1);
         self.settings.add_recent(&path);
         self.watch(&path);
         self.select(self.tabs.len() - 1);
@@ -571,6 +581,7 @@ impl App {
         self.models.info.set_vec(Vec::new());
         self.models.attachments.set_vec(Vec::new());
         self.models.layers.set_vec(Vec::new());
+        self.models.comments.set_vec(Vec::new());
         self.shown_pages.clear();
         self.shown_tiles.clear();
         self.shown_marks.clear();
@@ -847,6 +858,7 @@ impl App {
         tab.dirty = false;
         tab.saved = None;
         tab.edits = History::default();
+        tab.comments.clear();
         tab.view = (0.0, 0.0);
         tab.pending = spot.map(|mut s| {
             s.page = s.page.min(tab.sizes.len() - 1);
@@ -854,6 +866,7 @@ impl App {
         });
         let query = tab.search.query.clone();
         self.refresh_names();
+        self.scan_comments(index);
         if active {
             if let Some(window) = self.window() {
                 window.set_page_count(self.tabs[index].page_count() as i32);
@@ -2579,6 +2592,7 @@ impl App {
             .collect();
         self.models.attachments.set_vec(files);
         self.fill_layers();
+        self.fill_comments();
         let tab_index = window.get_sidebar_tab();
         if (tab_index == 3 && tab.attachments.is_empty())
             || (tab_index == 4 && tab.layers.is_empty())
@@ -2845,6 +2859,114 @@ impl App {
         self.rebuild_thumbs();
         self.refresh_marks();
         self.update_view();
+        self.refresh_comments(page);
+    }
+
+    /// Lists every page's comments on a worker thread; the result replaces the tab's list.
+    fn scan_comments(&mut self, index: usize) {
+        let generation = self.bump();
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        tab.comments_scan = Some(generation);
+        let (doc, pages) = (tab.info.id, tab.page_count());
+        let engine = Arc::clone(&self.engine);
+        std::thread::spawn(move || {
+            let mut all = Vec::new();
+            for page in 0..pages {
+                match engine.annotations(doc, page) {
+                    Ok(list) => all.extend(list.into_iter().map(|a| (page, a))),
+                    Err(_) => return, // closed meanwhile
+                }
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                with(|app| app.comments_scanned(doc, generation, all));
+            });
+        });
+    }
+
+    fn comments_scanned(&mut self, doc: DocId, generation: u64, all: Vec<(usize, Annot)>) {
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|t| t.info.id == doc && t.comments_scan == Some(generation))
+        else {
+            return;
+        };
+        let tab = &mut self.tabs[index];
+        tab.comments = all;
+        tab.comments_scan = None;
+        if self.active == Some(index) {
+            self.fill_comments();
+        }
+    }
+
+    /// Updates the comment list after an edit on `page`, or on any page when None.
+    fn refresh_comments(&mut self, page: Option<usize>) {
+        let Some(index) = self.active else { return };
+        let tab = &self.tabs[index];
+        let (Some(page), None) = (page, tab.comments_scan) else {
+            self.scan_comments(index);
+            return;
+        };
+        let list = self
+            .engine
+            .annotations(tab.info.id, page)
+            .unwrap_or_default();
+        let tab = &mut self.tabs[index];
+        tab.comments.retain(|(p, _)| *p != page);
+        let at = tab.comments.partition_point(|(p, _)| *p < page);
+        tab.comments
+            .splice(at..at, list.into_iter().map(|a| (page, a)));
+        self.fill_comments();
+    }
+
+    fn fill_comments(&self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
+        let rows: Vec<CommentRow> = tab
+            .comments
+            .iter()
+            .map(|(page, a)| CommentRow {
+                kind: kind_name(a.kind).into(),
+                text: a.contents.lines().next().unwrap_or_default().into(),
+                detail: if a.author.is_empty() {
+                    format!("page {}", page + 1)
+                } else {
+                    format!("page {}, {}", page + 1, a.author)
+                }
+                .into(),
+            })
+            .collect();
+        self.models.comments.set_vec(rows);
+        if window.get_sidebar_tab() == 5 && tab.comments.is_empty() {
+            window.set_sidebar_tab(0);
+        }
+    }
+
+    pub fn comment_clicked(&mut self, index: usize) {
+        let Some((page, top)) = self
+            .tab()
+            .and_then(|t| t.comments.get(index))
+            .map(|(p, a)| (*p, (a.rect.y0 - 36.0).max(0.0)))
+        else {
+            return;
+        };
+        self.go_to(page, Some(top), true);
+    }
+
+    pub fn comment_delete(&mut self, index: usize) {
+        let Some((doc, page, id)) = self
+            .tab()
+            .and_then(|t| t.comments.get(index).map(|(p, a)| (t.info.id, *p, a.id)))
+        else {
+            return;
+        };
+        match self.engine.delete_annotation(doc, page, id) {
+            Ok(()) => self.edited(Some(page)),
+            Err(e) => self.status(format!("Could not delete the comment: {e}")),
+        }
     }
 
     /// Highlights, underlines or strikes out the selected text.
@@ -3074,6 +3196,22 @@ pub fn file_name(path: &Path) -> String {
 fn file_stamp(path: &Path) -> Option<(u64, SystemTime)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()?))
+}
+
+fn kind_name(kind: AnnotKind) -> &'static str {
+    match kind {
+        AnnotKind::Highlight => "Highlight",
+        AnnotKind::Underline => "Underline",
+        AnnotKind::StrikeOut => "Strike-out",
+        AnnotKind::Squiggly => "Squiggly",
+        AnnotKind::Note => "Note",
+        AnnotKind::FreeText => "Text box",
+        AnnotKind::Ink => "Drawing",
+        AnnotKind::Square => "Rectangle",
+        AnnotKind::Circle => "Ellipse",
+        AnnotKind::Line => "Line",
+        AnnotKind::Other => "Comment",
+    }
 }
 
 fn markup_color(kind: AnnotKind) -> [f32; 3] {

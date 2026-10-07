@@ -67,6 +67,12 @@ export struct AttachmentRow {
     detail: string,
 }
 
+export struct CommentRow {
+    kind: string,
+    text: string,
+    detail: string,
+}
+
 export struct LayerRow {
     name: string,
     depth: int,
@@ -274,12 +280,13 @@ export component MainWindow inherits Window {
     in property <string> status-right;
 
     in-out property <bool> sidebar-visible;
-    // 0 pages, 1 outline, 2 info, 3 attachments, 4 layers
+    // 0 pages, 1 outline, 2 info, 3 attachments, 4 layers, 5 comments
     in-out property <int> sidebar-tab;
     in property <[ThumbItem]> thumbs;
     in property <[OutlineRow]> outline;
     in property <[InfoRow]> info;
     in property <[AttachmentRow]> attachments;
+    in property <[CommentRow]> comments;
     in property <[LayerRow]> layers;
 
     in-out property <bool> find-visible;
@@ -338,6 +345,8 @@ export component MainWindow inherits Window {
     callback recent-clicked(int);
     callback attachment-save(int);
     callback layer-toggle(int);
+    callback comment-clicked(int);
+    callback comment-delete(int);
 
     public function focus-view() {
         view-focus.focus();
@@ -701,6 +710,7 @@ export component MainWindow inherits Window {
                             spacing: 4px;
                             SidebarTab { text: "Pages"; active: root.sidebar-tab == 0; clicked => { root.sidebar-tab = 0; root.thumbs-scrolled(); } }
                             SidebarTab { text: "Outline"; active: root.sidebar-tab == 1; clicked => { root.sidebar-tab = 1; } }
+                            if root.comments.length > 0: SidebarTab { text: "Comments"; active: root.sidebar-tab == 5; clicked => { root.sidebar-tab = 5; } }
                             if root.layers.length > 0: SidebarTab { text: "Layers"; active: root.sidebar-tab == 4; clicked => { root.sidebar-tab = 4; } }
                             if root.attachments.length > 0: SidebarTab { text: "Files"; active: root.sidebar-tab == 3; clicked => { root.sidebar-tab = 3; } }
                             SidebarTab { text: "Info"; active: root.sidebar-tab == 2; clicked => { root.sidebar-tab = 2; } }
@@ -824,6 +834,59 @@ export component MainWindow inherits Window {
                                             width: 20px;
                                             text: "\u{E74E}";
                                             color: Theme.text-muted;
+                                        }
+                                    }
+                                }
+                            }
+
+                            ListView {
+                                visible: root.sidebar-tab == 5;
+                                for comment[i] in root.comments: Rectangle {
+                                    height: comment.text != "" ? 56px : 40px;
+                                    background: comment-touch.has-hover ? Theme.bg-hover : transparent;
+                                    accessible-role: button;
+                                    accessible-label: comment.kind + ", " + comment.detail + (comment.text != "" ? ": " + comment.text : "");
+                                    comment-touch := TouchArea {
+                                        clicked => {
+                                            root.comment-clicked(i);
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 6px;
+                                        spacing: 6px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: comment.kind + " \u{00B7} " + comment.detail;
+                                                font-size: 11px;
+                                                color: Theme.text-muted;
+                                                overflow: elide;
+                                            }
+                                            if comment.text != "": Text {
+                                                text: comment.text;
+                                                color: Theme.text;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 28px;
+                                            border-radius: Theme.radius-sm;
+                                            background: delete-touch.has-hover ? Theme.bg-active : transparent;
+                                            accessible-role: button;
+                                            accessible-label: "Delete comment";
+                                            accessible-action-default => {
+                                                root.comment-delete(i);
+                                            }
+                                            Icon {
+                                                text: "\u{E74D}";
+                                                color: Theme.text-muted;
+                                            }
+                                            delete-touch := TouchArea {
+                                                clicked => {
+                                                    root.comment-delete(i);
+                                                }
+                                            }
                                         }
                                     }
                                 }

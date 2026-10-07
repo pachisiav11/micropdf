@@ -50,6 +50,7 @@ pub const COMMANDS: &[Command] = &[
     c("sidebar", "Toggle sidebar", "F4"),
     c("show-thumbs", "Show page thumbnails", ""),
     c("show-outline", "Show outline", ""),
+    c("show-comments", "Show comments", ""),
     c("properties", "Document properties", "Ctrl+D"),
     c("copy", "Copy selected text", "Ctrl+C"),
     c("select-all", "Select all text on this page", "Ctrl+A"),

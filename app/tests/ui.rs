@@ -379,6 +379,11 @@ fn steps() -> Vec<Step> {
                 && w.get_redo_name() == "Highlight"
         }),
         step("redo puts it back", command("redo"), |_| comments() == 1),
+        step("the comment list shows it", command("show-comments"), |w| {
+            w.get_sidebar_tab() == 5
+                && w.get_comments().row_count() == 1
+                && w.get_comments().row_data(0).unwrap().kind == "Highlight"
+        }),
         step("save writes it into the file", command("save"), |w| {
             !active_title(w).starts_with('\u{2022}')
                 && !w.get_dirty()
@@ -409,7 +414,16 @@ fn steps() -> Vec<Step> {
         step(
             "keep open keeps the tab",
             |w| w.invoke_dialog_cancel(),
-            |w| w.get_dialog_kind().is_empty() && active_title(w).starts_with('\u{2022}'),
+            |w| {
+                w.get_dialog_kind().is_empty()
+                    && active_title(w).starts_with('\u{2022}')
+                    && w.get_comments().row_count() == 3
+            },
+        ),
+        step(
+            "the list deletes a comment",
+            |w| w.invoke_comment_delete(2),
+            |w| comments() == 2 && w.get_comments().row_count() == 2,
         ),
         step(
             "close without saving drops the edits",
