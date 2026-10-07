@@ -203,6 +203,8 @@ enum Ask {
     Restore(Vec<PathBuf>),
     /// Close the tab for this file and drop its edits.
     Discard(PathBuf),
+    /// Reload the tab for this file and drop its edits.
+    Reload(PathBuf),
     Note {
         page: usize,
         x: f32,
@@ -992,6 +994,11 @@ impl App {
             Ask::Discard(path) => {
                 if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
                     self.discard_tab(i);
+                }
+            }
+            Ask::Reload(path) => {
+                if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
+                    self.reload(i);
                 }
             }
             Ask::Note { page, x, y } => {
@@ -3561,6 +3568,19 @@ impl App {
     }
 
     pub fn reload_active(&mut self) {
+        let Some(tab) = self.tab() else { return };
+        if tab.dirty {
+            let (path, name) = (tab.path.clone(), tab.name());
+            self.push_dialog(Dialog {
+                ask: Ask::Reload(path),
+                kind: "confirm",
+                title: "Reload and lose your changes?".into(),
+                text: format!("{name} has changes that are not saved."),
+                ok: "Reload",
+                cancel: "Keep editing",
+            });
+            return;
+        }
         if let Some(a) = self.active {
             self.reload(a);
         }

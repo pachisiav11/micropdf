@@ -29,3 +29,4 @@
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 11:14 | M2 — select a comment on the page or in the list; Delete removes it, double-click edits its text, Esc clears
 - Added: 2026-10-07 10:30 | Completed: 2026-10-07 11:15 | M2 — change the selected comment's colour (yellow, red, green, blue) from the palette
 - Added: 2026-10-07 11:16 | Completed: 2026-10-07 11:18 | M2 — the unsaved marker clears when undo or redo returns to the saved state
+- Added: 2026-10-07 11:18 | Completed: 2026-10-07 11:20 | M2 — F5 on a tab with unsaved edits asks before it reloads

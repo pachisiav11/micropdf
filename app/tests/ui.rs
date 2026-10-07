@@ -466,6 +466,16 @@ fn steps() -> Vec<Step> {
             },
         ),
         step(
+            "reloading an edited tab asks first",
+            command("reload"),
+            |w| w.get_dialog_title() == "Reload and lose your changes?",
+        ),
+        step(
+            "keep editing keeps the edits",
+            |w| w.invoke_dialog_cancel(),
+            |w| w.get_dialog_kind().is_empty() && comments() == 3,
+        ),
+        step(
             "the list deletes a comment",
             |w| w.invoke_comment_delete(2),
             |w| comments() == 2 && w.get_comments().row_count() == 2,
