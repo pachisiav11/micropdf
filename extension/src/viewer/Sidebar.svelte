@@ -10,6 +10,7 @@
     dpr,
     mode,
     current,
+    versions,
     outline,
     tab = $bindable(),
     ongo,
@@ -20,6 +21,7 @@
     dpr: number;
     mode: ReadingMode;
     current: number;
+    versions: number[];
     outline: OutlineNode[];
     tab: "pages" | "outline";
     ongo: (target: Target) => void;
@@ -84,6 +86,7 @@
           {dpr}
           {mode}
           current={i === current}
+          version={versions[i] ?? 0}
           onpick={(page) => ongo({ page })}
         />
       {/each}

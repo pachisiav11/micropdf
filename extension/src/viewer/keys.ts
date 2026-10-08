@@ -25,6 +25,10 @@ export type Simple =
   | "find-prev"
   | "sidebar"
   | "present"
+  | "undo"
+  | "redo"
+  | "save"
+  | "delete"
   | "escape";
 
 export type Command =
@@ -63,6 +67,9 @@ const CTRL: Record<string, Simple> = {
   "0": "fit-page",
   "1": "zoom-100",
   "2": "fit-width",
+  z: "undo",
+  y: "redo",
+  s: "save",
   Home: "first-page",
   End: "last-page",
 };
@@ -78,6 +85,7 @@ export function mapKey(
     if (k.alt) return null;
     if (k.key === "+") return c(k.shift ? "rotate-cw" : "zoom-in");
     const id = CTRL[k.key.length === 1 ? k.key.toLowerCase() : k.key];
+    if (id === "undo" && k.shift) return c("redo");
     return id ? c(id) : null;
   }
   if (k.alt) {
@@ -92,6 +100,7 @@ export function mapKey(
   }
   if (k.key === "F3") return c(k.shift ? "find-prev" : "find-next");
   if (k.key === "F4") return c("sidebar");
+  if (k.key === "Delete") return c("delete");
 
   if (context.presenting) {
     const next = ["ArrowRight", "ArrowDown", "PageDown", "Enter"].includes(k.key);

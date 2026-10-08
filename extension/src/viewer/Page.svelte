@@ -25,6 +25,7 @@
   import {
     type Drawn,
     Dropped,
+    type FieldInfo,
     type Hit,
     type PageLink,
     type PageSize,
@@ -47,7 +48,9 @@
     clip,
     hits = [],
     currentHit = -1,
+    version,
     onlink,
+    onfill,
   }: {
     pdf: Pdf;
     index: number;
@@ -63,7 +66,11 @@
     clip: Rect | null;
     hits?: Hit[];
     currentHit?: number;
+    /** Goes up whenever an edit changes the page. */
+    version: number;
     onlink: (target: Target) => void;
+    /** A field the reader filled in: its new value, or none to toggle a check box. */
+    onfill: (field: FieldInfo, value?: string) => void;
   } = $props();
 
   let host: HTMLDivElement | undefined = $state();
@@ -73,8 +80,9 @@
   let near = $state(false);
   let lines: TextLine[] | null = $state(null);
   let links: PageLink[] | null = $state(null);
+  let fields: FieldInfo[] | null = $state(null);
   /** The sharp tile on the detail canvas: device pixels at `res` per point. */
-  let tile: { x: number; y: number; width: number; height: number; res: number; mode: ReadingMode } | null =
+  let tile: { x: number; y: number; width: number; height: number; res: number; key: string } | null =
     $state(null);
 
   const width = $derived(size.width * scale);
@@ -83,12 +91,14 @@
   const baseRes = $derived(Math.min(res, Math.sqrt(MAX_PIXELS / (size.width * size.height))));
   /** The whole-page canvas is coarser than the screen, so a tile draws the view sharply. */
   const sharp = $derived(baseRes < res * 0.999);
+  const look = $derived(`${mode}|${version}`);
 
   let baseDrawn = "";
   let baseBusy = false;
   let detailBusy = false;
   let detailTimer = 0;
   let asked = { text: false, links: false };
+  let fieldsAt = -1;
 
   $effect(() => {
     if (!host) return;
@@ -108,33 +118,34 @@
   });
 
   $effect(() => {
-    if (near && base && `${baseRes}|${mode}` !== baseDrawn) void drawBase();
+    if (near && base && `${baseRes}|${look}` !== baseDrawn) void drawBase();
   });
 
   async function drawBase(): Promise<void> {
     if (baseBusy || !base) return;
     baseBusy = true;
-    const [r, m] = [baseRes, mode];
+    const [r, m, k] = [baseRes, mode, look];
     try {
       // Unmounted pages lose their canvas; their requests are dropped.
       const drawn = await pdf.render(index, r, m, undefined, Priority.Visible, () => near && !!base);
       if (near && base) {
         paint(base, drawn);
-        baseDrawn = `${r}|${m}`;
+        baseDrawn = `${r}|${k}`;
       }
     } catch (e) {
       if (!(e instanceof Dropped)) console.warn(`page ${index + 1}:`, e);
     } finally {
       baseBusy = false;
     }
-    // The zoom or the reading mode may have changed while this one was drawn.
-    if (near && `${baseRes}|${mode}` !== baseDrawn) void drawBase();
+    // The zoom, the reading mode or the page may have changed while this one was drawn. An
+    // unmounted page has no canvas, and its derived values are not to be read.
+    if (base && near && `${baseRes}|${look}` !== baseDrawn) void drawBase();
   }
 
   /** The page-space area a new tile should cover, or null when the current one does. */
   function wantedTile(): Rect | null {
     if (!sharp || !near || !clip) return null;
-    if (tile && tile.res === res && tile.mode === mode) {
+    if (tile && tile.res === res && tile.key === look) {
       const [x0, y0] = [tile.x / tile.res, tile.y / tile.res];
       const [x1, y1] = [(tile.x + tile.width) / tile.res, (tile.y + tile.height) / tile.res];
       if (x0 <= clip.x0 && y0 <= clip.y0 && x1 >= clip.x1 && y1 >= clip.y1) return null;
@@ -161,19 +172,19 @@
     const region = wantedTile();
     if (detailBusy || !detail || !region) return;
     detailBusy = true;
-    const [r, m] = [res, mode];
+    const [r, m, k] = [res, mode, look];
     try {
-      const drawn = await pdf.render(index, r, m, region, Priority.Visible, () => near && sharp && !!detail);
-      if (near && sharp && detail) {
+      const drawn = await pdf.render(index, r, m, region, Priority.Visible, () => !!detail && near && sharp);
+      if (detail && near && sharp) {
         paint(detail, drawn);
-        tile = { x: drawn.x, y: drawn.y, width: drawn.width, height: drawn.height, res: r, mode: m };
+        tile = { x: drawn.x, y: drawn.y, width: drawn.width, height: drawn.height, res: r, key: k };
       }
     } catch (e) {
       if (!(e instanceof Dropped)) console.warn(`page ${index + 1}:`, e);
     } finally {
       detailBusy = false;
     }
-    if (wantedTile()) void drawDetail();
+    if (detail && wantedTile()) void drawDetail();
   }
 
   $effect(() => {
@@ -194,6 +205,18 @@
     }
   });
 
+  // Fields change with edits: a calculation can fill in one from another.
+  $effect(() => {
+    if (!near || fieldsAt === version) return;
+    const v = (fieldsAt = version);
+    pdf.fields(index, () => near && !!host).then(
+      (f) => fieldsAt === v && (fields = f),
+      (e) => (e instanceof Dropped ? (fieldsAt = -1) : (fields = [])),
+    );
+  });
+
+  const fieldFont = (r: Rect) => Math.min((r.y1 - r.y0) * 0.7, 12) * scale;
+
   function box(r: Rect): string {
     const [x, y] = [r.x0 * scale, r.y0 * scale];
     return `left:${x}px;top:${y}px;width:${(r.x1 - r.x0) * scale}px;height:${(r.y1 - r.y0) * scale}px`;
@@ -205,6 +228,7 @@
   bind:this={host}
   role="group"
   aria-label="Page {index + 1}"
+  data-page={index}
   style:left="{frame.x}px"
   style:top="{frame.y}px"
   style:width="{frame.width}px"
@@ -270,6 +294,54 @@
             style={box(link.rect)}
             onclick={() => onlink(link)}
           ></button>
+        {/if}
+      {/each}
+    {/if}
+    {#if fields}
+      {#each fields as f (f.id)}
+        {#if f.readOnly || f.type === "button" || f.type === "signature"}
+          <!-- Nothing to fill in. -->
+        {:else if f.type === "checkbox" || f.type === "radiobutton"}
+          <button
+            class="field toggle"
+            role={f.type === "checkbox" ? "checkbox" : "radio"}
+            aria-checked={f.checked}
+            aria-label={f.name}
+            style={box(f.rect)}
+            onclick={() => onfill(f)}
+          ></button>
+        {:else if f.type === "text" && f.multiline}
+          <textarea
+            class="field"
+            aria-label={f.name}
+            style={box(f.rect)}
+            style:font-size="{fieldFont(f.rect)}px"
+            maxlength={f.maxLen || undefined}
+            value={f.value}
+            onchange={(e) => onfill(f, e.currentTarget.value)}
+          ></textarea>
+        {:else if f.type === "text"}
+          <input
+            class="field"
+            aria-label={f.name}
+            style={box(f.rect)}
+            style:font-size="{fieldFont(f.rect)}px"
+            maxlength={f.maxLen || undefined}
+            value={f.value}
+            onchange={(e) => onfill(f, e.currentTarget.value)}
+          />
+        {:else}
+          <select
+            class="field"
+            aria-label={f.name}
+            style={box(f.rect)}
+            style:font-size="{fieldFont(f.rect)}px"
+            onchange={(e) => onfill(f, e.currentTarget.value)}
+          >
+            {#each f.options as option (option)}
+              <option selected={option === f.value}>{option}</option>
+            {/each}
+          </select>
         {/if}
       {/each}
     {/if}
@@ -341,6 +413,46 @@
     border: 0;
     background: transparent;
     cursor: pointer;
+  }
+
+  /* The page draws the field's value; the control shows only while it is being used. */
+  .field {
+    position: absolute;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 2px;
+    border: 1px solid transparent;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    color: transparent;
+    font-family: Helvetica, Arial, sans-serif;
+    resize: none;
+    appearance: none;
+    cursor: pointer;
+  }
+
+  input.field,
+  textarea.field {
+    cursor: text;
+  }
+
+  .field:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  }
+
+  .field:focus {
+    outline: 2px solid var(--color-accent);
+  }
+
+  input.field:focus,
+  textarea.field:focus,
+  select.field:focus {
+    background: #fff;
+    color: #000;
+  }
+
+  option {
+    color: #000;
   }
 
   .link:hover,

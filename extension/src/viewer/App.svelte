@@ -1,6 +1,20 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { fileName, pdfSource, startPage } from "../rules";
+  import {
+    DEFAULT_COLORS,
+    type Markup,
+    SWATCHES,
+    TOOLS,
+    type Tool,
+    css,
+    draft,
+    isDraw,
+    isMarkup,
+    needsText,
+    spansOf,
+  } from "./annotate";
+  import Draw from "./Draw.svelte";
   import { type Command, mapKey, vimState } from "./keys";
   import {
     LINE,
@@ -18,7 +32,20 @@
     zoomStep,
   } from "./layout";
   import Page from "./Page.svelte";
-  import { Dropped, type Hit, type Opened, type OutlineNode, type PageSize, Pdf, type Target } from "./pdf";
+  import {
+    type AnnotInfo,
+    Dropped,
+    type Edited,
+    type FieldInfo,
+    type Hit,
+    type Opened,
+    type OutlineNode,
+    type PageSize,
+    Pdf,
+    type Point,
+    type Rgb,
+    type Target,
+  } from "./pdf";
   import type { ReadingMode } from "./recolor";
   import Sidebar from "./Sidebar.svelte";
 
@@ -28,6 +55,8 @@
     vim: boolean;
     sidebar: boolean;
     tab: "pages" | "outline";
+    /** The colours the reader chose per comment tool. */
+    colors: Partial<Record<Tool, Rgb>>;
   }
 
   /** Where the reader was: a page, how far down it, and the middle across the column. */
@@ -70,6 +99,23 @@
   let single = $state(0);
   let presenting = $state(false);
   let beforePresenting: { mode: PageMode; zoom: Zoom; sidebar: boolean } | null = null;
+
+  let commenting = $state(false);
+  let tool: Tool = $state("select");
+  let colors: Partial<Record<Tool, Rgb>> = $state(prefs.colors ?? {});
+  /** Per page, raised by each edit to it, so it draws again. */
+  let versions: number[] = $state.raw([]);
+  let picked: (AnnotInfo & { page: number }) | null = $state(null);
+  let canUndo = $state(false);
+  let canRedo = $state(false);
+  let dirty = $state(false);
+  let saveTo: FileSystemFileHandle | null = null;
+  let author = $state("");
+  let notice = $state("");
+  let noticeTimer = 0;
+  let asking: { title: string; text: string; resolve: (text: string | null) => void } | null = $state(null);
+  let dialog: HTMLDialogElement | undefined = $state();
+  let column: HTMLElement | undefined = $state();
 
   let view: HTMLElement | undefined = $state();
   // The content box, unlike clientWidth's border box, shrinks when a scrollbar appears.
@@ -116,7 +162,7 @@
   $effect(() => {
     if (presenting) return;
     try {
-      localStorage.setItem(PREFS, JSON.stringify({ mode, reading, vim, sidebar, tab } satisfies Prefs));
+      localStorage.setItem(PREFS, JSON.stringify({ mode, reading, vim, sidebar, tab, colors } satisfies Prefs));
     } catch {
       // Storage is off; the settings last for this page.
     }
@@ -133,6 +179,7 @@
   async function show(opened: Opened, start: number | null): Promise<void> {
     locked = opened.needsPassword;
     pages = opened.pages;
+    versions = pages.map(() => 0);
     message = locked || pages.length ? "" : "The PDF has no pages.";
     if (opened.title.trim()) document.title = opened.title.trim();
     if (locked || !pages.length) return;
@@ -429,6 +476,178 @@
     }
   }
 
+  function say(text: string): void {
+    notice = text;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => (notice = ""), 4000);
+  }
+
+  const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const colorOf = (t: Exclude<Tool, "select">) => colors[t] ?? DEFAULT_COLORS[t];
+
+  /** Waits for an edit, then draws again the pages it changed. */
+  async function apply(change: Promise<Edited>, what: string): Promise<boolean> {
+    try {
+      const done = await change;
+      versions = versions.map((v, i) => (!done.pages || done.pages.includes(i) ? v + 1 : v));
+      canUndo = done.canUndo;
+      canRedo = done.canRedo;
+      dirty = true;
+      return true;
+    } catch (e) {
+      say(`Could not ${what}: ${reason(e)}`);
+      return false;
+    }
+  }
+
+  /** Asks for a comment's text; null when the reader cancels. */
+  async function ask(title: string, text = ""): Promise<string | null> {
+    const answer = new Promise<string | null>((resolve) => (asking = { title, text, resolve }));
+    await tick();
+    dialog?.showModal();
+    return answer;
+  }
+
+  function answer(ok: boolean): void {
+    const a = asking;
+    asking = null;
+    if (dialog?.open) dialog.close();
+    a?.resolve(ok ? a.text : null);
+  }
+
+  async function drawn(page: number, points: Point[]): Promise<void> {
+    if (!isDraw(tool)) return;
+    const t = tool;
+    if (!draft(t, points, colorOf(t), "")) {
+      say(t === "text" ? "Drag to draw the text box" : "Drag to draw the shape");
+      return;
+    }
+    const text = needsText(t) ? await ask(t === "note" ? "Add a note" : "Add a text box") : "";
+    if (text === null || (needsText(t) && !text.trim())) return;
+    await apply(pdf.addAnnot(page, draft(t, points, colorOf(t), text)!, author), "add the comment");
+  }
+
+  /** The selected part of each line of the text layer, in page space, by page. */
+  function selectedLines(): Map<number, Rect[]> {
+    const lines = new Map<number, Rect[]>();
+    const selection = getSelection();
+    if (!column || !selection?.rangeCount || selection.isCollapsed) return lines;
+    const range = selection.getRangeAt(0);
+    const origin = column.getBoundingClientRect();
+    for (const span of column.querySelectorAll<HTMLElement>(".text span")) {
+      const text = span.firstChild;
+      if (!text || !range.intersectsNode(span)) continue;
+      const part = document.createRange();
+      part.selectNodeContents(text);
+      if (span.contains(range.startContainer)) part.setStart(range.startContainer, range.startOffset);
+      if (span.contains(range.endContainer)) part.setEnd(range.endContainer, range.endOffset);
+      const r = part.getBoundingClientRect();
+      const page = Number(span.closest<HTMLElement>("[data-page]")?.dataset.page);
+      const f = layout.frames[page];
+      if (!r.width || !f) continue;
+      const [ax, ay] = frameToPage(layout, page, r.left - origin.left - f.x, r.top - origin.top - f.y);
+      const [bx, by] = frameToPage(layout, page, r.right - origin.left - f.x, r.bottom - origin.top - f.y);
+      const rect = { x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) };
+      lines.set(page, [...(lines.get(page) ?? []), rect]);
+    }
+    return lines;
+  }
+
+  /** Marks the selected text; false when none is selected. */
+  async function markup(kind: Markup): Promise<boolean> {
+    const lines = selectedLines();
+    if (!lines.size) return false;
+    getSelection()?.removeAllRanges();
+    for (const [page, rects] of lines) {
+      const annot = { kind, spans: spansOf(rects), color: colorOf(kind) };
+      await apply(pdf.addAnnot(page, annot, author), "mark the text");
+    }
+    return true;
+  }
+
+  async function choose(t: Tool): Promise<void> {
+    // With text selected, a markup button marks it, as in Acrobat.
+    if (isMarkup(t) && (await markup(t))) return;
+    tool = t;
+    picked = null;
+  }
+
+  function setColor(c: Rgb): void {
+    if (tool === "select" && picked && !picked.locked) {
+      void apply(pdf.editAnnot(picked.page, picked.id, { color: c }), "change the colour");
+    } else if (tool !== "select") {
+      colors = { ...colors, [tool]: c };
+    }
+  }
+
+  /** Picks the comment under a click with the Select tool. */
+  async function pick(e: MouseEvent): Promise<void> {
+    if (tool !== "select" || !column || !getSelection()?.isCollapsed) return;
+    if (e.target instanceof Element && e.target.closest("a, button, input, select, textarea, .card")) return;
+    const r = column.getBoundingClientRect();
+    const at = hit(layout, e.clientX - r.left, e.clientY - r.top);
+    const info = at ? await pdf.annotAt(at[0], [at[1], at[2]]).catch(() => null) : null;
+    picked = at && info ? { ...info, page: at[0] } : null;
+  }
+
+  async function editPicked(): Promise<void> {
+    const p = picked;
+    if (!p || p.locked) return;
+    getSelection()?.removeAllRanges();
+    const text = await ask("Edit the comment", p.contents);
+    if (text === null) return;
+    if (await apply(pdf.editAnnot(p.page, p.id, { contents: text }), "change the comment")) {
+      picked = { ...p, contents: text };
+    }
+  }
+
+  async function deletePicked(): Promise<void> {
+    const p = picked;
+    if (!p || p.locked) return;
+    picked = null;
+    await apply(pdf.deleteAnnot(p.page, p.id), "delete the comment");
+  }
+
+  // Not held back by canUndo and canRedo: they lag behind edits still in the worker's queue.
+  function history(redo: boolean): void {
+    picked = null;
+    void apply(redo ? pdf.redo() : pdf.undo(), redo ? "redo" : "undo");
+  }
+
+  function fill(page: number, field: FieldInfo, value?: string): void {
+    const change = value === undefined ? pdf.toggleField(page, field.id) : pdf.setField(page, field.id, value);
+    void apply(change, "fill in the field");
+  }
+
+  /** Writes the PDF with every change to a file the reader picks once, then to the same file. */
+  async function save(): Promise<void> {
+    if (!pages.length) return;
+    const w = window as { showSaveFilePicker?: (o: object) => Promise<FileSystemFileHandle> };
+    const suggestedName = /\.pdf$/i.test(name) ? name : `${name}.pdf`;
+    const types = [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }];
+    try {
+      // The file first: a cancelled dialog leaves the document and its history alone.
+      saveTo ??= w.showSaveFilePicker ? await w.showSaveFilePicker({ suggestedName, types }) : null;
+      const bytes = await pdf.save();
+      canUndo = canRedo = false;
+      if (saveTo) {
+        const out = await saveTo.createWritable();
+        await out.write(bytes);
+        await out.close();
+      } else {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+        a.download = suggestedName;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+      }
+      dirty = false;
+      say(`Saved ${saveTo?.name ?? suggestedName}`);
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) say(`Could not save: ${reason(e)}`);
+    }
+  }
+
   function run(cmd: Command): void {
     switch (cmd.id) {
       case "scroll": {
@@ -515,9 +734,21 @@
       case "copy":
         document.execCommand("copy");
         break;
+      case "undo":
+      case "redo":
+        history(cmd.id === "redo");
+        break;
+      case "save":
+        void save();
+        break;
+      case "delete":
+        void deletePicked();
+        break;
       case "escape":
         if (presenting) stopPresenting();
         else if (finding) closeFind();
+        else if (picked) picked = null;
+        else if (tool !== "select") tool = "select";
         else getSelection()?.removeAllRanges();
         break;
     }
@@ -535,7 +766,8 @@
       { vim, presenting },
       keys,
     );
-    if (!cmd) return;
+    // Fields and dialogs keep their own undo.
+    if (!cmd || (typing && (cmd.id === "undo" || cmd.id === "redo"))) return;
     // Escape also closes menus and leaves full screen; the browser does that.
     if (cmd.id !== "escape") e.preventDefault();
     run(cmd);
@@ -600,10 +832,14 @@
 </script>
 
 <!-- The hash names the PDF, which is read once; a new one means a new document. -->
-<svelte:window onkeydown={keydown} onhashchange={() => location.reload()} />
+<svelte:window
+  onkeydown={keydown}
+  onhashchange={() => location.reload()}
+  onbeforeunload={(e) => dirty && e.preventDefault()}
+/>
 <svelte:document onfullscreenchange={() => !document.fullscreenElement && stopPresenting()} />
 
-<div class="viewer" class:presenting>
+<div class="viewer" class:presenting class:commenting={commenting && pages.length > 0 && !presenting}>
   {#if !presenting}
     <header class="toolbar">
       <button
@@ -643,11 +879,55 @@
           >
         </div>
         <button class="text" bind:this={menuButton} popovertarget="view-menu">View</button>
+        <button
+          class="text"
+          class:active={commenting}
+          aria-pressed={commenting}
+          onclick={() => ((commenting = !commenting), commenting || (tool = "select"))}>Comment</button
+        >
+        <button class="text" title="Save a copy with your changes (Ctrl+S)" onclick={save}
+          >{dirty ? "Save •" : "Save"}</button
+        >
         <button class="icon" class:active={finding} aria-label="Find" title="Find (Ctrl+F)" onclick={openFind}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
         </button>
       {/if}
     </header>
+    {#if commenting && pages.length}
+      <!-- Pressing a tool keeps the text selection, for the markup tools. -->
+      <div
+        class="toolbar tools"
+        role="toolbar"
+        tabindex="-1"
+        aria-label="Comment tools"
+        onmousedown={(e) => e.preventDefault()}
+      >
+        {#each TOOLS as [t, label] (t)}
+          <button class="text" class:active={tool === t} aria-pressed={tool === t} onclick={() => choose(t)}
+            >{label}</button
+          >
+        {/each}
+        <span class="sep"></span>
+        {#each SWATCHES as [label, rgb] (label)}
+          <button
+            class="swatch"
+            class:active={tool !== "select" && css(colorOf(tool)) === css(rgb)}
+            aria-label={label}
+            title={label}
+            style:background={css(rgb)}
+            disabled={tool === "select" && (!picked || picked.locked)}
+            onclick={() => setColor(rgb)}
+          ></button>
+        {/each}
+        <span class="sep"></span>
+        <button class="icon" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!canUndo} onclick={() => history(false)}
+          >↶</button
+        >
+        <button class="icon" aria-label="Redo" title="Redo (Ctrl+Y)" disabled={!canRedo} onclick={() => history(true)}
+          >↷</button
+        >
+      </div>
+    {/if}
   {/if}
 
   <div class="body">
@@ -659,6 +939,7 @@
         {dpr}
         mode={reading}
         {current}
+        {versions}
         {outline}
         bind:tab
         ongo={go}
@@ -678,7 +959,16 @@
       {:else if message}
         <p class="message">{message}</p>
       {:else}
-        <div class="column" style:width="{layout.width}px" style:height="{layout.height}px">
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <div
+          class="column"
+          bind:this={column}
+          style:width="{layout.width}px"
+          style:height="{layout.height}px"
+          onclick={pick}
+          ondblclick={editPicked}
+          onmouseup={() => isMarkup(tool) && void markup(tool)}
+        >
           {#each pages as size, i (i)}
             {@const frame = layout.frames[i]}
             {#if frame}
@@ -694,13 +984,45 @@
                 clip={clipOf(i)}
                 hits={found[i]}
                 currentHit={hitAt?.page === i ? hitAt.index : -1}
+                version={versions[i] ?? 0}
                 onlink={go}
+                onfill={(field, value) => fill(i, field, value)}
               />
             {/if}
           {/each}
+          {#if isDraw(tool)}
+            <Draw {layout} {tool} color={css(colorOf(tool))} ondraw={drawn} />
+          {/if}
+          {#if picked}
+            {@const v = toView(layout, picked.page, picked.rect)}
+            {#if v}
+              <div
+                class="picked"
+                style:left="{v.x - 3}px"
+                style:top="{v.y - 3}px"
+                style:width="{v.width + 6}px"
+                style:height="{v.height + 6}px"
+              ></div>
+              <div class="card" role="dialog" aria-label="Comment" style:left="{v.x}px" style:top="{v.y + v.height + 8}px">
+                <div class="muted">{picked.author || "Comment"} · {picked.type}</div>
+                {#if picked.contents}<p>{picked.contents}</p>{/if}
+                {#if picked.locked}
+                  <div class="muted">Locked</div>
+                {:else}
+                  <div class="row">
+                    <button class="text" onclick={editPicked}>Edit</button>
+                    <button class="text" onclick={deletePicked}>Delete</button>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          {/if}
         </div>
       {/if}
     </main>
+    {#if notice}
+      <div class="notice" role="status">{notice}</div>
+    {/if}
     {#if finding}
       <div class="find" role="search">
         <input
@@ -721,6 +1043,31 @@
     {/if}
   </div>
 </div>
+
+<dialog bind:this={dialog} aria-label={asking?.title} onclose={() => answer(false)}>
+  {#if asking}
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        answer(true);
+      }}
+    >
+      <h2>{asking.title}</h2>
+      <!-- svelte-ignore a11y_autofocus -->
+      <textarea
+        bind:value={asking.text}
+        rows="5"
+        autofocus
+        aria-label="Comment text"
+        onkeydown={(e) => e.key === "Enter" && (e.ctrlKey || e.metaKey) && answer(true)}
+      ></textarea>
+      <div class="row">
+        <button class="text" type="button" onclick={() => answer(false)}>Cancel</button>
+        <button class="text primary" type="submit">OK</button>
+      </div>
+    </form>
+  {/if}
+</dialog>
 
 <div id="view-menu" class="menu" popover bind:this={menu} ontoggle={placeMenu}>
   <section>
@@ -768,6 +1115,10 @@
     height: 100%;
   }
 
+  .viewer.commenting {
+    grid-template-rows: auto auto 1fr;
+  }
+
   .viewer.presenting {
     grid-template-rows: 1fr;
     background: #000;
@@ -781,6 +1132,42 @@
     padding: 0 8px;
     background: var(--color-bg-secondary);
     border-bottom: 1px solid var(--color-border-muted);
+  }
+
+  .tools {
+    gap: 2px;
+    overflow-x: auto;
+  }
+
+  .tools .text {
+    flex: none;
+    padding: 0 8px;
+  }
+
+  .sep {
+    flex: none;
+    width: 1px;
+    height: 20px;
+    margin: 0 6px;
+    background: var(--color-border-muted);
+  }
+
+  .swatch {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 50%;
+  }
+
+  .swatch.active {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  .swatch:disabled {
+    opacity: 0.35;
   }
 
   .name {
@@ -888,6 +1275,86 @@
   .column {
     position: relative;
     min-width: 100%;
+  }
+
+  .picked {
+    position: absolute;
+    border: 2px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+  }
+
+  .card {
+    position: absolute;
+    z-index: 1;
+    max-width: 280px;
+    padding: 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-bg-secondary);
+    box-shadow: 0 4px 16px var(--color-shadow-lg);
+    white-space: pre-wrap;
+  }
+
+  .card p {
+    margin: 6px 0;
+  }
+
+  .card .row,
+  dialog .row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  .notice {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-bg-secondary);
+    box-shadow: 0 4px 16px var(--color-shadow-lg);
+  }
+
+  dialog {
+    width: min(420px, calc(100vw - 32px));
+    padding: 16px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-bg-secondary);
+    color: var(--color-text);
+  }
+
+  dialog::backdrop {
+    background: rgb(0 0 0 / 30%);
+  }
+
+  dialog h2 {
+    margin: 0 0 8px;
+    font: inherit;
+    font-weight: 600;
+  }
+
+  dialog textarea {
+    box-sizing: border-box;
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-tertiary);
+    color: var(--color-text);
+    font: inherit;
+    resize: vertical;
+  }
+
+  .primary {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
   }
 
   .message {

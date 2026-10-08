@@ -14,6 +14,7 @@
     dpr,
     mode,
     current,
+    version,
     onpick,
   }: {
     pdf: Pdf;
@@ -23,6 +24,7 @@
     dpr: number;
     mode: ReadingMode;
     current: boolean;
+    version: number;
     onpick: (page: number) => void;
   } = $props();
 
@@ -53,26 +55,26 @@
   });
 
   $effect(() => {
-    if (near && canvas && `${scale * dpr}|${mode}` !== drawn) void draw();
+    if (near && canvas && `${scale * dpr}|${mode}|${version}` !== drawn) void draw();
   });
 
   async function draw(): Promise<void> {
     if (busy || !canvas) return;
     busy = true;
-    const [r, m] = [scale * dpr, mode];
+    const [r, m, v] = [scale * dpr, mode, version];
     try {
       const d = await pdf.render(index, r, m, undefined, Priority.Background, () => near && !!canvas);
       if (!canvas) return;
       canvas.width = d.width;
       canvas.height = d.height;
       canvas.getContext("2d")?.putImageData(new ImageData(d.pixels, d.width, d.height), 0, 0);
-      drawn = `${r}|${m}`;
+      drawn = `${r}|${m}|${v}`;
     } catch (e) {
       if (!(e instanceof Dropped)) console.warn(`thumbnail ${index + 1}:`, e);
     } finally {
       busy = false;
     }
-    if (near && `${scale * dpr}|${mode}` !== drawn) void draw();
+    if (canvas && near && `${scale * dpr}|${mode}|${version}` !== drawn) void draw();
   }
 </script>
 

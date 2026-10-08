@@ -1,11 +1,7 @@
-- 2026-10-07 03:27: M1 — GUI check of clipboard copy and print (selection, password, restore and presentation are covered by app/tests/ui.rs)
 - 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
-- 2026-10-07 10:24: M1 — GUI check: "Add micropdf to Windows PDF apps" lists it in Default apps; touchpad pinch zooms (Windows sends it as Ctrl+wheel)
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
-- 2026-10-07 10:30: M2 — GUI check of the tool outline, the resize handles, the move/resize cursors and the style bar
-- 2026-10-07 11:25: M2 — GUI check (user away): toolbar fits at narrow window widths with the new buttons; sidebar tabs fit with Comments + Layers + Files; the Segoe icons for strike-out (EDE0) and comment tools render
 - 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)
@@ -15,9 +11,7 @@
 - 2026-10-07 00:18: M9 — library + batch (v0.9)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
-- 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
-- 2026-10-08 21:19: M2 — exit check in Acrobat DC (user away): open target/m2-exit/*.pdf (cargo run -p mp-engine --example m2_exit); comments, replies, review state, lock, attachment, signature and form values show; Acrobat imports comments.xfdf and fields.fdf into a fresh form.pdf
-- 2026-10-08 21:19: M3.4 — extension annotate + save (File System Access or download; save in place through the bridge), form fill
 - 2026-10-08 21:19: M3.5 — extension hand-off (button, toolbar action, link context menu), save page as PDF (optional debugger permission), options page, file:// handling
 - 2026-10-08 21:19: M3.6 — Playwright suite with the unpacked extension (open web PDF, annotate, save, hand-off with a mocked bridge). The viewer suite (e2e/viewer.spec.ts) runs in the installed Chrome; loading the unpacked extension needs Playwright's Chromium (branded Chrome ignores --load-extension since 137), a ~170 MB download: ask the user first
 - 2026-10-09 01:41: M3.5 — extension print: Ctrl+P prints the PDF (a hidden frame with the bytes in the browser's own viewer), not the viewer page
+- 2026-10-09 02:04: M3.5 — extension save in place through the bridge (the viewer saves with the File System Access API or a download now)

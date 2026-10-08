@@ -55,6 +55,51 @@ export interface PageLink extends Target {
 /** One search hit: a rectangle per line it covers, in page space. */
 export type Hit = Rect[];
 
+export type Point = [number, number];
+export type Rgb = [number, number, number];
+
+/** A comment the reader adds; points and rectangles are in page space. */
+export type NewAnnot =
+  | { kind: "note"; at: Point; text: string; color: Rgb }
+  | { kind: "text"; rect: Rect; text: string; color: Rgb; size: number }
+  | { kind: "ink"; strokes: Point[][]; color: Rgb; width: number }
+  | { kind: "square" | "circle"; rect: Rect; color: Rgb; width: number }
+  | { kind: "line"; from: Point; to: Point; arrow: boolean; color: Rgb; width: number }
+  /** Text from `from` to `to` in reading order, as a selection would take it. */
+  | { kind: "highlight" | "underline" | "strikeout"; spans: [Point, Point][]; color: Rgb };
+
+export interface AnnotInfo {
+  /** The annotation's object number. */
+  id: number;
+  type: string;
+  rect: Rect;
+  contents: string;
+  author: string;
+  locked: boolean;
+}
+
+export interface FieldInfo {
+  /** The widget's object number. */
+  id: number;
+  type: "text" | "checkbox" | "radiobutton" | "combobox" | "listbox" | "button" | "signature";
+  name: string;
+  rect: Rect;
+  value: string;
+  /** Checkboxes and radio buttons: whether this widget is on. */
+  checked: boolean;
+  options: string[];
+  readOnly: boolean;
+  multiline: boolean;
+  maxLen: number;
+}
+
+/** What an edit changed: the pages to draw again (all of them when null), and the history. */
+export interface Edited {
+  pages: number[] | null;
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
 export type Request =
   | { method: "open"; data: ArrayBuffer }
   | { method: "unlock"; password: string }
@@ -62,7 +107,22 @@ export type Request =
   | { method: "render"; page: number; scale: number; mode: ReadingMode; clip?: Rect }
   | { method: "text"; page: number }
   | { method: "links"; page: number }
-  | { method: "search"; page: number; needle: string };
+  | { method: "search"; page: number; needle: string }
+  | { method: "annotAt"; page: number; at: Point }
+  | { method: "addAnnot"; page: number; annot: NewAnnot; author: string }
+  | { method: "editAnnot"; page: number; id: number; contents?: string; color?: Rgb }
+  | { method: "deleteAnnot"; page: number; id: number }
+  | { method: "fields"; page: number }
+  | { method: "setField"; page: number; id: number; value: string }
+  | { method: "toggleField"; page: number; id: number }
+  | { method: "undo" }
+  | { method: "redo" }
+  | { method: "save" };
+
+export interface Call {
+  id: number;
+  request: Request;
+}
 
 export type Reply = { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string };
 
@@ -138,7 +198,8 @@ export class Pdf {
         continue;
       }
       this.running = job;
-      this.worker.postMessage({ id: job.id, ...job.request }, job.transfer);
+      // The request stays apart from the call's id: requests carry ids of their own.
+      this.worker.postMessage({ id: job.id, request: job.request } satisfies Call, job.transfer);
     }
   }
 
@@ -178,5 +239,48 @@ export class Pdf {
 
   search(page: number, needle: string, wanted?: () => boolean): Promise<Hit[]> {
     return this.call({ method: "search", page, needle }, Priority.Background, wanted);
+  }
+
+  /** The topmost comment at `at`, or null. */
+  annotAt(page: number, at: Point): Promise<AnnotInfo | null> {
+    return this.call({ method: "annotAt", page, at }, Priority.Document);
+  }
+
+  addAnnot(page: number, annot: NewAnnot, author: string): Promise<Edited & { id: number }> {
+    return this.call({ method: "addAnnot", page, annot, author }, Priority.Document);
+  }
+
+  editAnnot(page: number, id: number, change: { contents?: string; color?: Rgb }): Promise<Edited> {
+    return this.call({ method: "editAnnot", page, id, ...change }, Priority.Document);
+  }
+
+  deleteAnnot(page: number, id: number): Promise<Edited> {
+    return this.call({ method: "deleteAnnot", page, id }, Priority.Document);
+  }
+
+  fields(page: number, wanted?: () => boolean): Promise<FieldInfo[]> {
+    return this.call({ method: "fields", page }, Priority.Page, wanted);
+  }
+
+  setField(page: number, id: number, value: string): Promise<Edited> {
+    return this.call({ method: "setField", page, id, value }, Priority.Document);
+  }
+
+  toggleField(page: number, id: number): Promise<Edited> {
+    return this.call({ method: "toggleField", page, id }, Priority.Document);
+  }
+
+  undo(): Promise<Edited> {
+    return this.call({ method: "undo" }, Priority.Document);
+  }
+
+  redo(): Promise<Edited> {
+    return this.call({ method: "redo" }, Priority.Document);
+  }
+
+  /** The document's bytes with every change, appended to the original when possible; the undo
+   * history starts again after it. */
+  save(): Promise<Uint8Array<ArrayBuffer>> {
+    return this.call({ method: "save" }, Priority.Document);
   }
 }

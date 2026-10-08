@@ -21,6 +21,11 @@ describe("mapKey", () => {
     expect(mapKey(key("_", { ctrl: true, shift: true }), plain, s)).toEqual({ id: "rotate-ccw" });
     expect(mapKey(key("0", { ctrl: true }), plain, s)).toEqual({ id: "fit-page" });
     expect(mapKey(key("2", { ctrl: true }), plain, s)).toEqual({ id: "fit-width" });
+    expect(mapKey(key("z", { ctrl: true }), plain, s)).toEqual({ id: "undo" });
+    expect(mapKey(key("Z", { ctrl: true, shift: true }), plain, s)).toEqual({ id: "redo" });
+    expect(mapKey(key("y", { ctrl: true }), plain, s)).toEqual({ id: "redo" });
+    expect(mapKey(key("s", { ctrl: true }), plain, s)).toEqual({ id: "save" });
+    expect(mapKey(key("Delete"), plain, s)).toEqual({ id: "delete" });
     expect(mapKey(key("c", { ctrl: true }), plain, s)).toBeNull();
     expect(mapKey(key("t", { ctrl: true }), plain, s)).toBeNull();
   });

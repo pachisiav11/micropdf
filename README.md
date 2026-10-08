@@ -40,8 +40,10 @@ regenerate `app/ui/tokens.slint` and `extension/src/tokens.css` (CI fails if the
 
 ## Browser extension
 
-The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's.
-It needs Node.js 22 or later.
+The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,
+where you can comment, fill in forms and save a copy. It needs Node.js 22 or later. The browser
+build of MuPDF runs no JavaScript, so of a form's scripts only simple calculations (sum, product,
+average, minimum, maximum) take effect there; the desktop app runs them all.
 
 ```sh
 cd extension

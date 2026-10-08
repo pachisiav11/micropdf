@@ -2,7 +2,24 @@
 
 import type * as Mupdf from "mupdf";
 import type { Rect } from "./layout";
-import type { Drawn, Hit, Opened, OutlineNode, PageLink, Reply, Request, Target, TextLine } from "./pdf";
+import type {
+  AnnotInfo,
+  Call,
+  Drawn,
+  Edited,
+  FieldInfo,
+  Hit,
+  NewAnnot,
+  Opened,
+  OutlineNode,
+  PageLink,
+  Point,
+  Reply,
+  Request,
+  Rgb,
+  Target,
+  TextLine,
+} from "./pdf";
 import { type ReadingMode, toRgba } from "./recolor";
 
 // mupdf.js loads its WebAssembly with a top-level await. Imported statically, it would hold up
@@ -10,6 +27,8 @@ import { type ReadingMode, toRgba } from "./recolor";
 const loading = import("mupdf");
 let mupdf: typeof Mupdf;
 let doc: Mupdf.Document | null = null;
+/** The password that opened the document, to open it again after a save. */
+let password = "";
 /** Recently drawn pages, most recent last: tiles of the same page draw from one list. */
 const lists = new Map<number, Mupdf.DisplayList>();
 const LISTS = 8;
@@ -150,15 +169,295 @@ function search(index: number, needle: string): Hit[] {
   return hits;
 }
 
+function pdfDoc(): Mupdf.PDFDocument {
+  const d = loaded().asPDF();
+  if (!d) throw new Error("only PDF documents can be changed");
+  return d;
+}
+
+function pdfPage(index: number): Mupdf.PDFPage {
+  return pdfDoc().loadPage(index) as Mupdf.PDFPage;
+}
+
+const idOf = (o: { getObject(): Mupdf.PDFObject }) => o.getObject().asIndirect();
+const rectOf = ([x0, y0, x1, y1]: Mupdf.Rect): Rect => ({ x0, y0, x1, y1 });
+const box = (r: Rect): Mupdf.Rect => [r.x0, r.y0, r.x1, r.y1];
+
+/** Drops the drawn pages an edit changed, all of them when `pages` is null. */
+function forget(pages: number[] | null): void {
+  for (const [i, list] of lists) {
+    if (pages && !pages.includes(i)) continue;
+    list.destroy();
+    lists.delete(i);
+  }
+}
+
+/** Runs `change` as one step of the undo history. */
+function edit<T extends object>(name: string, pages: number[] | null, change: () => T): T & Edited {
+  const d = pdfDoc();
+  d.beginOperation(name);
+  let result: T;
+  try {
+    result = change();
+  } catch (e) {
+    d.abandonOperation();
+    throw e;
+  }
+  d.endOperation();
+  forget(pages);
+  return { ...result, pages, canUndo: d.canUndo(), canRedo: d.canRedo() };
+}
+
+function comments(page: Mupdf.PDFPage): Mupdf.PDFAnnotation[] {
+  return page.getAnnotations().filter((a) => !["Popup", "Link", "Widget"].includes(a.getType()));
+}
+
+const locked = (a: Mupdf.PDFAnnotation) => (a.getFlags() & mupdf.PDFAnnotation.IS_LOCKED) !== 0;
+
+function describeAnnot(a: Mupdf.PDFAnnotation): AnnotInfo {
+  return {
+    id: idOf(a),
+    type: a.getType(),
+    rect: rectOf(a.getBounds()),
+    contents: a.getContents(),
+    author: a.getAuthor(),
+    locked: locked(a),
+  };
+}
+
+function annotAt(index: number, [x, y]: Point): AnnotInfo | null {
+  const page = pdfPage(index);
+  // Thin lines and ink are hard to hit exactly; allow a couple of points around them.
+  const slack = 2;
+  const hit = comments(page)
+    .reverse()
+    .find((a) => {
+      const [x0, y0, x1, y1] = a.getBounds();
+      return x >= x0 - slack && x <= x1 + slack && y >= y0 - slack && y <= y1 + slack;
+    });
+  const info = hit ? describeAnnot(hit) : null;
+  page.destroy();
+  return info;
+}
+
+function findAnnot(page: Mupdf.PDFPage, id: number): Mupdf.PDFAnnotation {
+  const a = comments(page).find((c) => idOf(c) === id);
+  if (!a) throw new Error("the comment is gone");
+  if (locked(a)) throw new Error("the comment is locked");
+  return a;
+}
+
+const MARKUP = { highlight: "Highlight", underline: "Underline", strikeout: "StrikeOut" } as const;
+
+function addAnnot(index: number, n: NewAnnot, author: string): { id: number } {
+  const page = pdfPage(index);
+  let a: Mupdf.PDFAnnotation;
+  switch (n.kind) {
+    case "note": {
+      const [x, y] = n.at;
+      a = page.createAnnotation("Text");
+      a.setRect([x, y, x + 20, y + 20]);
+      a.setIcon("Comment");
+      a.setContents(n.text);
+      a.setColor(n.color);
+      break;
+    }
+    case "text":
+      a = page.createAnnotation("FreeText");
+      a.setRect(box(n.rect));
+      a.setContents(n.text);
+      // A text box's /C is its fill; the text, border and callout take the DA colour.
+      a.setDefaultAppearance("Helv", n.size, n.color);
+      break;
+    case "ink":
+      a = page.createAnnotation("Ink");
+      a.setInkList(n.strokes);
+      a.setColor(n.color);
+      a.setBorderWidth(n.width);
+      break;
+    case "square":
+    case "circle":
+      a = page.createAnnotation(n.kind === "square" ? "Square" : "Circle");
+      a.setRect(box(n.rect));
+      a.setColor(n.color);
+      a.setBorderWidth(n.width);
+      break;
+    case "line":
+      a = page.createAnnotation("Line");
+      a.setLine(n.from, n.to);
+      if (n.arrow) a.setLineEndingStyles("None", "OpenArrow");
+      a.setColor(n.color);
+      a.setBorderWidth(n.width);
+      break;
+    default: {
+      const stext = page.toStructuredText("");
+      const quads = n.spans.flatMap(([from, to]) => stext.highlight(from, to));
+      stext.destroy();
+      if (!quads.length) throw new Error("there is no text there");
+      a = page.createAnnotation(MARKUP[n.kind]);
+      a.setQuadPoints(quads);
+      a.setColor(n.color);
+    }
+  }
+  if (author) a.setAuthor(author);
+  a.update();
+  const id = idOf(a);
+  page.destroy();
+  return { id };
+}
+
+function editAnnot(index: number, id: number, contents?: string, color?: Rgb): object {
+  const page = pdfPage(index);
+  const a = findAnnot(page, id);
+  if (contents !== undefined) a.setContents(contents);
+  if (color && a.getType() === "FreeText") {
+    const da = a.getDefaultAppearance();
+    a.setDefaultAppearance(da.font, da.size, color);
+  } else if (color) {
+    a.setColor(color);
+  }
+  a.update();
+  page.destroy();
+  return {};
+}
+
+function deleteAnnot(index: number, id: number): object {
+  const page = pdfPage(index);
+  page.deleteAnnotation(findAnnot(page, id));
+  page.destroy();
+  return {};
+}
+
+function fields(index: number): FieldInfo[] {
+  const page = pdfPage(index);
+  const out = page.getWidgets().map((w): FieldInfo => {
+    const type = w.getFieldType() as FieldInfo["type"];
+    const state = w.getObject().get("AS");
+    return {
+      id: idOf(w),
+      type,
+      name: w.getName(),
+      rect: rectOf(w.getBounds()),
+      value: w.getValue(),
+      checked: state.isName() && state.asName() !== "Off",
+      options: type === "combobox" || type === "listbox" ? w.getOptions() : [],
+      readOnly: w.isReadOnly(),
+      multiline: w.isMultiline(),
+      maxLen: w.getMaxLen(),
+    };
+  });
+  page.destroy();
+  return out;
+}
+
+/** Drops any XFA packet, which XFA readers would show instead of the new values. */
+function dropXfa(d: Mupdf.PDFDocument): void {
+  const form = d.getTrailer().get("Root", "AcroForm");
+  if (form.isDictionary() && !form.get("XFA").isNull()) form.delete("XFA");
+}
+
+const SIMPLE_CALCULATE = /AFSimple_Calculate\s*\(\s*["'](\w+)["']\s*,\s*(?:new\s+Array\s*\(([^)]*)\)|\[([^\]]*)\])/;
+
+const REDUCE: Record<string, (v: number[]) => number> = {
+  SUM: (v) => v.reduce((a, b) => a + b, 0),
+  PRD: (v) => v.reduce((a, b) => a * b, 1),
+  AVG: (v) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0),
+  MIN: (v) => (v.length ? Math.min(...v) : 0),
+  MAX: (v) => (v.length ? Math.max(...v) : 0),
+};
+
+/** mupdf.js has no JavaScript engine, so form scripts do not run. This does the calculation most
+ * forms use, AFSimple_Calculate (a sum, product, average, minimum or maximum of other fields),
+ * for each field in the form's calculation order. */
+function calculate(d: Mupdf.PDFDocument): void {
+  const order = d.getTrailer().get("Root", "AcroForm", "CO");
+  if (!order.isArray()) return;
+  const widgets: Mupdf.PDFWidget[] = [];
+  for (let i = 0; i < d.countPages(); i++) widgets.push(...pdfPage(i).getWidgets());
+  const byName = new Map(widgets.map((w) => [w.getName(), w]));
+  for (let k = 0; k < order.length; k++) {
+    const field = order.get(k);
+    const js = field.get("AA", "C", "JS");
+    const script = js.isStream() ? js.readStream().asString() : js.isString() ? js.asString() : "";
+    const match = SIMPLE_CALCULATE.exec(script);
+    const reduce = match && REDUCE[match[1]];
+    const target = widgets.find((w) => {
+      // The calculated field's own widget, or one of its kids.
+      for (let o = w.getObject(); o.isDictionary(); o = o.get("Parent")) {
+        if (o.asIndirect() === field.asIndirect()) return true;
+      }
+      return false;
+    });
+    if (!reduce || !target) continue;
+    const values = (match[2] ?? match[3])
+      .split(",")
+      .map((name) => byName.get(name.trim().replace(/^["']|["']$/g, ""))?.getValue() ?? "")
+      .map((v) => Number.parseFloat(v.replace(/,/g, "")) || 0);
+    target.setTextValue(String(Number(reduce(values).toFixed(10))));
+    target.update();
+  }
+}
+
+function changeField(index: number, id: number, change: (w: Mupdf.PDFWidget) => void): object {
+  const d = pdfDoc();
+  dropXfa(d);
+  const page = pdfPage(index);
+  const w = page.getWidgets().find((x) => idOf(x) === id);
+  if (!w) throw new Error("the field is gone");
+  if (w.isReadOnly()) throw new Error("the field is read-only");
+  change(w);
+  w.update();
+  calculate(d);
+  page.destroy();
+  return {};
+}
+
+function history(step: "undo" | "redo"): Edited {
+  const d = pdfDoc();
+  const can = step === "undo" ? d.canUndo() : d.canRedo();
+  if (can) {
+    d[step]();
+    forget(null);
+  }
+  return { pages: can ? null : [], canUndo: d.canUndo(), canRedo: d.canRedo() };
+}
+
+function open(data: Uint8Array | ArrayBuffer): Mupdf.Document {
+  forget(null);
+  doc?.destroy();
+  doc = mupdf.Document.openDocument(data, "application/pdf");
+  doc.asPDF()?.enableJournal();
+  return doc;
+}
+
+/** The document's bytes with every change. The undo history ends here: mupdf takes a saved
+ * update as part of the file it opened, so a second incremental save would point at offsets the
+ * original bytes lack; the document is opened again from what was saved. */
+function save(): Uint8Array<ArrayBuffer> {
+  const d = pdfDoc();
+  let buffer: Mupdf.Buffer;
+  try {
+    buffer = d.saveToBuffer("incremental");
+  } catch {
+    // A repaired file cannot take an incremental update; write it whole.
+    buffer = d.saveToBuffer("");
+  }
+  const bytes = new Uint8Array(buffer.asUint8Array());
+  buffer.destroy();
+  const reopened = open(bytes);
+  if (reopened.needsPassword()) reopened.authenticatePassword(password);
+  return bytes;
+}
+
 function handle(request: Request): unknown {
   switch (request.method) {
     case "open":
-      for (const list of lists.values()) list.destroy();
-      lists.clear();
-      doc = mupdf.Document.openDocument(new Uint8Array(request.data), "application/pdf");
-      return describe(doc);
+      password = "";
+      return describe(open(request.data));
     case "unlock":
-      return loaded().authenticatePassword(request.password) ? describe(loaded(), true) : null;
+      if (!loaded().authenticatePassword(request.password)) return null;
+      password = request.password;
+      return describe(loaded(), true);
     case "outline":
       return outline(loaded().loadOutline() ?? []);
     case "render":
@@ -169,19 +468,52 @@ function handle(request: Request): unknown {
       return links(request.page);
     case "search":
       return search(request.page, request.needle);
+    case "annotAt":
+      return annotAt(request.page, request.at);
+    case "addAnnot":
+      return edit("Add comment", [request.page], () =>
+        addAnnot(request.page, request.annot, request.author),
+      );
+    case "editAnnot":
+      return edit("Change comment", [request.page], () =>
+        editAnnot(request.page, request.id, request.contents, request.color),
+      );
+    case "deleteAnnot":
+      return edit("Delete comment", [request.page], () => deleteAnnot(request.page, request.id));
+    case "fields":
+      return fields(request.page);
+    // Calculations can change fields on any page.
+    case "setField":
+      return edit("Fill in field", null, () =>
+        changeField(request.page, request.id, (w) =>
+          w.isChoice() ? w.setChoiceValue(request.value) : w.setTextValue(request.value),
+        ),
+      );
+    case "toggleField":
+      return edit("Fill in field", null, () => changeField(request.page, request.id, (w) => w.toggle()));
+    case "undo":
+    case "redo":
+      return history(request.method);
+    case "save":
+      return save();
   }
 }
 
-self.onmessage = async (e: MessageEvent<Request & { id: number }>) => {
-  const { id } = e.data;
+self.onmessage = async (e: MessageEvent<Call>) => {
+  const { id, request } = e.data;
   let reply: Reply;
   try {
     mupdf = await loading;
-    reply = { id, ok: true, result: handle(e.data) };
+    reply = { id, ok: true, result: handle(request) };
   } catch (err) {
     reply = { id, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-  const result = reply.ok ? (reply.result as Partial<Drawn> | null) : null;
-  const transfer = result?.pixels ? [result.pixels.buffer] : [];
+  const result = reply.ok ? reply.result : null;
+  const transfer =
+    result instanceof Uint8Array
+      ? [result.buffer]
+      : result && typeof result === "object" && "pixels" in result
+        ? [(result as Drawn).pixels.buffer]
+        : [];
   (self as unknown as Worker).postMessage(reply, transfer);
 };
