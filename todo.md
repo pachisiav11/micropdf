@@ -1,8 +1,5 @@
 - 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
-- 2026-10-07 00:18: M1 — viewer (v0.1)
-- 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
-- 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)
 - 2026-10-07 00:18: M6 — OCR, digital signatures, compare, measure (v0.6)
@@ -11,4 +8,3 @@
 - 2026-10-07 00:18: M9 — library + batch (v0.9)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
-- 2026-10-08 21:19: M3.6 — Playwright suite with the unpacked extension (open web PDF, annotate, save, hand-off with a mocked bridge). The viewer suite (e2e/viewer.spec.ts) runs in the installed Chrome; loading the unpacked extension needs Playwright's Chromium (branded Chrome ignores --load-extension since 137), a ~170 MB download: ask the user first

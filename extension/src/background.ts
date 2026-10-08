@@ -59,7 +59,8 @@ async function openUrl(url: string): Promise<void> {
 }
 
 /** Prints the page to a PDF through the debugger, the one way an extension can, and hands that
- * on. The debugger permission is optional, asked for on first use. */
+ * on, or downloads it without the desktop app. Both permissions are optional, asked for on first
+ * use. */
 async function openPage(tab: chrome.tabs.Tab, granted: Promise<boolean>): Promise<void> {
   if (!(await granted)) return;
   const target = { tabId: tab.id! };
@@ -68,8 +69,13 @@ async function openPage(tab: chrome.tabs.Tab, granted: Promise<boolean>): Promis
     const { data } = (await chrome.debugger.sendCommand(target, "Page.printToPDF", { printBackground: true })) as {
       data: string;
     };
-    const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-    await sendPdf(bytes, { name: `${tab.title || "page"}.pdf` });
+    const name = `${tab.title || "page"}.pdf`;
+    try {
+      await sendPdf(Uint8Array.from(atob(data), (c) => c.charCodeAt(0)), { name });
+    } catch {
+      const filename = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").slice(-150);
+      await chrome.downloads.download({ url: `data:application/pdf;base64,${data}`, filename });
+    }
   } finally {
     await chrome.debugger.detach(target).catch(() => {});
   }
@@ -83,7 +89,7 @@ chrome.action.onClicked.addListener((tab) => {
     void report(openUrl(tab.url));
   } else {
     // The permission prompt needs the click's user gesture, so it comes before anything else.
-    void report(openPage(tab, chrome.permissions.request({ permissions: ["debugger"] })));
+    void report(openPage(tab, chrome.permissions.request({ permissions: ["debugger", "downloads"] })));
   }
 });
 

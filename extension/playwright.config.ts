@@ -10,10 +10,16 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   reporter: "list",
   use: {
-    channel: "chrome",
     baseURL: "http://localhost:5174",
     viewport: { width: 1100, height: 800 },
   },
+  projects: [
+    { name: "chrome", use: { channel: "chrome" } },
+    // Edge comes with Windows; the CI runner has only Chrome.
+    ...(process.platform === "win32"
+      ? [{ name: "edge", use: { channel: "msedge" }, testMatch: "extension.spec.ts" }]
+      : []),
+  ],
   webServer: {
     command: "npm run serve -- --port 5174 --strictPort",
     url: "http://localhost:5174/viewer.html",
