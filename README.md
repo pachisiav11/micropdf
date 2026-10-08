@@ -38,6 +38,28 @@ Visual Studio 2019/2022 toolsets; with newer Build Tools set the toolset yoursel
 Design tokens live in `design/tokens.json`; after editing, run `node scripts/gen-tokens.mjs` to
 regenerate `app/ui/tokens.slint` and `extension/src/tokens.css` (CI fails if they are stale).
 
+## Browser extension
+
+The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's.
+It needs Node.js 22 or later.
+
+```sh
+cd extension
+npm install
+npm run build   # or `npm run dev` to rebuild on every change
+npm test        # unit tests; `npm run check` type-checks
+```
+
+Load `extension/dist` as an unpacked extension (`chrome://extensions`, Developer mode, Load
+unpacked) in Chrome, Edge or Brave. The manifest carries a fixed key, so the extension ID is always
+`phhaejfhblmccnkhnhjflbhckkanlnki`, the ID that the native host accepts.
+
+To hand PDFs to the desktop app, register the native host once with
+`micropdf-bridge.exe --register` (the app's "Add micropdf to Windows PDF apps" does this too).
+
+`npm run serve` starts Vite's dev server, where the viewer opens the test PDFs from `fixtures/`
+without the extension, e.g. `http://localhost:5173/viewer.html#http://localhost:5173/@fs/<repo>/fixtures/hello.pdf`.
+
 ## License
 
 [AGPL-3.0-or-later](LICENSE). micropdf is built on MuPDF, which is AGPL-licensed.

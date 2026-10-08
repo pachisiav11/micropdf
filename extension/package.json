@@ -1,0 +1,27 @@
+{
+  "name": "micropdf-extension",
+  "version": "0.3.0",
+  "private": true,
+  "description": "micropdf for Chromium browsers: view, annotate and fill PDFs, and hand them to the desktop app",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "serve": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "mupdf": "1.28.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@types/chrome": "0.3.4",
+    "svelte": "5.57.2",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.3"
+  }
+}

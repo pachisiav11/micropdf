@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "micropdf",
+  "version": "0.3.0",
+  "description": "View PDFs in the browser with micropdf's engine, and open them in micropdf for Windows.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuXzb6vaNLUVy0odw01V98tk06S+oYbm+acLeju0Tf2j09piwGF6XFgDcSEuTeTe5SvreR8hNhGaxe+xmJwvXqahe7XE2vpHUyn7sf6AgLRmL+kVV/F/xQCjVSZRF5fZhOyuOWKefbJ6iRkO4c+Kpq4kxcYh66/MVUs3zsrxWJHSb7nSiKTbQ/qM0lysI3s8mUisqRlRD2uP0j2QMbPbrESFYO5wHL7x4ecpj6dk0QCFU2jSJG/OHS5BmlOm/8YK8skENOL3BBXgCU4PizbaES2WiHCZtfktnXDv/bJzI2HYuPU9F712acMT1PKxAaCkzaPkqCcEfG3brTgRdswBKEwIDAQAB",
+  "minimum_chrome_version": "128",
+  "permissions": ["declarativeNetRequestWithHostAccess"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["viewer.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

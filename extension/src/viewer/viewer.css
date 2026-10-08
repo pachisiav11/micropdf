@@ -1,0 +1,26 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: 14px/1.4 var(--font-ui);
+  color-scheme: dark;
+}
+
+[data-theme="light"] body {
+  color-scheme: light;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+}
+
+* {
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
+}
