@@ -61,9 +61,17 @@ fn fills_in_toggles_and_resets_fields() {
 fn flattening_keeps_the_look_and_drops_the_fields() {
     let engine = Engine::start();
     let doc = engine.open(fixture("form.pdf")).unwrap().id;
-    let name = engine.fields(doc, 0).unwrap()[0].id;
+    let fields = engine.fields(doc, 0).unwrap();
     engine
-        .edit_field(doc, 0, name, FieldEdit::Value("Grace Hopper".into()))
+        .edit_field(
+            doc,
+            0,
+            fields[0].id,
+            FieldEdit::Value("Grace Hopper".into()),
+        )
+        .unwrap();
+    engine
+        .edit_field(doc, 0, fields[1].id, FieldEdit::Toggle)
         .unwrap();
     let note = mp_engine::NewAnnot::Note {
         x: 400.0,
@@ -85,7 +93,10 @@ fn flattening_keeps_the_look_and_drops_the_fields() {
     assert_eq!(engine.annotations(doc, 0).unwrap().len(), 1);
     let list = engine.display_list(doc, 0).unwrap();
     let text = mp_engine::page_text(&list).unwrap();
-    assert!(text.text(0..text.chars.len()).contains("Grace Hopper"));
+    let text = text.text(0..text.chars.len());
+    assert!(text.contains("Grace Hopper"));
+    // The check mark keeps its ZapfDingbats font; in Helvetica it would be a "4".
+    assert!(!text.contains('4'), "{text:?}");
 
     engine.flatten(doc, true, false).unwrap();
     assert!(engine.annotations(doc, 0).unwrap().is_empty());
@@ -156,6 +167,14 @@ fn form_data_round_trips_through_fdf() {
     assert_eq!(fields[0].value, name);
     assert_eq!(fields[1].value, "Yes");
     assert_eq!(fields[2].value, "Green");
+    // A checkbox's value is the name of its on state, not the text "Yes".
+    let saved = std::env::temp_dir().join(format!("mp-engine-{}-fdf.pdf", std::process::id()));
+    engine.save(doc, &saved, false).unwrap();
+    let bytes = std::fs::read(&saved).unwrap();
+    let _ = std::fs::remove_file(&saved);
+    let has = |s: &[u8]| bytes.windows(s.len()).any(|w| w == s);
+    assert!(has(b"/V/Yes") || has(b"/V /Yes"));
+    assert!(!has(b"/V(Yes)") && !has(b"/V (Yes)"));
     assert_eq!(
         engine.history(doc).unwrap().undo.as_deref(),
         Some("Import form data")

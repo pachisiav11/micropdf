@@ -1147,14 +1147,14 @@ Open it in Adobe Acrobat Reader to fill it in.",
                         rect,
                         text: input,
                     };
-                    self.add_comment(page, new, [1.0, 1.0, 0.8]);
+                    self.add_comment(page, new, RED);
                 }
                 self.set_tool(Tool::Select);
             }
             Ask::TextBox { page, rect } => {
                 if !input.trim().is_empty() {
                     let new = NewAnnot::FreeText { rect, text: input };
-                    self.add_comment(page, new, [1.0, 1.0, 0.8]);
+                    self.add_comment(page, new, RED);
                 }
             }
             Ask::Comment { page, id, .. } => {
@@ -4821,7 +4821,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let (visible, color, fill, width, opacity) = if let Some(key) = tool_key(self.tool) {
             (true, swatch(self.chosen_color(Some(key))), -1, 0.0, -1)
         } else if let Some(a) = self.styled_comment() {
-            let shape = matches!(a.kind, AnnotKind::Square | AnnotKind::Circle);
+            let shape = matches!(
+                a.kind,
+                AnnotKind::Square | AnnotKind::Circle | AnnotKind::FreeText | AnnotKind::Callout
+            );
             (
                 true,
                 swatch(a.color),
@@ -4863,9 +4866,14 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let Some(a) = self.styled_comment() else {
             return;
         };
+        let color = a.color.unwrap_or([0.0; 3]);
         let fill = match a.fill {
             Some(_) => None,
-            None => Some(a.color.unwrap_or([0.0; 3])),
+            // Behind text, a pale tint of its colour keeps it readable.
+            None if matches!(a.kind, AnnotKind::FreeText | AnnotKind::Callout) => {
+                Some(color.map(|c| 0.85 + 0.15 * c))
+            }
+            None => Some(color),
         };
         self.restyle_picked(Restyle::Fill(fill));
     }
@@ -5388,6 +5396,9 @@ fn user_name() -> String {
 }
 
 /// The colours the style bar offers.
+/// The default for text boxes and callouts, as in Acrobat; the Red swatch.
+const RED: [f32; 3] = [0.85, 0.15, 0.15];
+
 const SWATCHES: [(&str, [f32; 3]); 8] = [
     ("Yellow", [1.0, 0.85, 0.0]),
     ("Orange", [1.0, 0.55, 0.1]),

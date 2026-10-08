@@ -173,6 +173,27 @@ pub fn edit(doc: &Document, page: usize, id: i32, edit: &FieldEdit) -> Result<()
     })
 }
 
+/// The state a checkbox or radio button takes when on, from its appearances: the one not
+/// named Off.
+fn on_state(widget: &PdfWidget) -> Result<Option<String>, Error> {
+    let states = match widget.annotation().object().get_dict("AP")? {
+        Some(ap) => ap.get_dict("N")?,
+        None => None,
+    };
+    let Some(states) = states.filter(|s| !s.is_stream().unwrap_or(true)) else {
+        return Ok(None);
+    };
+    for i in 0..states.dict_len()? as i32 {
+        if let Some(key) = states.get_dict_key(i)? {
+            let key = String::from_utf8_lossy(&key.as_name()?).into_owned();
+            if key != "Off" {
+                return Ok(Some(key));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Clears every field to its default value.
 pub fn reset(doc: &Document) -> Result<(), Error> {
     operation(doc, "Reset form", || {
@@ -428,7 +449,18 @@ fn fill(doc: &Document, values: std::collections::HashMap<String, String>) -> Re
                 if widget.is_readonly()? {
                     continue;
                 }
-                if widget.set_value(&mut pdf, value, false)? {
+                let took = match widget.r#type()? {
+                    // Setting the value would store it as text; readers expect the on state's
+                    // name, which toggling writes.
+                    WidgetType::Checkbox | WidgetType::RadioButton => {
+                        let on = on_state(&widget)?;
+                        let is_on = on.is_some() && widget.value()? == on;
+                        let want_on = on.as_deref() == Some(value.as_str());
+                        is_on == want_on || widget.toggle()?
+                    }
+                    _ => widget.set_value(&mut pdf, value, false)?,
+                };
+                if took {
                     filled.insert(name);
                 }
             }

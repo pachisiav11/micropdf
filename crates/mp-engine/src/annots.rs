@@ -82,8 +82,10 @@ pub struct Annot {
     pub id: i32,
     pub kind: AnnotKind,
     pub rect: Rect,
+    /// The colour it is drawn in; for text boxes and callouts, the text's colour.
     pub color: Option<[f32; 3]>,
-    /// The inside of a rectangle or ellipse, when filled.
+    /// The inside of a rectangle or ellipse, or the background of a text box or callout, when
+    /// filled.
     pub fill: Option<[f32; 3]>,
     /// 1.0 is opaque.
     pub opacity: f32,
@@ -294,6 +296,17 @@ fn rgb(color: AnnotationColor) -> [f32; 3] {
     }
 }
 
+/// Text boxes and callouts draw their text, border and callout line in the colour of their
+/// default appearance; their /C fills the box behind the text.
+fn set_text_color(annot: &mut PdfAnnotation, color: AnnotationColor) -> Result<(), Error> {
+    let (font, size) = match annot.default_appearance()? {
+        Some(da) => (da.font_name, da.size),
+        None => ("Helv".to_owned(), 12.0),
+    };
+    annot.set_default_appearance(&font, size, Some(color))?;
+    Ok(())
+}
+
 pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
     let Some(mut kind) = kind_of(annot.r#type()?) else {
         return Ok(None);
@@ -347,7 +360,8 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
     } else {
         None
     };
-    let font_size = if matches!(kind, AnnotKind::FreeText | AnnotKind::Callout) {
+    let text_box = matches!(kind, AnnotKind::FreeText | AnnotKind::Callout);
+    let font_size = if text_box {
         annot.default_appearance()?.map(|da| da.size)
     } else {
         None
@@ -356,9 +370,15 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
         id: annot.xref()?,
         kind,
         rect: annot.bounds()?.into(),
-        color: annot.color()?.map(rgb),
+        color: if text_box {
+            annot.default_appearance()?.and_then(|da| da.color).map(rgb)
+        } else {
+            annot.color()?.map(rgb)
+        },
         fill: if shape {
             annot.interior_color()?.map(rgb)
+        } else if text_box {
+            annot.color()?.map(rgb)
         } else {
             None
         },
@@ -709,7 +729,12 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
         }
     }
     let [red, green, blue] = style.color;
-    annot.set_color(AnnotationColor::Rgb { red, green, blue })?;
+    let color = AnnotationColor::Rgb { red, green, blue };
+    if subtype == PdfAnnotationType::FreeText {
+        set_text_color(&mut annot, color)?;
+    } else {
+        annot.set_color(color)?;
+    }
     if !style.author.is_empty() {
         annot.set_author(&style.author)?;
     }
@@ -792,11 +817,16 @@ pub fn restyle(doc: &Document, page: usize, id: i32, change: Restyle) -> Result<
             .find(|a| a.xref().ok() == Some(id))
             .ok_or(Error::NotFound)?;
         let color = |[red, green, blue]: [f32; 3]| AnnotationColor::Rgb { red, green, blue };
+        let text_box = annot.r#type()? == PdfAnnotationType::FreeText;
         match change {
+            Restyle::Color(c) if text_box => set_text_color(&mut annot, color(c))?,
             Restyle::Color(c) => annot.set_color(color(c))?,
+            Restyle::Fill(Some(c)) if text_box => annot.set_color(color(c))?,
             Restyle::Fill(Some(c)) => annot.set_interior_color(color(c))?,
             Restyle::Fill(None) => {
-                annot.object().dict_delete("IC")?;
+                annot
+                    .object()
+                    .dict_delete(if text_box { "C" } else { "IC" })?;
                 // Setting the flags to what they are marks the annotation changed.
                 let flags = annot.flags()?;
                 annot.set_flags(flags)?;
@@ -1019,8 +1049,74 @@ pub fn flatten(doc: &Document, comments: bool, fields: bool) -> Result<(), Error
                 }
             }
         }
+        if fields {
+            lend_form_resources(&mut pdf, doc)?;
+        }
         Ok(pdf.bake(comments, fields)?)
     })
+}
+
+/// Field appearances may leave out their resources and lean on the form's default resources
+/// (/DR) and the standard form fonts, Helv and ZaDb, as readers allow. Baked into the page they
+/// would lose them, and a check mark drawn in ZapfDingbats would become a "4"; so each such
+/// appearance gets /DR, with the standard fonts added where it lacks them.
+fn lend_form_resources(pdf: &mut PdfDocument, doc: &Document) -> Result<(), Error> {
+    let mut bare = Vec::new();
+    for n in 0..doc.page_count()? {
+        let page = pdf_page(doc, n as usize)?;
+        for widget in page.widgets() {
+            let Some(normal) = widget
+                .annotation()
+                .object()
+                .get_dict("AP")?
+                .map(|ap| ap.get_dict("N"))
+                .transpose()?
+                .flatten()
+            else {
+                continue;
+            };
+            // One look, or one per state of a checkbox or radio button.
+            let looks: Vec<PdfObject> = if normal.is_stream()? {
+                vec![normal]
+            } else {
+                (0..normal.dict_len()? as i32)
+                    .filter_map(|i| normal.get_dict_val(i).transpose())
+                    .collect::<Result<_, _>>()?
+            };
+            for look in looks {
+                if look.is_stream()? && look.get_dict("Resources")?.is_none() {
+                    bare.push(look);
+                }
+            }
+        }
+    }
+    if bare.is_empty() {
+        return Ok(());
+    }
+    let dr = match pdf.catalog()?.get_dict("AcroForm")? {
+        Some(form) => form.get_dict("DR")?,
+        None => None,
+    };
+    let mut resources = match dr {
+        Some(dr) => dr.copy_dict()?,
+        None => pdf.new_dict()?,
+    };
+    let mut fonts = match resources.get_dict("Font")? {
+        Some(fonts) => fonts.copy_dict()?,
+        None => pdf.new_dict()?,
+    };
+    for (alias, base) in [("Helv", "Helvetica"), ("ZaDb", "ZapfDingbats")] {
+        if fonts.get_dict(alias)?.is_none() {
+            let font = format!("<</Type /Font /Subtype /Type1 /BaseFont /{base}>>");
+            fonts.dict_put(alias, pdf.new_object_from_str(&font)?)?;
+        }
+    }
+    resources.dict_put("Font", fonts)?;
+    let resources = pdf.add_object(&resources)?;
+    for mut look in bare {
+        look.dict_put("Resources", resources.try_clone()?)?;
+    }
+    Ok(())
 }
 
 /// The names of the steps Undo and Redo would take back or redo, if any.

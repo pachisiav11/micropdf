@@ -724,10 +724,19 @@ fn a_callout_points_at_its_target_and_round_trips() {
     assert!(xml.contains("intent=\"FreeTextCallout\""), "{xml}");
     assert!(xml.contains("callout=\""), "{xml}");
     let fresh = engine.open(fixture("hello.pdf")).unwrap().id;
-    assert_eq!(engine.import_comments(fresh, xml).unwrap(), 1);
+    assert_eq!(engine.import_comments(fresh, xml.clone()).unwrap(), 1);
     let copy = &engine.annotations(fresh, 0).unwrap()[0];
     assert_eq!(copy.kind, AnnotKind::Callout);
     assert!((copy.rect.x0 - r.x0).abs() < 2.0, "{:?} {r:?}", copy.rect);
+    // The box inside the bounds comes along, so the text stays in it and away from the target.
+    assert!(xml.contains("fringe=\""), "{xml}");
+    let (again, _) = engine.export_comments(fresh, "hello.pdf".into()).unwrap();
+    let fringe = |xml: &str| {
+        xml.split("fringe=\"")
+            .nth(1)
+            .map(|f| f[..f.find('"').unwrap()].to_owned())
+    };
+    assert_eq!(fringe(&again), fringe(&xml));
 }
 
 #[test]
@@ -783,6 +792,38 @@ fn files_attach_to_the_document_and_to_pages() {
     assert_eq!(engine.attachments(saved).unwrap().len(), 3);
     engine.close(saved);
     let _ = std::fs::remove_file(&copy);
+
+    // XFDF carries the page's file, and Acrobat's compressed form of it reads too.
+    let (xml, _) = engine
+        .export_comments(doc, "attachment.pdf".into())
+        .unwrap();
+    assert!(xml.contains("<fileattachment page=\"0\""), "{xml}");
+    assert!(xml.contains("file=\"data.csv\""), "{xml}");
+    assert!(xml.contains(">612C620A312C320A</data>"), "{xml}");
+    let fresh = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(fresh, xml).unwrap(), 1);
+    let acrobat = r#"<xfdf xmlns="http://ns.adobe.com/xfdf/"><annots>
+        <fileattachment page="0" rect="10,10,30,30" name="a1" file="C:\Reports\packed.txt">
+        <data MODE="raw" encoding="hex" length="18" filter="FlateDecode">789C0B484CCE4E4D5148AA54704C2ECA4F4A2CE102003BF3062A</data>
+        </fileattachment>
+        <fileattachment page="0" rect="40,10,60,30" name="a2" file="lost.txt"/>
+        </annots></xfdf>"#;
+    assert_eq!(engine.import_comments(fresh, acrobat.into()).unwrap(), 1);
+    let files = engine.attachments(fresh).unwrap();
+    let names: Vec<_> = files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["data.csv", "packed.txt"]);
+    assert_eq!(
+        engine.attachment_data(fresh, 0).unwrap(),
+        b"a,b
+1,2
+"
+    );
+    assert_eq!(
+        engine.attachment_data(fresh, 1).unwrap(),
+        b"Packed by Acrobat
+"
+    );
+    engine.close(fresh);
 
     // Deleting the page's file deletes its comment; deleting a document file leaves the other.
     engine.delete_attachment(doc, 2).unwrap();
@@ -1013,6 +1054,14 @@ fn borders_line_ends_text_size_and_properties() {
     );
     restyle(text.id, Restyle::FontSize(18.0));
     assert_eq!(find(text.id).font_size, Some(18.0));
+    // A text box's colour is its text's; the fill goes behind it.
+    restyle(text.id, Restyle::Color([0.1, 0.45, 0.9]));
+    restyle(text.id, Restyle::Fill(Some([1.0, 1.0, 0.8])));
+    let t = find(text.id);
+    assert_eq!(
+        (t.color, t.fill),
+        (Some([0.1, 0.45, 0.9]), Some([1.0, 1.0, 0.8]))
+    );
 
     assert!(find(square.id).printed);
     let props = Properties {
@@ -1056,6 +1105,8 @@ fn borders_line_ends_text_size_and_properties() {
         Some(("None".into(), "ClosedArrow".into()))
     );
     assert_eq!(copy(AnnotKind::FreeText).font_size, Some(18.0));
+    assert_eq!(copy(AnnotKind::FreeText).color, find(text.id).color);
+    assert_eq!(copy(AnnotKind::FreeText).fill, Some([1.0, 1.0, 0.8]));
 
     engine.undo(doc).unwrap();
     let s = find(square.id);

@@ -1,13 +1,13 @@
 //! Comments as XFDF, the XML format Acrobat uses to export and import review comments.
 //!
 //! Both directions work on the annotations' PDF dictionaries, in PDF page space, so the numbers
-//! pass through unchanged. A stamp carries its appearance stream, so a signature keeps its look.
-//! Links, form widgets, popups and file attachments are not exported.
+//! pass through unchanged. A stamp carries its appearance stream, so a signature keeps its look,
+//! and a file attachment carries the file. Links, form widgets and popups are not exported.
 
 use std::collections::HashMap;
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
-use mupdf::pdf::{PdfAnnotationType, PdfDocument, PdfObject, PdfPage};
+use mupdf::pdf::{EmbeddedFileOptions, PdfAnnotationType, PdfDocument, PdfObject, PdfPage};
 use mupdf::{Buffer, Document};
 
 use crate::Error;
@@ -15,7 +15,7 @@ use crate::annots::{name, operation, string};
 use crate::forms::escape;
 
 /// XFDF element names, the PDF subtypes they stand for, and MuPDF's annotation types.
-const KINDS: [(&str, &str, PdfAnnotationType); 13] = [
+const KINDS: [(&str, &str, PdfAnnotationType); 14] = [
     ("text", "Text", PdfAnnotationType::Text),
     ("freetext", "FreeText", PdfAnnotationType::FreeText),
     ("highlight", "Highlight", PdfAnnotationType::Highlight),
@@ -29,6 +29,11 @@ const KINDS: [(&str, &str, PdfAnnotationType); 13] = [
     ("polygon", "Polygon", PdfAnnotationType::Polygon),
     ("polyline", "PolyLine", PdfAnnotationType::PolyLine),
     ("stamp", "Stamp", PdfAnnotationType::Stamp),
+    (
+        "fileattachment",
+        "FileAttachment",
+        PdfAnnotationType::FileAttachment,
+    ),
 ];
 
 /// How deep an appearance's objects may nest before the rest is left out.
@@ -139,6 +144,12 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
                     let rect = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
                     attrs.push(("rect", join(&rect, ",")));
                 }
+            }
+            // The box inside the rectangle, for callouts and cloudy borders that reach past it.
+            if let Some(rd) = get(&obj, "RD")?
+                && let rd @ [_, _, _, _] = &numbers(&rd)?[..]
+            {
+                attrs.push(("fringe", join(rd, ",")));
             }
             if let Some(c) = get(&obj, "C")?
                 && let Some(c) = hex(&numbers(&c)?)
@@ -271,6 +282,24 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
                 let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
                 write_object(&mut xml, Some(b"AP"), &ap, &mut Vec::new())?;
                 children += &format!("<appearance>{}</appearance>", BASE64_STANDARD.encode(xml));
+            }
+            if subtype == "FileAttachment"
+                && let Some(spec) = get(&obj, "FS")?
+                && let Some(ef) = get(&spec, "EF")?
+                && let Some(file) = get(&ef, "F")?
+            {
+                if let Some(name) = string(&spec, "UF")?.or(string(&spec, "F")?) {
+                    attrs.push(("file", name));
+                }
+                if let Some(mime) = name(&file, "Subtype")? {
+                    attrs.push(("mimetype", mime));
+                }
+                let data = file.read_stream()?;
+                let hex: String = data.iter().map(|b| format!("{b:02X}")).collect();
+                children += &format!(
+                    "<data MODE=\"raw\" encoding=\"hex\" length=\"{}\">{hex}</data>",
+                    data.len()
+                );
             }
             out += &format!("<{tag}");
             for (k, v) in attrs {
@@ -454,6 +483,33 @@ fn read_object(
     }))
 }
 
+/// The file in a <fileattachment>'s <data>: its name and bytes, inflated when the XFDF
+/// carries them compressed, as Acrobat writes them.
+fn attached_file(
+    pdf: &mut PdfDocument,
+    node: roxmltree::Node,
+) -> Result<Option<(String, Vec<u8>)>, Error> {
+    let Some(data) = node.children().find(|n| n.has_tag_name("data")) else {
+        return Ok(None);
+    };
+    let Some(mut bytes) = unhex(data.text().unwrap_or_default()) else {
+        return Ok(None);
+    };
+    if let Some(filter) = data.attribute("filter") {
+        // MuPDF decodes the stream through its filter; the stream is only a means to that.
+        let dict = pdf.new_object_from_str(&format!("<</Filter /{}>>", pdf_name(filter)))?;
+        let stream = pdf.add_stream(&Buffer::from_bytes(&bytes)?, Some(&dict), true)?;
+        bytes = stream.read_stream()?;
+        pdf.delete_object(stream.as_indirect()?)?;
+    }
+    let name = node
+        .attribute("file")
+        .and_then(|f| f.rsplit(['/', '\\']).next())
+        .filter(|f| !f.is_empty())
+        .unwrap_or("Attachment");
+    Ok(Some((name.to_owned(), bytes)))
+}
+
 /// The appearance dictionary in an XFDF <appearance>, if it holds a usable one.
 fn read_appearance(pdf: &mut PdfDocument, text: &str) -> Result<Option<PdfObject>, Error> {
     let packed: String = text.split_whitespace().collect();
@@ -564,9 +620,25 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
             {
                 continue;
             }
+            // A file attachment without its file has nothing to open.
+            let attached = if subtype == PdfAnnotationType::FileAttachment {
+                let Some(file) = attached_file(&mut pdf, node)? else {
+                    continue;
+                };
+                Some(file)
+            } else {
+                None
+            };
             let page = pages.get_mut(&page_no).expect("every page is loaded");
             let mut annot = page.create_annotation(subtype)?;
             let mut obj = annot.object();
+            if let Some((file, data)) = &attached {
+                let options = EmbeddedFileOptions {
+                    mime_type: node.attribute("mimetype"),
+                    ..EmbeddedFileOptions::new(file)
+                };
+                obj.dict_put("FS", pdf.new_embedded_file(data, options)?)?;
+            }
             if let Some(n) = node.attribute("name") {
                 named.insert(n.to_owned(), annot.object());
             }
@@ -601,6 +673,11 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
                 )?;
             }
             obj.dict_put("Rect", array(&pdf, &[x0, y0, x1, y1])?)?;
+            if let Some(rd) = node.attribute("fringe").and_then(parse_numbers)
+                && rd.len() == 4
+            {
+                obj.dict_put("RD", array(&pdf, &rd)?)?;
+            }
             for (attr, key) in [
                 ("title", "T"),
                 ("name", "NM"),
