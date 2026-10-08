@@ -6,6 +6,7 @@
 //! `fz_context`, managed by the `mupdf` crate) turns them into pixels and text.
 
 mod annots;
+mod attachments;
 mod engine;
 mod error;
 mod fonts;
@@ -16,7 +17,7 @@ mod text;
 mod types;
 mod xfdf;
 
-pub use annots::{Annot, AnnotKind, History, NewAnnot, REVIEW_STATES, Style};
+pub use annots::{Annot, AnnotKind, History, NewAnnot, REVIEW_STATES, STAMPS, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::{has_cjk, has_font};

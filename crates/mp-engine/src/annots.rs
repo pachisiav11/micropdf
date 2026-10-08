@@ -4,8 +4,8 @@ use std::path::Path;
 
 use mupdf::color::AnnotationColor;
 use mupdf::pdf::{
-    AnnotationFlags, AnnotationQuadPoints, PdfAnnotation, PdfAnnotationType, PdfDocument,
-    PdfObject, PdfPage, PdfWriteOptions,
+    AnnotationFlags, AnnotationQuadPoints, EmbeddedFileOptions, PdfAnnotation, PdfAnnotationType,
+    PdfDocument, PdfObject, PdfPage, PdfWriteOptions,
 };
 use mupdf::{Document, Point, Quad};
 
@@ -24,6 +24,11 @@ pub enum AnnotKind {
     Circle,
     Line,
     Stamp,
+    /// A text box with a line pointing at something (a FreeText annotation of intent
+    /// FreeTextCallout).
+    Callout,
+    /// A file attached to the page (a FileAttachment annotation).
+    File,
     Other,
 }
 
@@ -82,7 +87,47 @@ pub enum NewAnnot {
         to: (f32, f32),
         width: f32,
     },
+    /// A text box at `rect` with a line from the nearest point of its edge to `target`.
+    Callout {
+        target: (f32, f32),
+        rect: Rect,
+        text: String,
+    },
+    /// A rubber stamp, one of [`STAMPS`] by name, centred on `center`, `width` points wide.
+    /// MuPDF draws it, so other readers redraw it the same way from the name.
+    Stamp {
+        name: String,
+        center: (f32, f32),
+        width: f32,
+    },
+    /// `data` embedded as the file `name`, shown as a paperclip with its top left at `at`.
+    File {
+        at: (f32, f32),
+        name: String,
+        data: Vec<u8>,
+    },
 }
+
+/// The standard stamps every PDF reader knows, by PDF name and the words they show.
+pub const STAMPS: [(&str, &str); 14] = [
+    ("Approved", "Approved"),
+    ("NotApproved", "Not approved"),
+    ("Draft", "Draft"),
+    ("Final", "Final"),
+    ("Confidential", "Confidential"),
+    ("ForComment", "For comment"),
+    ("ForPublicRelease", "For public release"),
+    ("NotForPublicRelease", "Not for public release"),
+    ("Experimental", "Experimental"),
+    ("Expired", "Expired"),
+    ("AsIs", "As is"),
+    ("Departmental", "Departmental"),
+    ("Sold", "Sold"),
+    ("TopSecret", "Top secret"),
+];
+
+/// MuPDF draws stamps on a 190 x 50 box.
+const STAMP_ASPECT: f32 = 190.0 / 50.0;
 
 /// Colour and author applied to a new annotation.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +149,7 @@ fn kind_of(t: PdfAnnotationType) -> Option<AnnotKind> {
         PdfAnnotationType::Circle => AnnotKind::Circle,
         PdfAnnotationType::Line => AnnotKind::Line,
         PdfAnnotationType::Stamp => AnnotKind::Stamp,
+        PdfAnnotationType::FileAttachment => AnnotKind::File,
         // Links, form widgets and popups have their own panels or none.
         PdfAnnotationType::Link | PdfAnnotationType::Widget | PdfAnnotationType::Popup => {
             return None;
@@ -145,10 +191,13 @@ fn rgb(color: AnnotationColor) -> [f32; 3] {
 }
 
 pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
-    let Some(kind) = kind_of(annot.r#type()?) else {
+    let Some(mut kind) = kind_of(annot.r#type()?) else {
         return Ok(None);
     };
     let obj = annot.object();
+    if kind == AnnotKind::FreeText && name(&obj, "IT")?.as_deref() == Some("FreeTextCallout") {
+        kind = AnnotKind::Callout;
+    }
     let state = name(&obj, "State")?;
     Ok(Some(Annot {
         id: annot.xref()?,
@@ -355,6 +404,9 @@ fn label(new: &NewAnnot) -> &'static str {
         } => "Add ellipse",
         NewAnnot::Shape { .. } => "Add rectangle",
         NewAnnot::Line { .. } => "Add line",
+        NewAnnot::Stamp { .. } => "Add stamp",
+        NewAnnot::Callout { .. } => "Add callout",
+        NewAnnot::File { .. } => "Attach file",
     }
 }
 
@@ -367,7 +419,7 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
     let subtype = match new {
         NewAnnot::TextMarkup { kind, .. } => markup_type(*kind)?,
         NewAnnot::Note { .. } => PdfAnnotationType::Text,
-        NewAnnot::FreeText { .. } => PdfAnnotationType::FreeText,
+        NewAnnot::FreeText { .. } | NewAnnot::Callout { .. } => PdfAnnotationType::FreeText,
         NewAnnot::Ink { .. } => PdfAnnotationType::Ink,
         NewAnnot::Shape {
             kind: AnnotKind::Circle,
@@ -379,6 +431,13 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
         } => PdfAnnotationType::Square,
         NewAnnot::Shape { .. } => return Err(Error::Invalid("not a shape kind")),
         NewAnnot::Line { .. } => PdfAnnotationType::Line,
+        NewAnnot::Stamp { name, .. } => {
+            if !STAMPS.iter().any(|(n, _)| n == name) {
+                return Err(Error::Invalid("not a standard stamp"));
+            }
+            PdfAnnotationType::Stamp
+        }
+        NewAnnot::File { .. } => PdfAnnotationType::FileAttachment,
     };
     let mut annot = page.create_annotation(subtype)?;
     annot
@@ -403,6 +462,30 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
             annot.set_rect(to_rect(rect))?;
             annot.set_contents(text)?;
         }
+        NewAnnot::Callout { target, rect, text } => {
+            annot.set_rect(to_rect(rect))?;
+            annot.set_contents(text)?;
+            // MuPDF draws the line from /CL (PDF space) and grows the Rect to hold it.
+            let knee = (
+                target.0.clamp(rect.x0, rect.x1),
+                target.1.clamp(rect.y0, rect.y1),
+            );
+            let inverse = page
+                .ctm()?
+                .invert()
+                .ok_or(Error::Invalid("page has no inverse transform"))?;
+            let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+            let mut line = pdf.new_array()?;
+            for p in [*target, knee] {
+                let p = point(p).transform(&inverse);
+                line.array_push(PdfObject::new_real(p.x)?)?;
+                line.array_push(PdfObject::new_real(p.y)?)?;
+            }
+            let mut obj = annot.object();
+            obj.dict_put("CL", line)?;
+            obj.dict_put("IT", PdfObject::new_name("FreeTextCallout")?)?;
+            obj.dict_put("LE", PdfObject::new_name("OpenArrow")?)?;
+        }
         NewAnnot::Ink { strokes, width } => {
             annot.set_border_width(*width)?;
             annot.set_ink_list(strokes.iter().map(|s| s.iter().copied().map(point)))?;
@@ -414,6 +497,27 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
         NewAnnot::Line { from, to, width } => {
             annot.set_line(point(*from), point(*to))?;
             annot.set_border_width(*width)?;
+        }
+        NewAnnot::Stamp {
+            name,
+            center: (x, y),
+            width,
+        } => {
+            annot.set_icon_name(name)?;
+            let (w, h) = (width / 2.0, width / STAMP_ASPECT / 2.0);
+            annot.set_rect(mupdf::Rect::new(x - w, y - h, x + w, y + h))?;
+        }
+        NewAnnot::File {
+            at: (x, y),
+            name,
+            data,
+        } => {
+            let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+            let spec = pdf.new_embedded_file(data, EmbeddedFileOptions::new(name))?;
+            annot.object().dict_put("FS", spec)?;
+            annot.set_icon_name("Paperclip")?;
+            annot.set_rect(mupdf::Rect::new(*x, *y, x + 20.0, y + 20.0))?;
+            annot.set_contents(name)?;
         }
     }
     let [red, green, blue] = style.color;
@@ -547,10 +651,14 @@ fn reshape_now(
         map_points(&mut points, map, &mut None)?;
     }
     let mut inner = None;
-    for key in ["L", "Vertices", "QuadPoints", "CL"] {
+    for key in ["L", "Vertices", "QuadPoints"] {
         if let Some(mut points) = obj.get_dict(key)? {
             map_points(&mut points, map, &mut inner)?;
         }
+    }
+    // A callout's line lies inside its Rect, which MuPDF keeps; it needs no second fit.
+    if let Some(mut points) = obj.get_dict("CL")? {
+        map_points(&mut points, map, &mut None)?;
     }
     if let Some(strokes) = obj.get_dict("InkList")? {
         for stroke in strokes.array_iter()? {

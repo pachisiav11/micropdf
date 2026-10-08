@@ -174,10 +174,22 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
                     attrs.push(("replyType", "group".into()));
                 }
             }
-            for (key, attr) in [("State", "state"), ("StateModel", "statemodel")] {
+            for (key, attr) in [
+                ("State", "state"),
+                ("StateModel", "statemodel"),
+                ("IT", "intent"),
+            ] {
                 if let Some(v) = name(&obj, key)? {
                     attrs.push((attr, v));
                 }
+            }
+            if let Some(cl) = get(&obj, "CL")? {
+                attrs.push(("callout", join(&numbers(&cl)?, ",")));
+            }
+            if subtype == "FreeText"
+                && let Some(head) = name(&obj, "LE")?
+            {
+                attrs.push(("head", head));
             }
             if let Some(w) = border_width(&obj)? {
                 attrs.push(("width", num(w)));
@@ -313,10 +325,22 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
                 let group = node.attribute("replyType") == Some("group");
                 links.push((annot.object(), parent.to_owned(), group));
             }
-            for (attr, key) in [("state", "State"), ("statemodel", "StateModel")] {
+            for (attr, key) in [
+                ("state", "State"),
+                ("statemodel", "StateModel"),
+                ("intent", "IT"),
+            ] {
                 if let Some(v) = node.attribute(attr) {
                     obj.dict_put(key, PdfObject::new_name(v)?)?;
                 }
+            }
+            if let Some(cl) = node.attribute("callout").and_then(parse_numbers) {
+                obj.dict_put("CL", array(&pdf, &cl)?)?;
+            }
+            if subtype == PdfAnnotationType::FreeText
+                && let Some(head) = node.attribute("head")
+            {
+                obj.dict_put("LE", PdfObject::new_name(head)?)?;
             }
             obj.dict_put("Rect", array(&pdf, &[x0, y0, x1, y1])?)?;
             for (attr, key) in [("title", "T"), ("name", "NM"), ("date", "M")] {

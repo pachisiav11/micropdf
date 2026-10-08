@@ -82,6 +82,8 @@ pub struct Attachment {
     pub name: String,
     /// Uncompressed size, when the document records it.
     pub size: Option<usize>,
+    /// The page of a file attached to a page as a comment; None for the document's own files.
+    pub page: Option<usize>,
 }
 
 /// One row of a layers (optional content) panel.

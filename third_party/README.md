@@ -24,6 +24,10 @@ Changes:
   the same shim; micropdf draws signatures into stamps with it.
 - `PdfAnnotation::set_hidden_for_editing` — wraps `pdf_set_annot_hidden_for_editing`; micropdf
   leaves comment replies out of page drawing with it.
+- `PdfDocument::new_embedded_file` — the first half of `add_embedded_file`: embeds a file
+  without naming it in the EmbeddedFiles tree, for file attachment comments. It also ends the
+  undo operation MuPDF 1.27's `pdf_add_embedded_file` leaves open on success, which fixes
+  `add_embedded_file` too.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 

@@ -67,6 +67,11 @@ export struct AttachmentRow {
     detail: string,
 }
 
+export struct StampItem {
+    name: string,
+    label: string,
+}
+
 export struct CommentRow {
     /// Index into the tab's comments, which the callbacks take.
     index: int,
@@ -365,6 +370,7 @@ export component MainWindow inherits Window {
     callback dialog-cancel();
     callback recent-clicked(int);
     callback attachment-save(int);
+    callback attachment-delete(int);
     callback layer-toggle(int);
     callback comment-clicked(int);
     callback comment-edit(int);
@@ -398,6 +404,12 @@ export component MainWindow inherits Window {
     }
     public function focus-sign() {
         sign-focus.focus();
+    }
+
+    in property <[StampItem]> stamps;
+
+    public function show-stamp-menu() {
+        stamp-menu.show();
     }
 
     changed viewport-y => { root.view-changed(); }
@@ -735,6 +747,21 @@ export component MainWindow inherits Window {
                         MenuEntry { text: "Ellipse"; checked: root.tool == 4; clicked => { root.command("tool-ellipse"); } }
                         MenuEntry { text: "Line"; checked: root.tool == 5; clicked => { root.command("tool-line"); } }
                         MenuEntry { text: "Draw"; checked: root.tool == 6; clicked => { root.command("tool-ink"); } }
+                        MenuEntry { text: "Callout"; checked: root.tool == 9; clicked => { root.command("tool-callout"); } }
+                        MenuEntry { text: "Stamp\u{2026}"; checked: root.tool == 8; clicked => { stamp-menu.show(); } }
+                        MenuEntry { text: "Attach file"; checked: root.tool == 10; clicked => { root.command("tool-attach"); } }
+                    }
+                }
+
+                stamp-menu := PopupWindow {
+                    x: tool-button.x;
+                    y: parent.height - 4px;
+                    width: 200px;
+                    Menu {
+                        for stamp in root.stamps: MenuEntry {
+                            text: stamp.label;
+                            clicked => { root.command("stamp-" + stamp.name); }
+                        }
                     }
                 }
 
@@ -928,6 +955,25 @@ export component MainWindow inherits Window {
                                             width: 20px;
                                             text: "\u{E74E}";
                                             color: Theme.text-muted;
+                                        }
+                                        Rectangle {
+                                            width: 28px;
+                                            border-radius: Theme.radius-sm;
+                                            background: file-delete-touch.has-hover ? Theme.bg-active : transparent;
+                                            accessible-role: button;
+                                            accessible-label: "Delete " + file.name;
+                                            accessible-action-default => {
+                                                root.attachment-delete(i);
+                                            }
+                                            Icon {
+                                                text: "\u{E74D}";
+                                                color: Theme.text-muted;
+                                            }
+                                            file-delete-touch := TouchArea {
+                                                clicked => {
+                                                    root.attachment-delete(i);
+                                                }
+                                            }
                                         }
                                     }
                                 }

@@ -621,3 +621,179 @@ fn threads_round_trip_through_xfdf() {
     assert_eq!(listed[2].reply_to, Some(listed[0].id));
     assert_eq!(listed[2].state.as_deref(), Some("Completed"));
 }
+
+#[test]
+fn standard_stamps_are_drawn_by_name() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let red = Style {
+        color: [0.8, 0.1, 0.1],
+        author: "Tester".into(),
+    };
+    let stamp = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Stamp {
+                name: "Approved".into(),
+                center: (150.0, 160.0),
+                width: 114.0,
+            },
+            red.clone(),
+        )
+        .unwrap();
+    assert_eq!(stamp.kind, AnnotKind::Stamp);
+    let r = stamp.rect;
+    assert!((r.width() - 114.0).abs() < 1.0, "{r:?}");
+    assert!((r.height() - 30.0).abs() < 1.0, "{r:?}");
+    assert!(((r.x0 + r.x1) / 2.0 - 150.0).abs() < 0.5);
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Add stamp")
+    );
+
+    // The stamp's red letters are on the page.
+    let list = engine.display_list(doc, 0).unwrap();
+    let image = mp_engine::render(&list, 1.0).unwrap();
+    let w = image.width as usize;
+    let reds = image
+        .rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| {
+            let (x, y) = ((i % w) as f32, (i / w) as f32);
+            r.contains(x, y) && p[0] > 150 && p[1] < 90 && p[2] < 90
+        })
+        .count();
+    assert!(reds > 200, "{reds}");
+
+    let bad = engine.add_annotation(
+        doc,
+        0,
+        NewAnnot::Stamp {
+            name: "Whatever".into(),
+            center: (150.0, 160.0),
+            width: 114.0,
+        },
+        red,
+    );
+    assert!(bad.is_err());
+}
+
+#[test]
+fn a_callout_points_at_its_target_and_round_trips() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let box_ = Rect {
+        x0: 180.0,
+        y0: 140.0,
+        x1: 280.0,
+        y1: 180.0,
+    };
+    let callout = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Callout {
+                target: (60.0, 40.0),
+                rect: box_,
+                text: "Look here".into(),
+            },
+            Style {
+                color: [1.0, 1.0, 0.8],
+                author: "Tester".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(callout.kind, AnnotKind::Callout);
+    assert_eq!(callout.contents, "Look here");
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Add callout")
+    );
+    // The bounds grew from the box to the target.
+    let r = callout.rect;
+    assert!(r.x0 <= 61.0 && r.y0 <= 41.0, "{r:?}");
+    assert!(r.x1 >= 279.0 && r.y1 >= 179.0, "{r:?}");
+
+    let (xml, _) = engine.export_comments(doc, "hello.pdf".into()).unwrap();
+    assert!(xml.contains("intent=\"FreeTextCallout\""), "{xml}");
+    assert!(xml.contains("callout=\""), "{xml}");
+    let fresh = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(fresh, xml).unwrap(), 1);
+    let copy = &engine.annotations(fresh, 0).unwrap()[0];
+    assert_eq!(copy.kind, AnnotKind::Callout);
+    assert!((copy.rect.x0 - r.x0).abs() < 2.0, "{:?} {r:?}", copy.rect);
+}
+
+#[test]
+fn files_attach_to_the_document_and_to_pages() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("attachment.pdf")).unwrap().id;
+    engine
+        .add_attachment(doc, "notes.txt".into(), b"second".to_vec())
+        .unwrap();
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Attach file")
+    );
+    let clip = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::File {
+                at: (40.0, 40.0),
+                name: "data.csv".into(),
+                data: b"a,b\n1,2\n".to_vec(),
+            },
+            Style {
+                color: [0.1, 0.3, 0.7],
+                author: "Tester".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(clip.kind, AnnotKind::File);
+    assert_eq!(clip.contents, "data.csv");
+
+    let files = engine.attachments(doc).unwrap();
+    let names: Vec<_> = files.iter().map(|f| (f.name.as_str(), f.page)).collect();
+    assert_eq!(
+        names,
+        [
+            ("notes.txt", None),
+            ("notes.txt", None),
+            ("data.csv", Some(0))
+        ]
+    );
+    let data = |i| engine.attachment_data(doc, i).unwrap();
+    let second = (0..2)
+        .find(|&i| data(i) == b"second")
+        .expect("the added file is listed");
+    assert_eq!(data(1 - second), b"Embedded by make_fixtures.py.\n");
+    assert_eq!(data(2), b"a,b\n1,2\n");
+
+    // Both survive a save.
+    let copy = std::env::temp_dir().join(format!("mp-attach-{}.pdf", std::process::id()));
+    engine.save(doc, &copy, false).unwrap();
+    let saved = engine.open(&copy).unwrap().id;
+    assert_eq!(engine.attachments(saved).unwrap().len(), 3);
+    engine.close(saved);
+    let _ = std::fs::remove_file(&copy);
+
+    // Deleting the page's file deletes its comment; deleting a document file leaves the other.
+    engine.delete_attachment(doc, 2).unwrap();
+    assert!(engine.annotations(doc, 0).unwrap().is_empty());
+    engine.delete_attachment(doc, second).unwrap();
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Delete attachment")
+    );
+    let files = engine.attachments(doc).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(data(0), b"Embedded by make_fixtures.py.\n");
+    engine.undo(doc).unwrap();
+    engine.undo(doc).unwrap();
+    assert_eq!(engine.attachments(doc).unwrap().len(), 3);
+}

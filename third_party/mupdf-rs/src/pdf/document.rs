@@ -1099,6 +1099,18 @@ impl PdfDocument {
         contents: &[u8],
         options: EmbeddedFileOptions<'_>,
     ) -> Result<EmbeddedFileInfo, Error> {
+        let fs = self.new_embedded_file(contents, options)?;
+        self.put_named_embedded_file(name, &fs)?;
+        self.filespec_info(name.to_owned(), fs)
+    }
+
+    /// Embeds `contents` and returns its file specification (an indirect object) without
+    /// naming it in the EmbeddedFiles tree, for a file attachment annotation's /FS.
+    pub fn new_embedded_file(
+        &mut self,
+        contents: &[u8],
+        options: EmbeddedFileOptions<'_>,
+    ) -> Result<PdfObject, Error> {
         let filename = CString::new(options.filename)?;
         let mime_type = options.mime_type.map(CString::new).transpose()?;
         let contents = Buffer::from_bytes(contents)?;
@@ -1117,13 +1129,14 @@ impl PdfDocument {
             ))
         }
         .map(|inner| unsafe { PdfObject::from_raw(inner) })?;
-        let fs = if fs.is_indirect()? {
-            fs
+        // MuPDF 1.27's pdf_add_embedded_file begins an "Embed file" operation and ends it only
+        // on failure; end it here so the undo journal stays balanced.
+        self.end_operation()?;
+        if fs.is_indirect()? {
+            Ok(fs)
         } else {
-            self.add_object(&fs)?
-        };
-        self.put_named_embedded_file(name, &fs)?;
-        self.filespec_info(name.to_owned(), fs)
+            self.add_object(&fs)
+        }
     }
 
     pub fn embedded_files(&self) -> Result<Vec<EmbeddedFileInfo>, Error> {

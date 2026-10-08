@@ -114,6 +114,10 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "tool-ellipse" => app.set_tool(Tool::Ellipse),
         "tool-line" => app.set_tool(Tool::Line),
         "tool-ink" => app.set_tool(Tool::Ink),
+        "tool-callout" => app.set_tool(Tool::Callout),
+        "tool-attach" => app.set_tool(Tool::Attach),
+        "attach-file" => app.attach_pick(None),
+        "stamp" => app.show_stamp_menu(),
         "highlight" => app.markup(AnnotKind::Highlight),
         "underline" => app.markup(AnnotKind::Underline),
         "strikeout" => app.markup(AnnotKind::StrikeOut),
@@ -143,7 +147,11 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "export-comments" => return Some("export-comments"),
         "import-comments" => return Some("import-comments"),
         "sign-image" => return Some("sign-image"),
-        _ => {}
+        _ => {
+            if let Some(name) = id.strip_prefix("stamp-") {
+                app.start_stamp(name);
+            }
+        }
     }
     None
 }

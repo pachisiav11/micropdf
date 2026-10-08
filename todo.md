@@ -19,6 +19,3 @@
 - 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
 - 2026-10-08 16:25: M2 — signatures: show the mark under the pointer before the click places it
 - 2026-10-08 16:32: M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)
-- 2026-10-08 17:34: M2 — standard stamps (Approved, Draft, Confidential and the rest) from a Stamp menu
-- 2026-10-08 17:34: M2 — callouts: a text box with a line to what it points at
-- 2026-10-08 17:34: M2 — file attachments: attach a file to the document or as a comment on the page; the Files panel lists both

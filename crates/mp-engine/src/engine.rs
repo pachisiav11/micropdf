@@ -5,10 +5,11 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
 use mupdf::link::LinkDestination;
-use mupdf::pdf::{PdfDocument, PdfObject};
+use mupdf::pdf::PdfDocument;
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
 use crate::annots::{self, Annot, History, NewAnnot, Style};
+use crate::attachments;
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
 use crate::xfdf;
@@ -77,6 +78,17 @@ enum Command {
         doc: DocId,
         index: usize,
         reply: Reply<Vec<u8>>,
+    },
+    AddAttachment {
+        doc: DocId,
+        name: String,
+        data: Vec<u8>,
+        reply: Reply<()>,
+    },
+    DeleteAttachment {
+        doc: DocId,
+        index: usize,
+        reply: Reply<()>,
     },
     Layers {
         doc: DocId,
@@ -279,7 +291,8 @@ impl Engine {
         self.call(|reply| Command::Metadata { doc, reply })
     }
 
-    /// Files embedded in the document (the EmbeddedFiles name tree), in tree order.
+    /// Files embedded in the document: its own (the EmbeddedFiles name tree) in tree order,
+    /// then files attached to pages as comments, page by page.
     pub fn attachments(&self, doc: DocId) -> Result<Vec<Attachment>, Error> {
         self.call(|reply| Command::Attachments { doc, reply })
     }
@@ -287,6 +300,22 @@ impl Engine {
     /// The contents of attachment `index` from [`Engine::attachments`].
     pub fn attachment_data(&self, doc: DocId, index: usize) -> Result<Vec<u8>, Error> {
         self.call(|reply| Command::AttachmentData { doc, index, reply })
+    }
+
+    /// Embeds `data` in the document as a file called `name`, as one undoable step.
+    pub fn add_attachment(&self, doc: DocId, name: String, data: Vec<u8>) -> Result<(), Error> {
+        self.call(|reply| Command::AddAttachment {
+            doc,
+            name,
+            data,
+            reply,
+        })
+    }
+
+    /// Removes attachment `index` from [`Engine::attachments`]; a file attached to a page goes
+    /// with its comment.
+    pub fn delete_attachment(&self, doc: DocId, index: usize) -> Result<(), Error> {
+        self.call(|reply| Command::DeleteAttachment { doc, index, reply })
     }
 
     /// Rows of the document's layers (optional content) panel. Empty when it has none.
@@ -697,29 +726,36 @@ fn run(rx: mpsc::Receiver<Command>) {
             }
             Command::Attachments { doc, reply } => {
                 let result = with_doc(&docs, doc, |d| {
-                    Ok(embedded_files(d)?
+                    Ok(attachments::list(d)?
                         .into_iter()
-                        .map(|(name, spec)| Attachment {
-                            size: file_size(&spec),
-                            name,
+                        .map(|f| Attachment {
+                            size: f.size(),
+                            page: f.page(),
+                            name: f.name,
                         })
                         .collect())
                 });
                 let _ = reply.send(result);
             }
             Command::AttachmentData { doc, index, reply } => {
-                let result = with_doc(&docs, doc, |d| {
-                    let files = embedded_files(d)?;
-                    let (_, spec) = files.get(index).ok_or(Error::NotFound)?;
-                    let stream = spec
-                        .get_dict("EF")?
-                        .and_then(|ef| {
-                            ef.get_dict("UF").ok().flatten().or(ef.get_dict("F").ok()?)
-                        })
-                        .ok_or(Error::NotFound)?;
-                    Ok(stream.read_stream()?)
-                });
+                let result = with_doc(&docs, doc, |d| attachments::data(d, index));
                 let _ = reply.send(result);
+            }
+            Command::AddAttachment {
+                doc,
+                name,
+                data,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| attachments::add(d, &name, &data));
+                let _ = reply.send(result);
+            }
+            Command::DeleteAttachment { doc, index, reply } => {
+                let result = with_doc(&docs, doc, |d| attachments::delete(d, index));
+                if let Ok(Some(page)) = result {
+                    lists.remove_page(doc, page);
+                }
+                let _ = reply.send(result.map(|_| ()));
             }
             Command::Layers { doc, reply } => {
                 let _ = reply.send(with_doc(&docs, doc, |d| Ok(layers(d))));
@@ -965,29 +1001,6 @@ fn reopen(path: &Path, password: Option<&String>) -> Result<Document, Error> {
     Ok(doc)
 }
 
-/// (file name, file specification) for each embedded file. Empty for non-PDF documents.
-fn embedded_files(doc: &Document) -> Result<Vec<(String, PdfObject)>, Error> {
-    let Ok(pdf) = PdfDocument::try_from(doc.clone()) else {
-        return Ok(Vec::new());
-    };
-    // MuPDF takes the tree's name and finds it under the catalog's /Names itself.
-    let map = pdf.load_name_tree(PdfObject::new_name("EmbeddedFiles")?)?;
-    let mut out = Vec::new();
-    for i in 0..map.dict_len()? as i32 {
-        let (Some(key), Some(spec)) = (map.get_dict_key(i)?, map.get_dict_val(i)?) else {
-            continue;
-        };
-        let fallback = String::from_utf8_lossy(&key.as_name().unwrap_or_default()).into_owned();
-        let name = ["UF", "F"]
-            .iter()
-            .find_map(|k| spec.get_dict(*k).ok().flatten()?.as_string().ok())
-            .filter(|n| !n.is_empty())
-            .unwrap_or(fallback);
-        out.push((name, spec));
-    }
-    Ok(out)
-}
-
 fn layers(doc: &Document) -> Vec<Layer> {
     PdfDocument::try_from(doc.clone())
         .map(|pdf| {
@@ -1003,13 +1016,6 @@ fn layers(doc: &Document) -> Vec<Layer> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn file_size(spec: &PdfObject) -> Option<usize> {
-    let ef = spec.get_dict("EF").ok()??;
-    let stream = ef.get_dict("F").ok()??;
-    let size = stream.get_dict("Params").ok()??.get_dict("Size").ok()??;
-    size.as_int().ok().map(|s| s.max(0) as usize)
 }
 
 fn with_doc<T>(

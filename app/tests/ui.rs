@@ -835,6 +835,70 @@ fn steps() -> Vec<Step> {
             |w| w.invoke_comment_filter_edited("".into()),
             |w| w.get_comments().row_count() == 4,
         ),
+        step("pick a stamp", command("stamp-Approved"), |w| {
+            w.get_tool() == 8 && w.get_stamps().row_count() == 14
+        }),
+        step(
+            "clicking places it",
+            |w| drag_hello(w, &[(60.0, 40.0)]),
+            |w| comments() == 6 && w.get_tool() == 0 && w.get_undo_name() == "Add stamp",
+        ),
+        step(
+            "a callout from a drag",
+            |w| {
+                w.invoke_command("tool-callout".into());
+                drag_hello(w, &[(250.0, 120.0), (230.0, 60.0), (220.0, 40.0)]);
+            },
+            |w| w.get_dialog_kind() == "input" && w.get_dialog_title() == "Add a callout",
+        ),
+        step(
+            "the callout takes its text",
+            |w| w.invoke_dialog_accept("See this".into()),
+            |w| {
+                comments() == 7
+                    && w.get_tool() == 0
+                    && w.get_undo_name() == "Add callout"
+                    && last_comment(w) == "Callout: See this"
+            },
+        ),
+        step(
+            "attach a file to the page",
+            |w| {
+                w.invoke_command("tool-attach".into());
+                // The file picker is the system's; hand the viewer the file it would return.
+                viewer::with(|app| app.attach(&fixture("hello.pdf"), Some((0, 260.0, 20.0))));
+            },
+            |w| {
+                let files = w.get_attachments();
+                comments() == 8
+                    && w.get_tool() == 0
+                    && w.get_undo_name() == "Attach file"
+                    && last_comment(w) == "Attachment: hello.pdf"
+                    && files.row_count() == 1
+                    && files
+                        .row_data(0)
+                        .is_some_and(|f| f.detail.ends_with("page 1"))
+            },
+        ),
+        step(
+            "the Files panel deletes it with its comment",
+            |w| w.invoke_attachment_delete(0),
+            |w| comments() == 7 && w.get_attachments().row_count() == 0,
+        ),
+        step(
+            "attach a file to the document",
+            |_| {
+                viewer::with(|app| app.attach(&fixture("hello.pdf"), None));
+            },
+            |w| {
+                w.get_attachments().row_count() == 1
+                    && w.get_undo_name() == "Attach file"
+                    && w.get_sidebar_tab() == 3
+            },
+        ),
+        step("undo takes it out again", command("undo"), |w| {
+            w.get_attachments().row_count() == 0 && w.get_sidebar_tab() != 3
+        }),
         step("Add signature reuses the saved one", command("sign"), |w| {
             w.get_tool() == 7 && w.get_sign_kind().is_empty()
         }),

@@ -40,3 +40,6 @@
 - Added: 2026-10-07 10:30 | Completed: 2026-10-08 16:55 | M2 — atomic save over the open file: appends when it can; otherwise (repaired or redacted files) a full rewrite to a sibling, ReplaceFileW, and the document opens again (with its password)
 - Added: 2026-10-08 17:34 | Completed: 2026-10-08 17:42 | M2 — comment threads: replies, review status (Accepted, Rejected, Cancelled, Completed), a filter in the comment list; XFDF keeps them
 - Added: 2026-10-08 17:34 | Completed: 2026-10-08 17:42 | Build — keep target/ small: no debug info for dependencies; no MuPDF whole-program optimization in unoptimized builds
+- Added: 2026-10-08 17:34 | Completed: 2026-10-08 17:55 | M2 — standard stamps (Approved, Draft, Confidential and the rest) from a Stamp menu
+- Added: 2026-10-08 17:34 | Completed: 2026-10-08 17:55 | M2 — callouts: a text box with a line to what it points at
+- Added: 2026-10-08 17:34 | Completed: 2026-10-08 17:55 | M2 — file attachments: attach a file to the document or as a comment on the page; the Files panel lists both

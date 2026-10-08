@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use mp_engine::{
     Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
     Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, REVIEW_STATES, Rect,
-    RenderPool, Style, Tile, Xfa,
+    RenderPool, STAMPS, Style, Tile, Xfa,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -26,7 +26,7 @@ use crate::recolor::ReadingMode;
 use crate::settings::{SavedMark, Settings};
 use crate::{
     AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem,
-    PaletteItem, TabItem, Theme, ThumbItem, TileItem,
+    PaletteItem, StampItem, TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -221,6 +221,11 @@ enum Ask {
         page: usize,
         rect: Rect,
     },
+    Callout {
+        page: usize,
+        target: (f32, f32),
+        rect: Rect,
+    },
     /// New text for a comment.
     Comment {
         page: usize,
@@ -324,6 +329,8 @@ pub struct App {
     pad: Option<Pad>,
     /// What the Sign tool places.
     placing: Option<Placing>,
+    /// The standard stamp the Stamp tool places, by PDF name.
+    stamp: Option<&'static str>,
     cursor: i32,
     status_timer: Timer,
     search_timer: Timer,
@@ -370,6 +377,14 @@ impl App {
         window.set_attachments(ModelRc::from(models.attachments.clone()));
         window.set_layers(ModelRc::from(models.layers.clone()));
         window.set_comments(ModelRc::from(models.comments.clone()));
+        let stamps: Vec<StampItem> = STAMPS
+            .iter()
+            .map(|(name, label)| StampItem {
+                name: (*name).into(),
+                label: (*label).into(),
+            })
+            .collect();
+        window.set_stamps(ModelRc::new(VecModel::from(stamps)));
 
         window.global::<Theme>().set_dark(settings.dark_theme);
         window.set_vim_enabled(settings.vim);
@@ -399,6 +414,7 @@ impl App {
             tool: Tool::Select,
             pad: None,
             placing: None,
+            stamp: None,
             cursor: 0,
             status_timer: Timer::default(),
             search_timer: Timer::default(),
@@ -1074,6 +1090,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
                         Err(e) => self.status(format!("Could not reply: {e}")),
                     }
                 }
+            }
+            Ask::Callout { page, target, rect } => {
+                if !input.trim().is_empty() {
+                    let new = NewAnnot::Callout {
+                        target,
+                        rect,
+                        text: input,
+                    };
+                    self.add_comment(page, new, [1.0, 1.0, 0.8]);
+                }
+                self.set_tool(Tool::Select);
             }
             Ask::TextBox { page, rect } => {
                 if !input.trim().is_empty() {
@@ -1985,6 +2012,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 };
                 if self.tool == Tool::Sign {
                     self.place_mark(page, px, py);
+                } else if self.tool == Tool::Stamp {
+                    self.place_stamp(page, px, py);
+                } else if self.tool == Tool::Attach {
+                    self.attach_pick(Some((page, px, py)));
                 } else if self.tool == Tool::Note {
                     self.push_dialog(Dialog {
                         ask: Ask::Note { page, x: px, y: py },
@@ -2863,26 +2894,108 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
             return;
         };
+        self.fill_files();
+        self.fill_layers();
+        self.fill_comments();
+        if window.get_sidebar_tab() == 4 && tab.layers.is_empty() {
+            window.set_sidebar_tab(0);
+        }
+    }
+
+    /// Fills the attachments panel, and leaves it when the tab has no files.
+    fn fill_files(&self) {
+        let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
+            return;
+        };
         let files: Vec<AttachmentRow> = tab
             .attachments
             .iter()
-            .map(|a| AttachmentRow {
-                name: a.name.clone().into(),
-                detail: a
-                    .size
-                    .map(|n| format_size(n as u64))
-                    .unwrap_or_default()
-                    .into(),
+            .map(|a| {
+                let size = a.size.map(|n| format_size(n as u64));
+                let detail = match (size, a.page) {
+                    (Some(size), Some(p)) => format!("{size}, page {}", p + 1),
+                    (Some(size), None) => size,
+                    (None, Some(p)) => format!("page {}", p + 1),
+                    (None, None) => String::new(),
+                };
+                AttachmentRow {
+                    name: a.name.clone().into(),
+                    detail: detail.into(),
+                }
             })
             .collect();
         self.models.attachments.set_vec(files);
-        self.fill_layers();
-        self.fill_comments();
-        let tab_index = window.get_sidebar_tab();
-        if (tab_index == 3 && tab.attachments.is_empty())
-            || (tab_index == 4 && tab.layers.is_empty())
-        {
+        if window.get_sidebar_tab() == 3 && tab.attachments.is_empty() {
             window.set_sidebar_tab(0);
+        }
+    }
+
+    /// Asks for a file to embed: in the document, or at `at` (page, x, y) as a comment.
+    pub fn attach_pick(&mut self, at: Option<(usize, f32, f32)>) {
+        let Some(tab) = self.tab() else { return };
+        let dir = tab.path.parent().map(Path::to_path_buf);
+        std::thread::spawn(move || {
+            let mut dialog = rfd::FileDialog::new().set_title("Attach a file");
+            if let Some(dir) = dir {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(file) = dialog.pick_file() else {
+                return;
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                with(|app| app.attach(&file, at));
+            });
+        });
+    }
+
+    /// Embeds the file at `path`: in the document, or at `at` (page, x, y) as a comment.
+    pub fn attach(&mut self, path: &Path, at: Option<(usize, f32, f32)>) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        let name = file_name(path);
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) => {
+                self.status(format!("Could not read {name}: {e}"));
+                return;
+            }
+        };
+        if let Some((page, x, y)) = at {
+            let new = NewAnnot::File {
+                at: (x, y),
+                name,
+                data,
+            };
+            self.add_comment(page, new, [0.1, 0.3, 0.7]);
+            self.set_tool(Tool::Select);
+            return;
+        }
+        match self.engine.add_attachment(doc, name.clone(), data) {
+            Ok(()) => {
+                self.edited(None);
+                if let Some(w) = self.window() {
+                    w.set_sidebar_tab(3);
+                }
+                self.status(format!("Attached {name}"));
+            }
+            Err(e) => self.status(format!("Could not attach {name}: {e}")),
+        }
+    }
+
+    /// Removes attachment `index`; a file attached to a page goes with its comment.
+    pub fn attachment_delete(&mut self, index: usize) {
+        let Some(tab) = self.tab() else { return };
+        let Some(file) = tab.attachments.get(index) else {
+            return;
+        };
+        let (doc, page, name) = (tab.info.id, file.page, file.name.clone());
+        match self.engine.delete_attachment(doc, index) {
+            Ok(()) => {
+                self.edited(page);
+                self.status(format!("Deleted {name}"));
+            }
+            Err(e) => self.status(format!("Could not delete {name}: {e}")),
         }
     }
 
@@ -3127,7 +3240,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let thumb_generation = self.bump();
         let Some(tab) = self.tab() else { return };
         let edits = self.engine.history(tab.info.id).unwrap_or_default();
+        let attachments = self.engine.attachments(tab.info.id).unwrap_or_default();
         let Some(tab) = self.tab_mut() else { return };
+        tab.attachments = attachments;
         if !undo && edits.position <= tab.saved_position {
             // The new step replaced the saved state's steps; no undo reaches it again.
             tab.saved_position = usize::MAX;
@@ -3155,6 +3270,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.rebuild_thumbs();
         self.refresh_marks();
         self.update_view();
+        self.fill_files();
         self.refresh_comments(page);
     }
 
@@ -3337,6 +3453,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if tool != Tool::Sign {
             self.placing = None;
         }
+        if tool != Tool::Stamp {
+            self.stamp = None;
+        }
         if let Some(w) = self.window() {
             w.set_tool(tool as i32);
         }
@@ -3392,6 +3511,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
                 path
             }
+            Tool::Callout => format!("M {ax} {ay} L {bx} {by}"),
             Tool::Ellipse => {
                 let (rx, ry) = ((bx - ax).abs() / 2.0, (by - ay).abs() / 2.0);
                 let (cx, cy) = ((ax + bx) / 2.0, (ay + by) / 2.0);
@@ -3426,6 +3546,31 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     width: 2.0,
                 };
                 self.add_comment(page, new, [0.1, 0.35, 0.9]);
+            }
+            Tool::Callout => {
+                // Pressed on the target, released where the box goes; a click puts the box
+                // up and to the right.
+                let center = if small { (a.0 + 90.0, a.1 - 50.0) } else { b };
+                let (w, h) = (CALLOUT_SIZE.0 / 2.0, CALLOUT_SIZE.1 / 2.0);
+                let (cx, cy) = self.inside_page(page, center, (w, h));
+                let rect = Rect {
+                    x0: cx - w,
+                    y0: cy - h,
+                    x1: cx + w,
+                    y1: cy + h,
+                };
+                self.push_dialog(Dialog {
+                    ask: Ask::Callout {
+                        page,
+                        target: a,
+                        rect,
+                    },
+                    kind: "input",
+                    title: "Add a callout".into(),
+                    text: String::new(),
+                    ok: "Add",
+                    cancel: "Cancel",
+                });
             }
             _ if small => self.status("Drag to draw the shape".into()),
             Tool::Line => {
@@ -3897,6 +4042,52 @@ Open it in Adobe Acrobat Reader to fill it in.",
             "Click where your {} goes. Esc cancels.",
             mark_name(initials)
         ));
+    }
+
+    pub fn show_stamp_menu(&mut self) {
+        if self.has_document()
+            && let Some(w) = self.window()
+        {
+            w.invoke_show_stamp_menu();
+        }
+    }
+
+    /// Starts the Stamp tool with the standard stamp `name`.
+    pub fn start_stamp(&mut self, name: &str) {
+        let Some(&(name, label)) = STAMPS.iter().find(|(n, _)| *n == name) else {
+            return;
+        };
+        if !self.has_document() {
+            return;
+        }
+        self.set_tool(Tool::Stamp);
+        self.stamp = Some(name);
+        self.status(format!(
+            "Click the page to place the {label} stamp. Esc cancels."
+        ));
+    }
+
+    fn place_stamp(&mut self, page: usize, x: f32, y: f32) {
+        let Some(name) = self.stamp else { return };
+        let half = (STAMP_WIDTH / 2.0, STAMP_WIDTH / 2.0 * 50.0 / 190.0);
+        let new = NewAnnot::Stamp {
+            name: name.to_owned(),
+            center: self.inside_page(page, (x, y), half),
+            width: STAMP_WIDTH,
+        };
+        self.add_comment(page, new, stamp_color(name));
+        self.set_tool(Tool::Select);
+    }
+
+    /// Moves `center` so a box `half` its size each way stays on `page`.
+    fn inside_page(&self, page: usize, center: (f32, f32), half: (f32, f32)) -> (f32, f32) {
+        let Some(&(pw, ph)) = self.tab().and_then(|t| t.sizes.get(page)) else {
+            return center;
+        };
+        (
+            center.0.clamp(half.0, (pw - half.0).max(half.0)),
+            center.1.clamp(half.1, (ph - half.1).max(half.1)),
+        )
     }
 
     fn place_mark(&mut self, page: usize, x: f32, y: f32) {
@@ -4419,9 +4610,9 @@ fn movable(kind: AnnotKind) -> bool {
     )
 }
 
-/// Notes keep their icon size.
+/// Notes and attached files keep their icon size.
 fn resizable(kind: AnnotKind) -> bool {
-    movable(kind) && kind != AnnotKind::Note
+    movable(kind) && !matches!(kind, AnnotKind::Note | AnnotKind::File)
 }
 
 /// A frame's corners: top left, then clockwise.
@@ -4518,6 +4709,9 @@ pub enum Tool {
     Line,
     Ink,
     Sign,
+    Stamp,
+    Callout,
+    Attach,
 }
 
 /// The signature pad's state that the window does not hold.
@@ -4553,6 +4747,22 @@ const MAX_ASPECT: f32 = 7.0;
 
 fn mark_name(initials: bool) -> &'static str {
     if initials { "initials" } else { "signature" }
+}
+
+/// How wide a new stamp is, in points.
+const STAMP_WIDTH: f32 = 150.0;
+/// A new callout's text box, in points.
+const CALLOUT_SIZE: (f32, f32) = (150.0, 44.0);
+
+/// Green for approval, red for warnings, blue for the rest, as Acrobat colours them.
+fn stamp_color(name: &str) -> [f32; 3] {
+    match name {
+        "Approved" | "Final" | "Completed" => [0.13, 0.55, 0.13],
+        "NotApproved" | "Confidential" | "TopSecret" | "Expired" | "NotForPublicRelease" => {
+            [0.8, 0.1, 0.1]
+        }
+        _ => [0.1, 0.3, 0.7],
+    }
 }
 
 /// Who new comments are by: the Windows user name.
@@ -4592,6 +4802,8 @@ fn kind_name(kind: AnnotKind) -> &'static str {
         AnnotKind::Circle => "Ellipse",
         AnnotKind::Line => "Line",
         AnnotKind::Stamp => "Stamp",
+        AnnotKind::Callout => "Callout",
+        AnnotKind::File => "Attachment",
         AnnotKind::Other => "Comment",
     }
 }

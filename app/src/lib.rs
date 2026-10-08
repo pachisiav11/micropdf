@@ -92,6 +92,9 @@ pub fn wire(window: &MainWindow) {
     window.on_attachment_save(|i| {
         viewer::with(|app| app.attachment_save(i as usize));
     });
+    window.on_attachment_delete(|i| {
+        viewer::with(|app| app.attachment_delete(i as usize));
+    });
     window.on_layer_toggle(|i| {
         viewer::with(|app| app.layer_toggle(i as usize));
     });
