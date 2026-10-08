@@ -333,6 +333,121 @@ pub fn set_color(doc: &Document, page: usize, id: i32, color: [f32; 3]) -> Resul
     })
 }
 
+/// Moves or resizes a comment so its bounds become `rect` (page space). The points inside it
+/// (ink strokes, line ends, vertices, text quads) move and scale with it.
+pub fn reshape(doc: &Document, page: usize, id: i32, rect: Rect) -> Result<(), Error> {
+    let mut page = pdf_page(doc, page)?;
+    let mut annot = page
+        .annotations()
+        .find(|a| a.xref().ok() == Some(id))
+        .ok_or(Error::NotFound)?;
+    let old: Rect = annot.bounds()?.into();
+    let moved_only =
+        (old.width() - rect.width()).abs() < 0.01 && (old.height() - rect.height()).abs() < 0.01;
+    let name = if moved_only {
+        "Move comment"
+    } else {
+        "Resize comment"
+    };
+    operation(doc, name, || {
+        let inverse = page
+            .ctm()?
+            .invert()
+            .ok_or(Error::Invalid("page has no inverse transform"))?;
+        // Pages turn in quarter turns only, so boxes stay axis-aligned in PDF space.
+        let to_pdf = |r: Rect| mupdf::Rect::new(r.x0, r.y0, r.x1, r.y1).transform(&inverse);
+        let target = to_pdf(rect);
+        let stamp = annot.r#type()? == PdfAnnotationType::Stamp;
+        let inner = reshape_now(&mut page, &mut annot, to_pdf(old), target, stamp)?;
+        // MuPDF gives ink, lines and polygons new bounds: their points plus a margin for the
+        // stroke. Fit the points inside `rect` less that margin, so the bounds land on `rect`.
+        if let Some(inner) = inner {
+            let got = to_pdf(annot.bounds()?.into());
+            let fit = mupdf::Rect::new(
+                target.x0 + (inner.x0 - got.x0),
+                target.y0 + (inner.y0 - got.y0),
+                target.x1 - (got.x1 - inner.x1),
+                target.y1 - (got.y1 - inner.y1),
+            );
+            let off = [
+                fit.x0 - inner.x0,
+                fit.y0 - inner.y0,
+                fit.x1 - inner.x1,
+                fit.y1 - inner.y1,
+            ];
+            if fit.x1 >= fit.x0 && fit.y1 >= fit.y0 && off.iter().any(|d| d.abs() > 0.1) {
+                reshape_now(&mut page, &mut annot, inner, fit, stamp)?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Maps the annotation's box `from` onto `to` (PDF space). Returns the bounds of the points
+/// inside it after the move, if it has any.
+fn reshape_now(
+    page: &mut PdfPage,
+    annot: &mut PdfAnnotation,
+    from: mupdf::Rect,
+    to: mupdf::Rect,
+    stamp: bool,
+) -> Result<Option<mupdf::Rect>, Error> {
+    let scale = |to: f32, from: f32| if from < 0.01 { 1.0 } else { to / from };
+    let sx = scale(to.x1 - to.x0, from.x1 - from.x0);
+    let sy = scale(to.y1 - to.y0, from.y1 - from.y0);
+    let map = |x: f32, y: f32| (to.x0 + (x - from.x0) * sx, to.y0 + (y - from.y0) * sy);
+    let obj = annot.object();
+    if let Some(mut points) = obj.get_dict("Rect")? {
+        map_points(&mut points, map, &mut None)?;
+    }
+    let mut inner = None;
+    for key in ["L", "Vertices", "QuadPoints", "CL"] {
+        if let Some(mut points) = obj.get_dict(key)? {
+            map_points(&mut points, map, &mut inner)?;
+        }
+    }
+    if let Some(strokes) = obj.get_dict("InkList")? {
+        for stroke in strokes.array_iter()? {
+            map_points(&mut stroke?, map, &mut inner)?;
+        }
+    }
+    // A stamp keeps its own appearance, which MuPDF fits to the new Rect. Other kinds are
+    // redrawn: setting the flags to what they are marks the annotation changed.
+    if !stamp {
+        let flags = annot.flags()?;
+        annot.set_flags(flags)?;
+    }
+    page.update()?;
+    Ok(inner)
+}
+
+/// Maps each x, y pair of a number array in place, growing `bounds` to hold the results.
+fn map_points(
+    points: &mut PdfObject,
+    map: impl Fn(f32, f32) -> (f32, f32),
+    bounds: &mut Option<mupdf::Rect>,
+) -> Result<(), Error> {
+    if !points.is_array()? {
+        return Ok(());
+    }
+    let n = points.len()? as i32;
+    for i in (0..n - 1).step_by(2) {
+        let value = |i| -> Result<f32, Error> {
+            Ok(points
+                .get_array(i)?
+                .map(|v| v.as_float())
+                .transpose()?
+                .unwrap_or(0.0))
+        };
+        let (x, y) = map(value(i)?, value(i + 1)?);
+        points.array_put(i, PdfObject::new_real(x)?)?;
+        points.array_put(i + 1, PdfObject::new_real(y)?)?;
+        let b = bounds.get_or_insert(mupdf::Rect::new(x, y, x, y));
+        *b = mupdf::Rect::new(b.x0.min(x), b.y0.min(y), b.x1.max(x), b.y1.max(y));
+    }
+    Ok(())
+}
+
 /// Draws comments, form fields or both into the page content, where they can no longer change.
 pub fn flatten(doc: &Document, comments: bool, fields: bool) -> Result<(), Error> {
     let name = match (comments, fields) {

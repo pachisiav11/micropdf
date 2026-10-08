@@ -266,6 +266,19 @@ enum Drag {
     Click {
         start: (f32, f32),
     },
+    /// A comment being moved, or resized by a corner handle; rectangles are page space.
+    Shape {
+        page: usize,
+        id: i32,
+        /// The press, in document space and in page space.
+        origin: (f32, f32),
+        start: (f32, f32),
+        rect: Rect,
+        resize: bool,
+        keep_aspect: bool,
+        current: Rect,
+        moved: bool,
+    },
 }
 
 struct Models {
@@ -1864,6 +1877,16 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.tab()?.layout.hit(x, y)
     }
 
+    /// The page-space point under a document-space point, clamped to `page`, so a drag that
+    /// leaves the page stays on its edge.
+    fn page_point(&self, page: usize, x: f32, y: f32) -> Option<(f32, f32)> {
+        let f = self.tab()?.layout.frame(page)?;
+        let cx = x.clamp(f.x, f.x + f.width - 0.01);
+        let cy = y.clamp(f.y, f.bottom() - 0.01);
+        let (hit, px, py) = self.hit(cx, cy)?;
+        (hit == page).then_some((px, py))
+    }
+
     fn link_at(&mut self, x: f32, y: f32) -> Option<LinkTarget> {
         let (page, px, py) = self.hit(x, y)?;
         self.page_links(page)
@@ -1890,7 +1913,11 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if self.drag.is_some() || self.presenting() {
             return;
         }
-        let cursor = if self.link_at(x, y).is_some()
+        let cursor = if let Some(corner) = self.handle_at(x, y) {
+            if corner % 2 == 0 { 4 } else { 5 }
+        } else if self.movable_at(x, y).is_some() {
+            3
+        } else if self.link_at(x, y).is_some()
             || self.comment_at(x, y).is_some()
             || self.field_at(x, y).is_some()
         {
@@ -1947,6 +1974,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
             }
             0 => {
+                if let Some(drag) = self.shape_drag(x, y) {
+                    self.drag = Some(drag);
+                    return;
+                }
                 let hit = self.hit(x, y);
                 let text = hit.and_then(|(page, px, py)| {
                     let t = self.page_text(page)?;
@@ -1990,12 +2021,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn pointer_move(&mut self, x: f32, y: f32) {
         if let Some(Drag::Draw { page, .. }) = self.drag {
-            let Some(f) = self.tab().and_then(|t| t.layout.frame(page)) else {
-                return;
-            };
-            let cx = x.clamp(f.x, f.x + f.width - 0.01);
-            let cy = y.clamp(f.y, f.bottom() - 0.01);
-            let Some((_, px, py)) = self.hit(cx, cy) else {
+            let Some((px, py)) = self.page_point(page, x, y) else {
                 return;
             };
             let ink = self.tool == Tool::Ink;
@@ -2011,6 +2037,35 @@ Open it in Adobe Acrobat Reader to fill it in.",
             return;
         }
         match self.drag {
+            Some(Drag::Shape {
+                page,
+                origin,
+                start,
+                rect,
+                resize,
+                keep_aspect,
+                ..
+            }) => {
+                let Some(to) = self.page_point(page, x, y) else {
+                    return;
+                };
+                let next = if resize {
+                    resized(rect, start, to, keep_aspect)
+                } else {
+                    let (dx, dy) = (to.0 - start.0, to.1 - start.1);
+                    Rect {
+                        x0: rect.x0 + dx,
+                        y0: rect.y0 + dy,
+                        x1: rect.x1 + dx,
+                        y1: rect.y1 + dy,
+                    }
+                };
+                if let Some(Drag::Shape { current, moved, .. }) = self.drag.as_mut() {
+                    *current = next;
+                    *moved |= (x - origin.0).abs() + (y - origin.1).abs() > 3.0;
+                }
+                self.refresh_marks();
+            }
             Some(Drag::Pan { start, scroll }) => {
                 let (vx, vy) = self.to_screen(x, y);
                 self.set_scroll(scroll.0 - (vx - start.0), scroll.1 - (vy - start.1));
@@ -2062,6 +2117,14 @@ Open it in Adobe Acrobat Reader to fill it in.",
             return;
         }
         match drag {
+            Some(Drag::Shape {
+                page,
+                id,
+                current,
+                moved: true,
+                ..
+            }) => self.reshape(page, id, current),
+            Some(Drag::Shape { .. }) => self.refresh_marks(),
             Some(Drag::Select { moved: false, .. }) => {
                 if let Some(tab) = self.tab_mut() {
                     tab.selection = None;
@@ -2250,9 +2313,29 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
         if let Some((page, id)) = tab.picked
             && let Some((_, a)) = tab.comments.iter().find(|(p, a)| *p == page && a.id == id)
-            && let Some(f) = tab.layout.to_view(page, &a.rect)
         {
-            marks.push(mark_item(f, 3));
+            let rect = match self.drag {
+                Some(Drag::Shape {
+                    id: dragged,
+                    current,
+                    ..
+                }) if dragged == id => current,
+                _ => a.rect,
+            };
+            if let Some(f) = tab.layout.to_view(page, &rect) {
+                marks.push(mark_item(f, 3));
+                if resizable(a.kind) {
+                    for (x, y) in corners(f) {
+                        marks.push(MarkItem {
+                            x: x - HANDLE,
+                            y: y - HANDLE,
+                            width: HANDLE * 2.0,
+                            height: HANDLE * 2.0,
+                            kind: 4,
+                        });
+                    }
+                }
+            }
         }
         if marks != self.shown_marks {
             self.models.marks.set_vec(marks.clone());
@@ -3778,6 +3861,110 @@ Open it in Adobe Acrobat Reader to fill it in.",
             .rposition(|(p, a)| *p == page && a.rect.contains(px, py))
     }
 
+    /// The movable comment under a document-space point; form fields come first.
+    fn movable_at(&mut self, x: f32, y: f32) -> Option<usize> {
+        let index = self.comment_at(x, y)?;
+        let (_, a) = self.tab()?.comments.get(index)?;
+        (movable(a.kind) && self.field_at(x, y).is_none()).then_some(index)
+    }
+
+    fn picked_index(&self) -> Option<usize> {
+        let tab = self.tab()?;
+        let (page, id) = tab.picked?;
+        tab.comments
+            .iter()
+            .position(|(p, a)| *p == page && a.id == id)
+    }
+
+    /// The picked comment's corner handle under a document-space point: 0 top left, then
+    /// clockwise.
+    fn handle_at(&self, x: f32, y: f32) -> Option<usize> {
+        let tab = self.tab()?;
+        let (page, a) = tab.comments.get(self.picked_index()?)?;
+        if !resizable(a.kind) {
+            return None;
+        }
+        let f = tab.layout.to_view(*page, &a.rect)?;
+        corners(f)
+            .iter()
+            .position(|&(cx, cy)| (x - cx).abs() <= HANDLE + 1.0 && (y - cy).abs() <= HANDLE + 1.0)
+    }
+
+    /// Starts moving the comment under a point, or resizing the picked one by a corner.
+    fn shape_drag(&mut self, x: f32, y: f32) -> Option<Drag> {
+        let handle = self.handle_at(x, y);
+        let index = match handle {
+            Some(_) => self.picked_index()?,
+            None => self.movable_at(x, y)?,
+        };
+        let (page, a) = self.tab()?.comments.get(index)?.clone();
+        let start = self.page_point(page, x, y)?;
+        self.pick_comment(index);
+        Some(Drag::Shape {
+            page,
+            id: a.id,
+            origin: (x, y),
+            start,
+            rect: a.rect,
+            resize: handle.is_some(),
+            keep_aspect: a.kind == AnnotKind::Stamp,
+            current: a.rect,
+            moved: false,
+        })
+    }
+
+    /// Moves the picked comment `step` points in the screen direction (`dx`, `dy`). False if
+    /// no comment that can move is picked.
+    pub fn nudge_picked(&mut self, dx: f32, dy: f32, step: f32) -> bool {
+        let Some((page, a)) = self
+            .picked_index()
+            .and_then(|i| self.tab()?.comments.get(i).cloned())
+        else {
+            return false;
+        };
+        if !movable(a.kind) {
+            return false;
+        }
+        // The view may be turned; find the page-space direction through the layout.
+        let Some(f) = self.tab().and_then(|t| t.layout.to_view(page, &a.rect)) else {
+            return false;
+        };
+        let (cx, cy) = (f.x + f.width / 2.0, f.y + f.height / 2.0);
+        let (Some(from), Some(to)) = (
+            self.page_point(page, cx, cy),
+            self.page_point(page, cx + dx * 10.0, cy + dy * 10.0),
+        ) else {
+            return false;
+        };
+        let (ex, ey) = (to.0 - from.0, to.1 - from.1);
+        let len = (ex * ex + ey * ey).sqrt();
+        if len > 0.001 {
+            let (mx, my) = (ex / len * step, ey / len * step);
+            let r = a.rect;
+            self.reshape(
+                page,
+                a.id,
+                Rect {
+                    x0: r.x0 + mx,
+                    y0: r.y0 + my,
+                    x1: r.x1 + mx,
+                    y1: r.y1 + my,
+                },
+            );
+        }
+        true
+    }
+
+    fn reshape(&mut self, page: usize, id: i32, rect: Rect) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        match self.engine.reshape(doc, page, id, rect) {
+            Ok(()) => self.edited(Some(page)),
+            Err(e) => self.status(format!("Could not move the comment: {e}")),
+        }
+    }
+
     fn pick_comment(&mut self, index: usize) {
         let Some(tab) = self.tab_mut() else { return };
         let Some((page, a)) = tab.comments.get(index) else {
@@ -3785,11 +3972,14 @@ Open it in Adobe Acrobat Reader to fill it in.",
         };
         tab.picked = Some((*page, a.id));
         tab.selection = None;
-        let kind = kind_name(a.kind);
+        let (kind, can_move) = (kind_name(a.kind), movable(a.kind));
         self.refresh_marks();
-        self.status(format!(
-            "{kind} selected. Delete removes it; double-click edits its text."
-        ));
+        let message = if can_move {
+            format!("{kind} selected. Drag to move it; Delete removes it; double-click edits it.")
+        } else {
+            format!("{kind} selected. Delete removes it; double-click edits its text.")
+        };
+        self.status(message);
     }
 
     /// Gives the picked comment a new colour.
@@ -3809,12 +3999,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Deletes the picked comment. Returns false if none is picked.
     pub fn delete_picked(&mut self) -> bool {
-        let Some(index) = self.tab().and_then(|t| {
-            let (page, id) = t.picked?;
-            t.comments
-                .iter()
-                .position(|(p, a)| *p == page && a.id == id)
-        }) else {
+        let Some(index) = self.picked_index() else {
             return false;
         };
         if let Some(tab) = self.tab_mut() {
@@ -4041,6 +4226,62 @@ fn tile_item(f: Frame, t: &TileImage, dpr: f32) -> TileItem {
         height: (y1 - y0) / dpr,
         image: t.image.clone(),
     }
+}
+
+/// Half the side of a resize handle, in document space.
+const HANDLE: f32 = 4.0;
+/// The smallest side a resize leaves, in points.
+const MIN_SIDE: f32 = 6.0;
+
+/// Text markup follows its text; the other kinds can move.
+fn movable(kind: AnnotKind) -> bool {
+    !matches!(
+        kind,
+        AnnotKind::Highlight | AnnotKind::Underline | AnnotKind::StrikeOut | AnnotKind::Squiggly
+    )
+}
+
+/// Notes keep their icon size.
+fn resizable(kind: AnnotKind) -> bool {
+    movable(kind) && kind != AnnotKind::Note
+}
+
+/// A frame's corners: top left, then clockwise.
+fn corners(f: Frame) -> [(f32, f32); 4] {
+    let (x1, y1) = (f.x + f.width, f.bottom());
+    [(f.x, f.y), (x1, f.y), (x1, y1), (f.x, y1)]
+}
+
+/// `rect` with the corner nearest `start` dragged to `to`; the opposite corner stays put.
+fn resized(rect: Rect, start: (f32, f32), to: (f32, f32), keep_aspect: bool) -> Rect {
+    let nearer = |v: f32, a: f32, b: f32| (v - a).abs() < (v - b).abs();
+    let fx = if nearer(start.0, rect.x0, rect.x1) {
+        rect.x1
+    } else {
+        rect.x0
+    };
+    let fy = if nearer(start.1, rect.y0, rect.y1) {
+        rect.y1
+    } else {
+        rect.y0
+    };
+    let mut w = (to.0 - fx).abs().max(MIN_SIDE);
+    let mut h = (to.1 - fy).abs().max(MIN_SIDE);
+    if keep_aspect && rect.width() > 0.0 && rect.height() > 0.0 {
+        let s = (w / rect.width()).max(h / rect.height());
+        (w, h) = (rect.width() * s, rect.height() * s);
+    }
+    let (x0, x1) = if to.0 < fx {
+        (fx - w, fx)
+    } else {
+        (fx, fx + w)
+    };
+    let (y0, y1) = if to.1 < fy {
+        (fy - h, fy)
+    } else {
+        (fy, fy + h)
+    };
+    Rect { x0, y0, x1, y1 }
 }
 
 fn mark_item(f: Frame, kind: i32) -> MarkItem {

@@ -377,6 +377,19 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
     if is(Key::Delete) && app.delete_picked() {
         return Handled;
     }
+    let arrow = [
+        (Key::LeftArrow, (-1.0, 0.0)),
+        (Key::RightArrow, (1.0, 0.0)),
+        (Key::UpArrow, (0.0, -1.0)),
+        (Key::DownArrow, (0.0, 1.0)),
+    ]
+    .into_iter()
+    .find(|&(k, _)| is(k));
+    if let Some((_, (dx, dy))) = arrow
+        && app.nudge_picked(dx, dy, if shift { 10.0 } else { 1.0 })
+    {
+        return Handled;
+    }
     if is(Key::F3) {
         app.find_step(!shift);
         return Handled;

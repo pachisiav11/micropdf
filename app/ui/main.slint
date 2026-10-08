@@ -1100,7 +1100,10 @@ export component MainWindow inherits Window {
                             background: mark.kind == 0 ? #ffd54a59
                                 : mark.kind == 1 ? #ff9a1f99
                                 : mark.kind == 2 ? #4a7dff4d
+                                : mark.kind == 4 ? #ffffff
                                 : #8d9cff40;
+                            border-width: mark.kind == 4 ? 1px : 0px;
+                            border-color: Theme.accent;
                         }
                         if root.draft-path != "": Path {
                             x: 0;
@@ -1118,7 +1121,7 @@ export component MainWindow inherits Window {
                         TouchArea {
                             width: max(scroller.visible-width, root.document-width);
                             height: max(scroller.visible-height, root.document-height);
-                            mouse-cursor: root.tool != 0 ? MouseCursor.crosshair : root.cursor == 1 ? MouseCursor.text : root.cursor == 2 ? MouseCursor.pointer : MouseCursor.default;
+                            mouse-cursor: root.tool != 0 ? MouseCursor.crosshair : root.cursor == 1 ? MouseCursor.text : root.cursor == 2 ? MouseCursor.pointer : root.cursor == 3 ? MouseCursor.move : root.cursor == 4 ? MouseCursor.nwse-resize : root.cursor == 5 ? MouseCursor.nesw-resize : MouseCursor.default;
                             pointer-event(e) => {
                                 if (e.kind == PointerEventKind.down) {
                                     root.focus-view();

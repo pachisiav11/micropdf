@@ -92,6 +92,17 @@ fn comments_in(path: &std::path::Path) -> usize {
     n
 }
 
+/// The bounds of comment `index` on page 1 of the active tab.
+fn comment_rect(index: usize) -> mp_engine::Rect {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        let list = app.engine().annotations(doc, 0).ok()?;
+        list.get(index).map(|a| a.rect)
+    })
+    .flatten()
+    .expect("comment exists")
+}
+
 /// The value of form field `index` on page 1 of the active tab.
 fn field_value(index: usize) -> String {
     viewer::with(|app| {
@@ -162,6 +173,8 @@ fn steps() -> Vec<Step> {
     let palette_zoom_after = Rc::clone(&palette_zoom);
     let tabs_before = Rc::new(Cell::new(0usize));
     let tabs_after = Rc::clone(&tabs_before);
+    let sign_before = Rc::new(Cell::new((0.0f32, 0.0f32, 0.0f32, 0.0f32)));
+    let sign_after = Rc::clone(&sign_before);
     let tabs_reopened = Rc::clone(&tabs_before);
     let tabs_edited = Rc::new(Cell::new(0usize));
     let tabs_edited_after = Rc::clone(&tabs_edited);
@@ -724,6 +737,7 @@ fn steps() -> Vec<Step> {
             |_| viewer::with(|app| app.import_comments(scratch("comments.xfdf"))).unwrap(),
             |w| {
                 comments() == 3
+                    && w.get_comments().row_count() == 3
                     && w.get_undo_name() == "Import comments"
                     && w.get_status_left().starts_with("Imported 1 comment from")
             },
@@ -738,6 +752,50 @@ fn steps() -> Vec<Step> {
                     let _ = std::fs::remove_file(scratch("comments.xfdf"));
                 }
                 done
+            },
+        ),
+        step(
+            "dragging the signature moves it",
+            |w| drag_hello(w, &[(150.0, 160.0), (140.0, 155.0), (120.0, 150.0)]),
+            |w| {
+                let r = comment_rect(0);
+                w.get_undo_name() == "Move comment"
+                    && ((r.x0 + r.x1) / 2.0 - 120.0).abs() < 1.0
+                    && ((r.y0 + r.y1) / 2.0 - 150.0).abs() < 1.0
+            },
+        ),
+        step(
+            "the arrow keys nudge it",
+            key(char::from(Key::RightArrow)),
+            |_| (comment_rect(0).x0 + comment_rect(0).x1) / 2.0 > 120.5,
+        ),
+        step(
+            "a comment shows the move cursor",
+            |w| {
+                let p = w.get_pages().iter().find(|p| p.index == 0).unwrap();
+                w.invoke_hover(
+                    p.x + 120.0 / 300.0 * p.width,
+                    p.y + 150.0 / 200.0 * p.height,
+                );
+            },
+            |w| w.get_cursor() == 3,
+        ),
+        step(
+            "a corner handle resizes it and keeps its shape",
+            move |w| {
+                let r = comment_rect(0);
+                sign_before.set((r.x0, r.y0, r.x1, r.y1));
+                drag_hello(w, &[(r.x1, r.y1), (r.x1 + 20.0, r.y1 + 10.0)]);
+            },
+            move |w| {
+                let (x0, y0, x1, y1) = sign_after.get();
+                let r = comment_rect(0);
+                let aspect = (x1 - x0) / (y1 - y0);
+                w.get_undo_name() == "Resize comment"
+                    && (r.x0 - x0).abs() < 1.0
+                    && (r.y0 - y0).abs() < 1.0
+                    && r.x1 > x1 + 15.0
+                    && (r.width() / r.height() - aspect).abs() < 0.05
             },
         ),
         step("Add signature reuses the saved one", command("sign"), |w| {

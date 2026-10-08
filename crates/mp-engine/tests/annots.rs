@@ -338,3 +338,102 @@ fn comments_round_trip_through_xfdf() {
     assert_eq!(engine.import_comments(doc, xml).unwrap(), 0);
     assert!(engine.import_comments(copy, "not xml".into()).is_err());
 }
+
+/// Yellow pixels inside `rect` (page space, rendered at 1:1).
+fn yellow_in(engine: &Engine, doc: mp_engine::DocId, rect: Rect) -> usize {
+    let list = engine.display_list(doc, 0).unwrap();
+    let image = mp_engine::render(&list, 1.0).unwrap();
+    let (w, rgb) = (image.width as usize, image.rgb.as_chunks::<3>().0);
+    rgb.iter()
+        .enumerate()
+        .filter(|&(i, _)| {
+            let (x, y) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+            x > rect.x0 && x < rect.x1 && y > rect.y0 && y < rect.y1
+        })
+        .filter(|(_, p)| p[0] > 200 && p[1] > 170 && p[2] < 120)
+        .count()
+}
+
+#[test]
+fn comments_move_and_resize() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let below = Rect {
+        x0: 20.0,
+        y0: 130.0,
+        x1: 70.0,
+        y1: 170.0,
+    };
+    let square = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Shape {
+                kind: AnnotKind::Square,
+                rect: below,
+                width: 2.0,
+            },
+            style(),
+        )
+        .unwrap();
+    assert!(yellow_in(&engine, doc, below) > 50);
+
+    let r = square.rect;
+    let above = Rect {
+        y0: r.y0 - 110.0,
+        y1: r.y1 - 110.0,
+        ..r
+    };
+    engine.reshape(doc, 0, square.id, above).unwrap();
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Move comment")
+    );
+    let r = engine.annotations(doc, 0).unwrap()[0].rect;
+    for (a, b) in [
+        (r.x0, above.x0),
+        (r.y0, above.y0),
+        (r.x1, above.x1),
+        (r.y1, above.y1),
+    ] {
+        assert!((a - b).abs() < 0.5, "{r:?} {above:?}");
+    }
+    assert_eq!(yellow_in(&engine, doc, below), 0);
+    assert!(yellow_in(&engine, doc, above) > 50);
+
+    let ink = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Ink {
+                strokes: vec![vec![(160.0, 140.0), (200.0, 170.0), (240.0, 140.0)]],
+                width: 2.0,
+            },
+            style(),
+        )
+        .unwrap();
+    let r = ink.rect;
+    let half = Rect {
+        x1: r.x0 + r.width() / 2.0,
+        ..r
+    };
+    engine.reshape(doc, 0, ink.id, half).unwrap();
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Resize comment")
+    );
+    let shrunk = engine.annotations(doc, 0).unwrap()[1].rect;
+    assert!((shrunk.width() - half.width()).abs() < 0.5, "{shrunk:?}");
+    let right = Rect {
+        x0: half.x1 + 2.0,
+        ..r
+    };
+    assert_eq!(yellow_in(&engine, doc, right), 0);
+
+    engine.undo(doc).unwrap();
+    assert!(yellow_in(&engine, doc, right) > 20);
+    engine.undo(doc).unwrap();
+    engine.undo(doc).unwrap();
+    assert!(yellow_in(&engine, doc, below) > 50);
+    assert_eq!(yellow_in(&engine, doc, above), 0);
+}

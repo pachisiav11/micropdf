@@ -4,7 +4,7 @@
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
-- 2026-10-07 10:30: M2 — comments: a colour picker in the toolbar; move or resize a selected comment; GUI check of the tool outline
+- 2026-10-07 10:30: M2 — comments: a colour picker in the toolbar; GUI check of the tool outline, the resize handles and the move/resize cursors
 - 2026-10-07 11:25: M2 — GUI check (user away): toolbar fits at narrow window widths with the new buttons; sidebar tabs fit with Comments + Layers + Files; the Segoe icons for strike-out (EDE0) and comment tools render
 - 2026-10-07 11:01: M2 — forms: edit fields in place on the page (not a dialog), Tab between fields, list boxes, FDF import/export
 - 2026-10-07 10:30: M2 — atomic save over the open file (temp file + ReplaceFileW; MuPDF must open files with FILE_SHARE_DELETE)
@@ -18,5 +18,5 @@
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
 - 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
-- 2026-10-08 16:25: M2 — signatures: show the mark under the pointer before the click places it; move or resize a placed signature (with the comment move/resize work)
+- 2026-10-08 16:25: M2 — signatures: show the mark under the pointer before the click places it
 - 2026-10-08 16:32: M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)

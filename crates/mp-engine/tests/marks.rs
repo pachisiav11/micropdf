@@ -143,3 +143,34 @@ fn an_image_signature_keeps_its_pixels() {
             .is_err()
     );
 }
+
+#[test]
+fn a_moved_signature_keeps_its_look() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let red = |p: &[u8; 3]| p[0] > 200 && p[1] < 60 && p[2] < 60;
+    let placed = engine
+        .place_mark(
+            doc,
+            0,
+            Mark::Image(RED_PNG.to_vec()),
+            CENTER,
+            80.0,
+            [0.0; 3],
+        )
+        .unwrap();
+    let old = placed.rect;
+    assert!(pixels(&engine, doc, old, red) > 1000);
+
+    // Up into the top band, at twice the size.
+    let new = Rect {
+        x0: 20.0,
+        y0: 2.0,
+        x1: 20.0 + old.width() * 2.0,
+        y1: 2.0 + old.height() * 2.0,
+    };
+    engine.reshape(doc, 0, placed.id, new).unwrap();
+    assert_eq!(pixels(&engine, doc, old, red), 0);
+    let filled = pixels(&engine, doc, new, red) as f32;
+    assert!(filled > new.width() * new.height() * 0.9, "{filled}");
+}

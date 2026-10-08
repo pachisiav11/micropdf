@@ -12,7 +12,7 @@ use crate::annots::{self, Annot, History, NewAnnot, Style};
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
 use crate::xfdf;
-use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
+use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem, Rect};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
 const LIST_CACHE_CAPACITY: usize = 48;
@@ -128,6 +128,13 @@ enum Command {
         page: usize,
         id: i32,
         color: [f32; 3],
+        reply: Reply<()>,
+    },
+    Reshape {
+        doc: DocId,
+        page: usize,
+        id: i32,
+        rect: Rect,
         reply: Reply<()>,
     },
     PlaceMark {
@@ -321,6 +328,17 @@ impl Engine {
             page,
             id,
             text,
+            reply,
+        })
+    }
+
+    /// Moves or resizes comment `id` so its bounds become `rect` (page space).
+    pub fn reshape(&self, doc: DocId, page: usize, id: i32, rect: Rect) -> Result<(), Error> {
+        self.call(|reply| Command::Reshape {
+            doc,
+            page,
+            id,
+            rect,
             reply,
         })
     }
@@ -659,6 +677,17 @@ fn run(rx: mpsc::Receiver<Command>) {
                 reply,
             } => {
                 let result = with_doc(&docs, doc, |d| annots::set_contents(d, page, id, &text));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::Reshape {
+                doc,
+                page,
+                id,
+                rect,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::reshape(d, page, id, rect));
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
             }
