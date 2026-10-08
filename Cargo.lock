@@ -2684,6 +2684,7 @@ dependencies = [
 name = "mp-engine"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "dwrote",
  "mupdf",
  "roxmltree",

@@ -45,4 +45,5 @@
 - Added: 2026-10-08 17:34 | Completed: 2026-10-08 17:55 | M2 — file attachments: attach a file to the document or as a comment on the page; the Files panel lists both
 - Added: 2026-10-08 17:55 | Completed: 2026-10-08 20:12 | M2 — comment style bar: colour swatches, fill, line width and opacity for the picked comment; each tool remembers its colour
 - Added: 2026-10-07 11:01 | Completed: 2026-10-08 20:22 | M2 — forms: edit fields in place on the page (not a dialog), Tab between fields, list boxes, FDF import/export
-- Added: 2026-10-08 16:25 | Completed: 2026-10-08 20:47 | M2 — signatures: show the mark under the pointer before the click places it
+- Added: 2026-10-08 16:25 | Completed: 2026-10-08 20:31 | M2 — signatures: show the mark under the pointer before the click places it
+- Added: 2026-10-08 16:32 | Completed: 2026-10-08 20:58 | M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)

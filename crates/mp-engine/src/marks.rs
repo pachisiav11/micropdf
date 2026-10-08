@@ -1,13 +1,13 @@
 //! Signatures and initials: the reader's own mark, drawn, typed or imported, placed on a page as
 //! a stamp whose appearance is the mark. This is a visual signature, not a digital one.
 
-use mupdf::pdf::{PdfAnnotationType, PdfPage};
+use mupdf::pdf::{PdfAnnotationType, PdfObject, PdfPage};
 use mupdf::{
     ColorParams, Colorspace, Device, DisplayList, Document, Image, LineCap, LineJoin, Matrix, Path,
     StrokeState,
 };
 
-use crate::annots::{Annot, describe, operation};
+use crate::annots::{Annot, describe, operation, unique_name};
 use crate::render::{self, Preview};
 use crate::{Error, Rect};
 
@@ -180,6 +180,9 @@ pub fn place(
         let mut page = PdfPage::try_from(doc.load_page(page as i32)?).map_err(|_| Error::NotPdf)?;
         let mut annot = page.create_annotation(PdfAnnotationType::Stamp)?;
         annot.set_icon_name(ICON)?;
+        annot
+            .object()
+            .dict_put("NM", PdfObject::new_string(&unique_name())?)?;
         annot.set_rect(mupdf::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1))?;
         annot.set_appearance(&list)?;
         page.update()?;

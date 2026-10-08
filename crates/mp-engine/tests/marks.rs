@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mp_engine::{AnnotKind, DocId, Engine, Mark, Rect, Restyle};
+use mp_engine::{AnnotKind, DocId, Engine, Mark, NewAnnot, Rect, Restyle, Style};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -173,6 +173,60 @@ fn a_moved_signature_keeps_its_look() {
     assert_eq!(pixels(&engine, doc, old, red), 0);
     let filled = pixels(&engine, doc, new, red) as f32;
     assert!(filled > new.width() * new.height() * 0.9, "{filled}");
+}
+
+#[test]
+fn signatures_and_stamps_round_trip_through_xfdf() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let red = |p: &[u8; 3]| p[0] > 200 && p[1] < 60 && p[2] < 60;
+    let signed = engine
+        .place_mark(
+            doc,
+            0,
+            Mark::Image(RED_PNG.to_vec()),
+            CENTER,
+            80.0,
+            [0.0; 3],
+        )
+        .unwrap();
+    engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Stamp {
+                name: "Approved".into(),
+                center: (80.0, 40.0),
+                width: 120.0,
+            },
+            Style {
+                color: [0.0, 0.6, 0.0],
+                author: "Tester".into(),
+            },
+        )
+        .unwrap();
+
+    let (xml, n) = engine.export_comments(doc, "hello.pdf".into()).unwrap();
+    assert_eq!(n, 2);
+    assert!(xml.contains("icon=\"Signature\""), "{xml}");
+    assert!(xml.contains("icon=\"Approved\""), "{xml}");
+    // Base64 of "<?xml", the start of Acrobat's appearance XML.
+    assert_eq!(xml.matches("<appearance>PD94bWw").count(), 2, "{xml}");
+
+    let fresh = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(fresh, xml.clone()).unwrap(), 2);
+    // Both carry a name, so a second import adds nothing.
+    assert_eq!(engine.import_comments(fresh, xml.clone()).unwrap(), 0);
+    let copies = engine.annotations(fresh, 0).unwrap();
+    assert!(copies.iter().all(|a| a.kind == AnnotKind::Stamp));
+    let filled = pixels(&engine, fresh, signed.rect, red) as f32;
+    let area = signed.rect.width() * signed.rect.height();
+    assert!(filled > area * 0.9, "{filled} of {area}");
+
+    // A broken appearance still brings the stamp, drawn as MuPDF draws its name.
+    let broken = xml.replacen("<appearance>PD94", "<appearance>!!", 1);
+    let other = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(other, broken).unwrap(), 2);
 }
 
 #[test]

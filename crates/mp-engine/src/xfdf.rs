@@ -1,20 +1,21 @@
 //! Comments as XFDF, the XML format Acrobat uses to export and import review comments.
 //!
 //! Both directions work on the annotations' PDF dictionaries, in PDF page space, so the numbers
-//! pass through unchanged. Stamps (which keep their look, such as a signature, in an appearance
-//! stream), links, form widgets, popups and file attachments are not exported.
+//! pass through unchanged. A stamp carries its appearance stream, so a signature keeps its look.
+//! Links, form widgets, popups and file attachments are not exported.
 
 use std::collections::HashMap;
 
-use mupdf::Document;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use mupdf::pdf::{PdfAnnotationType, PdfDocument, PdfObject, PdfPage};
+use mupdf::{Buffer, Document};
 
 use crate::Error;
 use crate::annots::{name, operation, string};
 use crate::forms::escape;
 
 /// XFDF element names, the PDF subtypes they stand for, and MuPDF's annotation types.
-const KINDS: [(&str, &str, PdfAnnotationType); 12] = [
+const KINDS: [(&str, &str, PdfAnnotationType); 13] = [
     ("text", "Text", PdfAnnotationType::Text),
     ("freetext", "FreeText", PdfAnnotationType::FreeText),
     ("highlight", "Highlight", PdfAnnotationType::Highlight),
@@ -27,7 +28,11 @@ const KINDS: [(&str, &str, PdfAnnotationType); 12] = [
     ("line", "Line", PdfAnnotationType::Line),
     ("polygon", "Polygon", PdfAnnotationType::Polygon),
     ("polyline", "PolyLine", PdfAnnotationType::PolyLine),
+    ("stamp", "Stamp", PdfAnnotationType::Stamp),
 ];
+
+/// How deep an appearance's objects may nest before the rest is left out.
+const MAX_DEPTH: usize = 32;
 
 /// The annotation flags in bit order, as XFDF names them.
 const FLAGS: [&str; 10] = [
@@ -226,6 +231,13 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
             if let Some(da) = string(&obj, "DA")? {
                 children += &format!("<defaultappearance>{}</defaultappearance>", escape(&da));
             }
+            if subtype == "Stamp"
+                && let Some(ap) = get(&obj, "AP")?
+            {
+                let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+                write_object(&mut xml, Some(b"AP"), &ap, &mut Vec::new())?;
+                children += &format!("<appearance>{}</appearance>", BASE64_STANDARD.encode(xml));
+            }
             out += &format!("<{tag}");
             for (k, v) in attrs {
                 out += &format!(" {k}=\"{}\"", escape(&v));
@@ -240,6 +252,196 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
     }
     out += &format!("</annots>\n<f href=\"{}\"/>\n</xfdf>\n", escape(file));
     Ok((out, count))
+}
+
+/// Writes `obj` as Acrobat writes objects inside an XFDF <appearance>: one element per object
+/// (DICT, STREAM, ARRAY, NAME, STRING, INT, FIXED, BOOL, NULL), named by KEY inside a dictionary,
+/// with a stream's bytes, still encoded by its filters, in a DATA element. References are written
+/// out in place; one that leads back to an object it is inside of becomes NULL.
+fn write_object(
+    out: &mut String,
+    key: Option<&[u8]>,
+    obj: &PdfObject,
+    path: &mut Vec<i32>,
+) -> Result<(), Error> {
+    let key = key.map_or(String::new(), |k| {
+        format!(" KEY=\"{}\"", escape(&String::from_utf8_lossy(k)))
+    });
+    let num = if obj.is_indirect()? {
+        Some(obj.as_indirect()?)
+    } else {
+        None
+    };
+    let resolved = obj.resolve()?;
+    let Some(value) =
+        resolved.filter(|_| !num.is_some_and(|n| path.contains(&n)) && path.len() < MAX_DEPTH)
+    else {
+        *out += &format!("<NULL{key}/>");
+        return Ok(());
+    };
+    path.push(num.unwrap_or(0));
+    let stream = obj.is_stream()?;
+    if stream || value.is_dict()? {
+        let tag = if stream { "STREAM" } else { "DICT" };
+        *out += &format!("<{tag}{key}>");
+        for entry in value.dict_iter()? {
+            let (k, v) = entry?;
+            write_object(out, Some(&k.as_name()?), &v, path)?;
+        }
+        if stream {
+            let data: String = obj
+                .read_raw_stream()?
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect();
+            *out += &format!("<DATA MODE=\"FILTERED\" ENCODING=\"HEX\">{data}</DATA>");
+        }
+        *out += &format!("</{tag}>");
+    } else if value.is_array()? {
+        *out += &format!("<ARRAY{key}>");
+        for item in value.array_iter()? {
+            write_object(out, None, &item?, path)?;
+        }
+        *out += "</ARRAY>";
+    } else if value.is_name()? {
+        let name = String::from_utf8_lossy(&value.as_name()?).into_owned();
+        *out += &format!("<NAME{key} VAL=\"{}\"/>", escape(&name));
+    } else if value.is_string()? {
+        let bytes = value.as_bytes()?;
+        match std::str::from_utf8(&bytes) {
+            Ok(text) => *out += &format!("<STRING{key} VAL=\"{}\"/>", escape(text)),
+            Err(_) => {
+                let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+                *out += &format!("<STRING{key} VAL=\"{hex}\" ENCODING=\"HEX\"/>");
+            }
+        }
+    } else if value.is_int()? {
+        *out += &format!("<INT{key} VAL=\"{}\"/>", value.as_int()?);
+    } else if value.is_real()? {
+        *out += &format!("<FIXED{key} VAL=\"{}\"/>", num_exact(value.as_float()?));
+    } else if value.is_bool()? {
+        *out += &format!("<BOOL{key} VAL=\"{}\"/>", value.as_bool()?);
+    } else {
+        *out += &format!("<NULL{key}/>");
+    }
+    path.pop();
+    Ok(())
+}
+
+/// A real number in full, since appearance matrices and boxes need every digit.
+fn num_exact(n: f32) -> String {
+    let s = n.to_string();
+    if s.contains('.') { s } else { format!("{s}.0") }
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    let digits: Vec<u8> = text
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .map(|b| (b as char).to_digit(16).map(|d| d as u8))
+        .collect::<Option<_>>()?;
+    // An odd last digit stands for its high half, as in a PDF hex string.
+    Some(
+        digits
+            .chunks(2)
+            .map(|pair| pair[0] << 4 | pair.get(1).copied().unwrap_or(0))
+            .collect(),
+    )
+}
+
+/// Reads an object [`write_object`] wrote. Unknown elements and bad values give None.
+fn read_object(
+    pdf: &mut PdfDocument,
+    node: roxmltree::Node,
+    depth: usize,
+) -> Result<Option<PdfObject>, Error> {
+    if depth > MAX_DEPTH {
+        return Ok(None);
+    }
+    let val = node.attribute("VAL");
+    let elements = || node.children().filter(roxmltree::Node::is_element);
+    Ok(Some(match node.tag_name().name() {
+        "DICT" | "STREAM" => {
+            let mut dict = pdf.new_dict()?;
+            for child in elements() {
+                if let Some(key) = child.attribute("KEY")
+                    && let Some(value) = read_object(pdf, child, depth + 1)?
+                {
+                    dict.dict_put(key, value)?;
+                }
+            }
+            if node.tag_name().name() == "DICT" {
+                dict
+            } else {
+                let Some(data) = elements().find(|c| c.has_tag_name("DATA")) else {
+                    return Ok(None);
+                };
+                let text = data.text().unwrap_or_default();
+                let bytes = match data.attribute("ENCODING") {
+                    Some("HEX") => match unhex(text) {
+                        Some(bytes) => bytes,
+                        None => return Ok(None),
+                    },
+                    _ => text.as_bytes().to_vec(),
+                };
+                // Filtered bytes keep the dictionary's filters; raw ones lose them.
+                let filtered = data.attribute("MODE") == Some("FILTERED");
+                pdf.add_stream(&Buffer::from_bytes(&bytes)?, Some(&dict), filtered)?
+            }
+        }
+        "ARRAY" => {
+            let mut array = pdf.new_array()?;
+            for child in elements() {
+                if let Some(value) = read_object(pdf, child, depth + 1)? {
+                    array.array_push(value)?;
+                }
+            }
+            array
+        }
+        "NAME" => PdfObject::new_name(val.unwrap_or_default())?,
+        "STRING" => match (val, node.attribute("ENCODING")) {
+            (Some(hex), Some("HEX")) if unhex(hex).is_some() => {
+                pdf.new_object_from_str(&format!("<{hex}>"))?
+            }
+            (Some(text), _) => PdfObject::new_string(text)?,
+            (None, _) => return Ok(None),
+        },
+        "INT" => match val.and_then(|v| v.parse().ok()) {
+            Some(i) => PdfObject::new_int(i)?,
+            None => return Ok(None),
+        },
+        "FIXED" => match val.and_then(|v| v.parse().ok()) {
+            Some(f) => PdfObject::new_real(f)?,
+            None => return Ok(None),
+        },
+        "BOOL" => PdfObject::new_bool(val == Some("true")),
+        "NULL" => PdfObject::new_null(),
+        _ => return Ok(None),
+    }))
+}
+
+/// The appearance dictionary in an XFDF <appearance>, if it holds a usable one.
+fn read_appearance(pdf: &mut PdfDocument, text: &str) -> Result<Option<PdfObject>, Error> {
+    let packed: String = text.split_whitespace().collect();
+    let Some(xml) = BASE64_STANDARD
+        .decode(packed)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+    else {
+        return Ok(None);
+    };
+    let Ok(tree) = roxmltree::Document::parse(&xml) else {
+        return Ok(None);
+    };
+    let root = tree.root_element();
+    if !root.has_tag_name("DICT") {
+        return Ok(None);
+    }
+    let ap = read_object(pdf, root, 0)?;
+    Ok(match ap {
+        Some(ap) if ap.get_dict("N")?.is_some() => Some(ap),
+        _ => None,
+    })
 }
 
 fn parse_numbers(text: &str) -> Option<Vec<f32>> {
@@ -276,7 +478,7 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
         .flat_map(|n| n.children().filter(roxmltree::Node::is_element))
         .collect();
     operation(doc, "Import comments", || {
-        let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
         let page_count = doc.page_count()?;
         let mut pages: HashMap<i32, PdfPage> = HashMap::new();
         // Every comment by name, so replies can point at their parent.
@@ -415,6 +617,15 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
                     "defaultappearance" => {
                         let da = child.text().unwrap_or_default();
                         obj.dict_put("DA", PdfObject::new_string(da)?)?;
+                    }
+                    // MuPDF keeps this look for a stamp with its own icon name, such as a
+                    // signature, and draws the standard stamps itself.
+                    "appearance" => {
+                        if let Some(ap) =
+                            read_appearance(&mut pdf, child.text().unwrap_or_default())?
+                        {
+                            obj.dict_put("AP", ap)?;
+                        }
                     }
                     _ => {}
                 }

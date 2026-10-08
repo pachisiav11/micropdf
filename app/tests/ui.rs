@@ -832,7 +832,8 @@ fn steps() -> Vec<Step> {
             |w| {
                 std::fs::read_to_string(scratch("comments.xfdf"))
                     .is_ok_and(|x| x.contains("<contents>Exported</contents>"))
-                    && w.get_status_left().starts_with("Exported 1 comment to")
+                    // The signature and initials go too, as stamps.
+                    && w.get_status_left().starts_with("Exported 3 comments to")
             },
         ),
         step("undo the note", command("undo"), |_| comments() == 2),

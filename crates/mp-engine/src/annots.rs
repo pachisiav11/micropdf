@@ -387,7 +387,7 @@ pub(crate) fn operation<T>(
 
 /// A random annotation name (/NM). Review tools match comments by it, so importing an exported
 /// comment back into its document does not add it twice.
-fn unique_name() -> String {
+pub(crate) fn unique_name() -> String {
     use std::hash::{BuildHasher, Hasher};
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
