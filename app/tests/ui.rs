@@ -798,6 +798,43 @@ fn steps() -> Vec<Step> {
                     && (r.width() / r.height() - aspect).abs() < 0.05
             },
         ),
+        step(
+            "reply to the picked signature",
+            |w| {
+                w.invoke_command("reply".into());
+                w.invoke_dialog_accept("Looks good".into());
+            },
+            |w| {
+                let rows = w.get_comments();
+                comments() == 4
+                    && rows.row_count() == 4
+                    && rows
+                        .row_data(1)
+                        .is_some_and(|r| r.reply && r.text == "Looks good")
+                    && w.get_undo_name() == "Reply"
+            },
+        ),
+        step("give it a status", command("status-accepted"), |w| {
+            let rows = w.get_comments();
+            rows.row_count() == 4
+                && rows.row_data(0).is_some_and(|r| r.status == "Accepted")
+                && w.get_undo_name() == "Status: Accepted"
+        }),
+        step(
+            "the filter keeps whole matching threads",
+            |w| w.invoke_comment_filter_edited("accepted".into()),
+            |w| w.get_comments().row_count() == 2 && w.get_has_comments(),
+        ),
+        step(
+            "a filter on reply text finds the thread too",
+            |w| w.invoke_comment_filter_edited("looks good".into()),
+            |w| w.get_comments().row_count() == 2,
+        ),
+        step(
+            "clearing the filter shows all",
+            |w| w.invoke_comment_filter_edited("".into()),
+            |w| w.get_comments().row_count() == 4,
+        ),
         step("Add signature reuses the saved one", command("sign"), |w| {
             w.get_tool() == 7 && w.get_sign_kind().is_empty()
         }),

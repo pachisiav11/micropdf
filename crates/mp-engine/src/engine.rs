@@ -130,6 +130,22 @@ enum Command {
         color: [f32; 3],
         reply: Reply<()>,
     },
+    Reply {
+        doc: DocId,
+        page: usize,
+        parent: i32,
+        text: String,
+        author: String,
+        reply: Reply<Annot>,
+    },
+    SetState {
+        doc: DocId,
+        page: usize,
+        parent: i32,
+        state: String,
+        author: String,
+        reply: Reply<()>,
+    },
     Reshape {
         doc: DocId,
         page: usize,
@@ -328,6 +344,44 @@ impl Engine {
             page,
             id,
             text,
+            reply,
+        })
+    }
+
+    /// Answers comment `parent` on `page` with `text`.
+    pub fn reply(
+        &self,
+        doc: DocId,
+        page: usize,
+        parent: i32,
+        text: String,
+        author: String,
+    ) -> Result<Annot, Error> {
+        self.call(|reply| Command::Reply {
+            doc,
+            page,
+            parent,
+            text,
+            author,
+            reply,
+        })
+    }
+
+    /// Gives comment `parent` a review state, one of [`crate::REVIEW_STATES`].
+    pub fn set_state(
+        &self,
+        doc: DocId,
+        page: usize,
+        parent: i32,
+        state: String,
+        author: String,
+    ) -> Result<(), Error> {
+        self.call(|reply| Command::SetState {
+            doc,
+            page,
+            parent,
+            state,
+            author,
             reply,
         })
     }
@@ -585,7 +639,9 @@ fn run(rx: mpsc::Receiver<Command>) {
                     (_, None) => Err(Error::UnknownDocument),
                     (Some(list), _) => Ok(list),
                     (None, Some(d)) => (|| {
-                        let list = Arc::new(d.load_page(page as i32)?.to_display_list(true)?);
+                        let loaded = d.load_page(page as i32)?;
+                        annots::hide_replies(&loaded)?;
+                        let list = Arc::new(loaded.to_display_list(true)?);
                         lists.insert(doc, page, Arc::clone(&list));
                         Ok(list)
                     })(),
@@ -686,6 +742,34 @@ fn run(rx: mpsc::Receiver<Command>) {
                 reply,
             } => {
                 let result = with_doc(&docs, doc, |d| annots::set_contents(d, page, id, &text));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::Reply {
+                doc,
+                page,
+                parent,
+                text,
+                author,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| {
+                    annots::reply(d, page, parent, &text, &author)
+                });
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::SetState {
+                doc,
+                page,
+                parent,
+                state,
+                author,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| {
+                    annots::set_state(d, page, parent, &state, &author)
+                });
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
             }

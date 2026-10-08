@@ -4,8 +4,8 @@ use std::path::Path;
 
 use mupdf::color::AnnotationColor;
 use mupdf::pdf::{
-    AnnotationQuadPoints, PdfAnnotation, PdfAnnotationType, PdfDocument, PdfObject, PdfPage,
-    PdfWriteOptions,
+    AnnotationFlags, AnnotationQuadPoints, PdfAnnotation, PdfAnnotationType, PdfDocument,
+    PdfObject, PdfPage, PdfWriteOptions,
 };
 use mupdf::{Document, Point, Quad};
 
@@ -37,7 +37,18 @@ pub struct Annot {
     pub color: Option<[f32; 3]>,
     pub contents: String,
     pub author: String,
+    /// The comment this one answers, by id: set for replies and for review states. Readers
+    /// show these only in the comment thread, never on the page.
+    pub reply_to: Option<i32>,
+    /// The review state this annotation sets on `reply_to` ("Accepted", "Rejected",
+    /// "Cancelled", "Completed" or "None"), or "Marked"/"Unmarked" for a private check mark.
+    pub state: Option<String>,
+    /// When it last changed, as a PDF date ("D:20261008165500+05'30'"), or empty.
+    pub modified: String,
 }
+
+/// The review states a comment can be given, as PDF names.
+pub const REVIEW_STATES: [&str; 5] = ["None", "Accepted", "Rejected", "Cancelled", "Completed"];
 
 /// What to add. Coordinates are page space (points, origin top-left).
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +148,8 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
     let Some(kind) = kind_of(annot.r#type()?) else {
         return Ok(None);
     };
+    let obj = annot.object();
+    let state = name(&obj, "State")?;
     Ok(Some(Annot {
         id: annot.xref()?,
         kind,
@@ -144,7 +157,127 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
         color: annot.color()?.map(rgb),
         contents: annot.contents()?.unwrap_or_default().to_owned(),
         author: annot.author()?.unwrap_or_default().to_owned(),
+        reply_to: reply_to(&obj)?,
+        state,
+        modified: string(&obj, "M")?.unwrap_or_default(),
     }))
+}
+
+pub(crate) fn string(obj: &PdfObject, key: &str) -> Result<Option<String>, Error> {
+    match obj.get_dict(key)? {
+        Some(v) if v.is_string()? => Ok(Some(v.as_string()?)),
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn name(obj: &PdfObject, key: &str) -> Result<Option<String>, Error> {
+    match obj.get_dict(key)? {
+        Some(v) if v.is_name()? => Ok(Some(String::from_utf8_lossy(&v.as_name()?).into_owned())),
+        _ => Ok(None),
+    }
+}
+
+/// The object number of the comment `obj` replies to. A grouped annotation (/RT /Group) is
+/// part of its parent, not a reply, and gets None.
+fn reply_to(obj: &PdfObject) -> Result<Option<i32>, Error> {
+    let Some(irt) = obj.get_dict("IRT")? else {
+        return Ok(None);
+    };
+    if name(obj, "RT")?.as_deref() == Some("Group") || !irt.is_indirect()? {
+        return Ok(None);
+    }
+    Ok(Some(irt.as_indirect()?))
+}
+
+/// Leaves replies and review states out of the page's drawing; readers show them only in the
+/// comment thread. The flag lasts while `page` lives.
+pub(crate) fn hide_replies(page: &mupdf::Page) -> Result<(), Error> {
+    let Ok(page) = PdfPage::try_from(page.clone()) else {
+        return Ok(());
+    };
+    for mut annot in page.annotations() {
+        if reply_to(&annot.object())?.is_some() {
+            annot.set_hidden_for_editing(true);
+        }
+    }
+    Ok(())
+}
+
+/// A Text annotation on the same spot as `parent` that points back at it.
+fn new_reply(
+    page: &mut PdfPage,
+    parent: &PdfAnnotation,
+    contents: &str,
+    author: &str,
+) -> Result<PdfAnnotation, Error> {
+    let mut annot = page.create_annotation(PdfAnnotationType::Text)?;
+    let mut obj = annot.object();
+    obj.dict_put("NM", PdfObject::new_string(&unique_name())?)?;
+    obj.dict_put("IRT", parent.object())?;
+    annot.set_rect(parent.bounds()?)?;
+    annot.set_contents(contents)?;
+    if !author.is_empty() {
+        annot.set_author(author)?;
+    }
+    Ok(annot)
+}
+
+fn find(page: &PdfPage, id: i32) -> Result<PdfAnnotation, Error> {
+    page.annotations()
+        .find(|a| a.xref().ok() == Some(id))
+        .ok_or(Error::NotFound)
+}
+
+/// Answers comment `parent` with `text`.
+pub fn reply(
+    doc: &Document,
+    page: usize,
+    parent: i32,
+    text: &str,
+    author: &str,
+) -> Result<Annot, Error> {
+    operation(doc, "Reply", || {
+        let mut page = pdf_page(doc, page)?;
+        let parent = find(&page, parent)?;
+        let mut annot = new_reply(&mut page, &parent, text, author)?;
+        annot.update()?;
+        page.update()?;
+        describe(&annot)?.ok_or(Error::Invalid("annotation type has no entry"))
+    })
+}
+
+/// Gives comment `parent` a review state, one of [`REVIEW_STATES`]. Like Acrobat, it adds a
+/// hidden reply that holds the state, so earlier states stay in the record.
+pub fn set_state(
+    doc: &Document,
+    page: usize,
+    parent: i32,
+    state: &str,
+    author: &str,
+) -> Result<(), Error> {
+    if !REVIEW_STATES.contains(&state) {
+        return Err(Error::Invalid("not a review state"));
+    }
+    let label = if state == "None" {
+        "Status cleared"
+    } else {
+        state
+    };
+    operation(doc, &format!("Status: {label}"), || {
+        let mut page = pdf_page(doc, page)?;
+        let parent = find(&page, parent)?;
+        let who = if author.is_empty() { "" } else { " by " };
+        let text = format!("{state} set{who}{author}");
+        let mut annot = new_reply(&mut page, &parent, &text, author)?;
+        let mut obj = annot.object();
+        obj.dict_put("State", PdfObject::new_name(state)?)?;
+        obj.dict_put("StateModel", PdfObject::new_name("Review")?)?;
+        let flags = annot.flags()? | AnnotationFlags::IS_HIDDEN;
+        annot.set_flags(flags)?;
+        annot.update()?;
+        page.update()?;
+        Ok(())
+    })
 }
 
 /// The page's annotations, in drawing order. Empty for documents that are not PDF.
@@ -292,14 +425,27 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
     describe(&annot)?.ok_or(Error::Invalid("annotation type has no entry"))
 }
 
+/// Deletes a comment with its replies and review states.
 pub fn delete(doc: &Document, page: usize, id: i32) -> Result<(), Error> {
     operation(doc, "Delete comment", || {
         let mut page = pdf_page(doc, page)?;
-        let annot = page
-            .annotations()
-            .find(|a| a.xref().ok() == Some(id))
-            .ok_or(Error::NotFound)?;
-        page.delete_annotation(annot)?;
+        find(&page, id)?;
+        let mut doomed = vec![id];
+        // Replies can have replies; take each generation in turn.
+        let mut i = 0;
+        while i < doomed.len() {
+            for annot in page.annotations() {
+                let n = annot.xref()?;
+                if reply_to(&annot.object())? == Some(doomed[i]) && !doomed.contains(&n) {
+                    doomed.push(n);
+                }
+            }
+            i += 1;
+        }
+        for n in doomed {
+            let annot = find(&page, n)?;
+            page.delete_annotation(annot)?;
+        }
         page.update()?;
         Ok(())
     })
@@ -457,6 +603,19 @@ pub fn flatten(doc: &Document, comments: bool, fields: bool) -> Result<(), Error
     };
     operation(doc, name, || {
         let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        if comments {
+            // Replies would bake in as note icons; they go with the discussion.
+            for n in 0..doc.page_count()? {
+                let mut page = pdf_page(doc, n as usize)?;
+                let replies: Vec<PdfAnnotation> = page
+                    .annotations()
+                    .filter(|a| reply_to(&a.object()).ok().flatten().is_some())
+                    .collect();
+                for annot in replies {
+                    page.delete_annotation(annot)?;
+                }
+            }
+        }
         Ok(pdf.bake(comments, fields)?)
     })
 }

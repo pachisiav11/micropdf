@@ -16,7 +16,7 @@ mod text;
 mod types;
 mod xfdf;
 
-pub use annots::{Annot, AnnotKind, History, NewAnnot, Style};
+pub use annots::{Annot, AnnotKind, History, NewAnnot, REVIEW_STATES, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::{has_cjk, has_font};

@@ -4,13 +4,13 @@
 //! pass through unchanged. Stamps (which keep their look, such as a signature, in an appearance
 //! stream), links, form widgets, popups and file attachments are not exported.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use mupdf::Document;
 use mupdf::pdf::{PdfAnnotationType, PdfDocument, PdfObject, PdfPage};
 
 use crate::Error;
-use crate::annots::operation;
+use crate::annots::{name, operation, string};
 use crate::forms::escape;
 
 /// XFDF element names, the PDF subtypes they stand for, and MuPDF's annotation types.
@@ -97,20 +97,6 @@ fn hex(color: &[f32]) -> Option<String> {
     Some(format!("#{:02X}{:02X}{:02X}", byte(r), byte(g), byte(b)))
 }
 
-fn string(obj: &PdfObject, key: &str) -> Result<Option<String>, Error> {
-    match get(obj, key)? {
-        Some(v) if v.is_string()? => Ok(Some(v.as_string()?)),
-        _ => Ok(None),
-    }
-}
-
-fn name(obj: &PdfObject, key: &str) -> Result<Option<String>, Error> {
-    match get(obj, key)? {
-        Some(v) if v.is_name()? => Ok(Some(String::from_utf8_lossy(&v.as_name()?).into_owned())),
-        _ => Ok(None),
-    }
-}
-
 fn border_width(obj: &PdfObject) -> Result<Option<f32>, Error> {
     if let Some(bs) = get(obj, "BS")?
         && let Some(w) = get(&bs, "W")?
@@ -178,6 +164,20 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
             }
             if let Some(icon) = name(&obj, "Name")? {
                 attrs.push(("icon", icon));
+            }
+            if let Some(irt) = get(&obj, "IRT")?
+                && irt.is_indirect()?
+                && let Some(parent) = string(&irt, "NM")?
+            {
+                attrs.push(("inreplyto", parent));
+                if name(&obj, "RT")?.as_deref() == Some("Group") {
+                    attrs.push(("replyType", "group".into()));
+                }
+            }
+            for (key, attr) in [("State", "state"), ("StateModel", "statemodel")] {
+                if let Some(v) = name(&obj, key)? {
+                    attrs.push((attr, v));
+                }
             }
             if let Some(w) = border_width(&obj)? {
                 attrs.push(("width", num(w)));
@@ -267,14 +267,19 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
         let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
         let page_count = doc.page_count()?;
         let mut pages: HashMap<i32, PdfPage> = HashMap::new();
-        let mut names = HashSet::new();
+        // Every comment by name, so replies can point at their parent.
+        let mut named: HashMap<String, PdfObject> = HashMap::new();
         for i in 0..page_count {
             let page = PdfPage::try_from(doc.load_page(i)?).map_err(|_| Error::NotPdf)?;
             for annot in page.annotations() {
-                names.extend(string(&annot.object(), "NM")?);
+                let obj = annot.object();
+                if let Some(n) = string(&obj, "NM")? {
+                    named.insert(n, obj);
+                }
             }
             pages.insert(i, page);
         }
+        let mut links = Vec::new();
         let mut added = 0;
         for node in nodes {
             let Some(&(_, _, subtype)) = KINDS.iter().find(|k| k.0 == node.tag_name().name())
@@ -292,14 +297,27 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
                 continue;
             };
             let [x0, y0, x1, y1] = rect[..] else { continue };
-            if let Some(n) = node.attribute("name")
-                && !names.insert(n.to_owned())
+            if node
+                .attribute("name")
+                .is_some_and(|n| named.contains_key(n))
             {
                 continue;
             }
             let page = pages.get_mut(&page_no).expect("every page is loaded");
             let mut annot = page.create_annotation(subtype)?;
             let mut obj = annot.object();
+            if let Some(n) = node.attribute("name") {
+                named.insert(n.to_owned(), annot.object());
+            }
+            if let Some(parent) = node.attribute("inreplyto") {
+                let group = node.attribute("replyType") == Some("group");
+                links.push((annot.object(), parent.to_owned(), group));
+            }
+            for (attr, key) in [("state", "State"), ("statemodel", "StateModel")] {
+                if let Some(v) = node.attribute(attr) {
+                    obj.dict_put(key, PdfObject::new_name(v)?)?;
+                }
+            }
             obj.dict_put("Rect", array(&pdf, &[x0, y0, x1, y1])?)?;
             for (attr, key) in [("title", "T"), ("name", "NM"), ("date", "M")] {
                 if let Some(v) = node.attribute(attr) {
@@ -382,6 +400,15 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
             let flags = annot.flags()?;
             annot.set_flags(flags)?;
             added += 1;
+        }
+        // Parents can come after their replies in the file; link once all exist.
+        for (mut obj, parent, group) in links {
+            if let Some(parent) = named.get(&parent) {
+                obj.dict_put("IRT", parent.try_clone()?)?;
+                if group {
+                    obj.dict_put("RT", PdfObject::new_name("Group")?)?;
+                }
+            }
         }
         for page in pages.values_mut() {
             page.update()?;

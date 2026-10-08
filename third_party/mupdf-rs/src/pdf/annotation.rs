@@ -400,6 +400,17 @@ impl PdfAnnotation {
         unsafe { pdf_set_annot_hot(context(), self.inner.as_ptr(), i32::from(hot)) }
     }
 
+    /// Leaves the annotation out of drawing while this page object lives, without changing
+    /// the file. Replies, which readers show only in comment threads, use it.
+    pub fn set_hidden_for_editing(&mut self, hidden: bool) {
+        if !self.is_attached() {
+            return;
+        }
+        unsafe {
+            pdf_set_annot_hidden_for_editing(context(), self.inner.as_ptr(), i32::from(hidden))
+        }
+    }
+
     pub fn is_active(&self) -> bool {
         if !self.is_attached() {
             return false;

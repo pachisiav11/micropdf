@@ -509,3 +509,115 @@ fn a_full_save_over_the_open_file_keeps_it_readable() {
         assert_eq!(engine.annotations(d, 1).unwrap().len(), 1);
     }
 }
+
+#[test]
+fn replies_and_review_states_thread_under_their_comment() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let highlight = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::TextMarkup {
+                kind: AnnotKind::Highlight,
+                rects: vec![TEXT],
+            },
+            style(),
+        )
+        .unwrap();
+    let before = engine.display_list(doc, 0).unwrap();
+    let before = mp_engine::render(&before, 1.0).unwrap().rgb;
+
+    let reply = engine
+        .reply(doc, 0, highlight.id, "Agreed".into(), "Ada".into())
+        .unwrap();
+    assert_eq!(reply.reply_to, Some(highlight.id));
+    assert_eq!(reply.kind, AnnotKind::Note);
+    assert_eq!(engine.history(doc).unwrap().undo.as_deref(), Some("Reply"));
+    engine
+        .set_state(doc, 0, highlight.id, "Accepted".into(), "Ada".into())
+        .unwrap();
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Status: Accepted")
+    );
+    assert!(
+        engine
+            .set_state(doc, 0, highlight.id, "Maybe".into(), "Ada".into())
+            .is_err()
+    );
+
+    let listed = engine.annotations(doc, 0).unwrap();
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[1].contents, "Agreed");
+    assert_eq!(listed[1].author, "Ada");
+    assert_eq!(listed[1].state, None);
+    assert_eq!(listed[2].reply_to, Some(highlight.id));
+    assert_eq!(listed[2].state.as_deref(), Some("Accepted"));
+    assert_eq!(listed[2].contents, "Accepted set by Ada");
+
+    // Replies stay off the page: it looks as it did with the highlight alone.
+    let after = engine.display_list(doc, 0).unwrap();
+    assert!(mp_engine::render(&after, 1.0).unwrap().rgb == before);
+
+    // They survive a save, and go with their comment when it is deleted.
+    let saved = Scratch::new("threads.pdf");
+    engine.save(doc, &saved.0, false).unwrap();
+    let copy = engine.open(&saved.0).unwrap().id;
+    let reread = engine.annotations(copy, 0).unwrap();
+    assert_eq!(reread[1].reply_to, Some(reread[0].id));
+    engine.delete_annotation(copy, 0, reread[0].id).unwrap();
+    assert!(engine.annotations(copy, 0).unwrap().is_empty());
+
+    // Flattening keeps the highlight's look and drops the thread.
+    engine.flatten(doc, true, false).unwrap();
+    assert!(engine.annotations(doc, 0).unwrap().is_empty());
+    let flat = engine.display_list(doc, 0).unwrap();
+    let flat = mp_engine::render(&flat, 1.0).unwrap().rgb;
+    let differ = flat
+        .iter()
+        .zip(&before)
+        .filter(|(a, b)| a.abs_diff(**b) > 8)
+        .count();
+    assert_eq!(differ, 0);
+}
+
+#[test]
+fn threads_round_trip_through_xfdf() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let note = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Note {
+                x: 20.0,
+                y: 20.0,
+                text: "Question".into(),
+            },
+            style(),
+        )
+        .unwrap();
+    engine
+        .reply(doc, 0, note.id, "Answer".into(), "Ada".into())
+        .unwrap();
+    engine
+        .set_state(doc, 0, note.id, "Completed".into(), "Ada".into())
+        .unwrap();
+    let (xml, n) = engine.export_comments(doc, "hello.pdf".into()).unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(xml.matches("inreplyto=").count(), 2, "{xml}");
+    assert!(
+        xml.contains("state=\"Completed\" statemodel=\"Review\""),
+        "{xml}"
+    );
+
+    let fresh = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(fresh, xml).unwrap(), 3);
+    let listed = engine.annotations(fresh, 0).unwrap();
+    assert_eq!(listed[0].reply_to, None);
+    assert_eq!(listed[1].reply_to, Some(listed[0].id));
+    assert_eq!(listed[1].contents, "Answer");
+    assert_eq!(listed[2].reply_to, Some(listed[0].id));
+    assert_eq!(listed[2].state.as_deref(), Some("Completed"));
+}

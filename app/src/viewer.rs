@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime};
 
 use mp_engine::{
     Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
-    Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile,
-    Xfa,
+    Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, REVIEW_STATES, Rect,
+    RenderPool, Style, Tile, Xfa,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -213,6 +213,10 @@ enum Ask {
         x: f32,
         y: f32,
     },
+    Reply {
+        page: usize,
+        parent: i32,
+    },
     TextBox {
         page: usize,
         rect: Rect,
@@ -331,6 +335,8 @@ pub struct App {
     presenting: Option<(bool, PageMode, Zoom)>,
     pub vim_count: String,
     pub vim_pending: Option<char>,
+    /// Text the comment list is filtered by.
+    comment_filter: String,
     renders: u64,
 }
 
@@ -403,6 +409,7 @@ impl App {
             presenting: None,
             vim_count: String::new(),
             vim_pending: None,
+            comment_filter: String::new(),
             renders: 0,
         };
         app.refresh_recent();
@@ -1057,6 +1064,16 @@ Open it in Adobe Acrobat Reader to fill it in.",
             Ask::Note { page, x, y } => {
                 let new = NewAnnot::Note { x, y, text: input };
                 self.add_comment(page, new, [1.0, 0.85, 0.0]);
+            }
+            Ask::Reply { page, parent } => {
+                if !input.trim().is_empty()
+                    && let Some(doc) = self.tab().map(|t| t.info.id)
+                {
+                    match self.engine.reply(doc, page, parent, input, user_name()) {
+                        Ok(_) => self.edited(Some(page)),
+                        Err(e) => self.status(format!("Could not reply: {e}")),
+                    }
+                }
             }
             Ask::TextBox { page, rect } => {
                 if !input.trim().is_empty() {
@@ -3204,10 +3221,80 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let (Some(window), Some(tab)) = (self.window(), self.tab()) else {
             return;
         };
-        let rows: Vec<CommentRow> = tab
-            .comments
+        let comments = &tab.comments;
+        let by_id: HashMap<(usize, i32), usize> = comments
             .iter()
-            .map(|(page, a)| CommentRow {
+            .enumerate()
+            .map(|(i, (p, a))| ((*p, a.id), i))
+            .collect();
+        // The comment a thread starts from: follow replies up. A reply whose parent is gone
+        // starts its own thread.
+        let root = |mut i: usize| {
+            for _ in 0..comments.len() {
+                let (p, a) = &comments[i];
+                match a.reply_to.and_then(|r| by_id.get(&(*p, r))) {
+                    Some(&parent) if parent != i => i = parent,
+                    _ => break,
+                }
+            }
+            i
+        };
+        struct Thread<'a> {
+            root: usize,
+            replies: Vec<usize>,
+            status: Option<&'a str>,
+        }
+        let mut threads: Vec<Thread> = Vec::new();
+        let mut at = HashMap::new();
+        for i in 0..comments.len() {
+            if root(i) == i {
+                at.insert(i, threads.len());
+                threads.push(Thread {
+                    root: i,
+                    replies: Vec::new(),
+                    status: None,
+                });
+            }
+        }
+        for (i, (_, a)) in comments.iter().enumerate() {
+            let r = root(i);
+            if r == i {
+                continue;
+            }
+            let thread = &mut threads[at[&r]];
+            match a.state.as_deref() {
+                // Later states replace earlier ones; "None" clears the status.
+                Some(s) if REVIEW_STATES.contains(&s) => {
+                    thread.status = (s != "None").then_some(s);
+                }
+                Some(_) => {} // a private check mark, not shown
+                None => thread.replies.push(i),
+            }
+        }
+        let needle = self.comment_filter.trim().to_lowercase();
+        let matches = |i: usize, status: Option<&str>| {
+            let (page, a) = &comments[i];
+            [
+                kind_name(a.kind),
+                &a.contents,
+                &a.author,
+                status.unwrap_or_default(),
+                &format!("page {}", page + 1),
+            ]
+            .iter()
+            .any(|s| s.to_lowercase().contains(&needle))
+        };
+        let mut rows = Vec::new();
+        for t in &threads {
+            if !needle.is_empty()
+                && !matches(t.root, t.status)
+                && !t.replies.iter().any(|&i| matches(i, None))
+            {
+                continue;
+            }
+            let (page, a) = &comments[t.root];
+            rows.push(CommentRow {
+                index: t.root as i32,
                 kind: kind_name(a.kind).into(),
                 text: a.contents.lines().next().unwrap_or_default().into(),
                 detail: if a.author.is_empty() {
@@ -3216,9 +3303,30 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     format!("page {}, {}", page + 1, a.author)
                 }
                 .into(),
-            })
-            .collect();
+                reply: false,
+                status: t.status.unwrap_or_default().into(),
+            });
+            for &i in &t.replies {
+                let a = &comments[i].1;
+                let when = pdf_date(&a.modified);
+                let detail = match (a.author.is_empty(), when) {
+                    (false, Some(when)) => format!("{}, {when}", a.author),
+                    (false, None) => a.author.clone(),
+                    (true, Some(when)) => when,
+                    (true, None) => String::new(),
+                };
+                rows.push(CommentRow {
+                    index: i as i32,
+                    kind: "Reply".into(),
+                    text: a.contents.lines().next().unwrap_or_default().into(),
+                    detail: detail.into(),
+                    reply: true,
+                    status: SharedString::new(),
+                });
+            }
+        }
         self.models.comments.set_vec(rows);
+        window.set_has_comments(!comments.is_empty());
         if window.get_sidebar_tab() == 5 && tab.comments.is_empty() {
             window.set_sidebar_tab(0);
         }
@@ -3247,7 +3355,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         };
         let style = Style {
             color,
-            author: std::env::var("USERNAME").unwrap_or_default(),
+            author: user_name(),
         };
         match self.engine.add_annotation(doc, page, new, style) {
             Ok(_) => self.edited(Some(page)),
@@ -3426,6 +3534,61 @@ Open it in Adobe Acrobat Reader to fill it in.",
         match self.engine.flatten(doc, comments, fields) {
             Ok(()) => self.edited(None),
             Err(e) => self.status(format!("Could not flatten: {e}")),
+        }
+    }
+
+    pub fn comment_filter_edited(&mut self, text: String) {
+        self.comment_filter = text;
+        self.fill_comments();
+    }
+
+    /// Asks for a reply to comment `index`.
+    pub fn comment_reply(&mut self, index: usize) {
+        let Some((page, parent, kind)) = self
+            .tab()
+            .and_then(|t| t.comments.get(index))
+            .map(|(p, a)| (*p, a.id, a.kind))
+        else {
+            return;
+        };
+        self.push_dialog(Dialog {
+            ask: Ask::Reply { page, parent },
+            kind: "input",
+            title: format!("Reply to {}", kind_name(kind).to_lowercase()),
+            text: String::new(),
+            ok: "Reply",
+            cancel: "Cancel",
+        });
+    }
+
+    /// Gives comment `index` a review state, one of [`REVIEW_STATES`].
+    pub fn comment_status(&mut self, index: usize, state: &str) {
+        let Some((doc, page, id)) = self
+            .tab()
+            .and_then(|t| t.comments.get(index).map(|(p, a)| (t.info.id, *p, a.id)))
+        else {
+            return;
+        };
+        match self
+            .engine
+            .set_state(doc, page, id, state.to_owned(), user_name())
+        {
+            Ok(()) => self.edited(Some(page)),
+            Err(e) => self.status(format!("Could not set the status: {e}")),
+        }
+    }
+
+    pub fn reply_picked(&mut self) {
+        match self.picked_index() {
+            Some(index) => self.comment_reply(index),
+            None => self.status("Select a comment first".into()),
+        }
+    }
+
+    pub fn status_picked(&mut self, state: &str) {
+        match self.picked_index() {
+            Some(index) => self.comment_status(index, state),
+            None => self.status("Select a comment first".into()),
         }
     }
 
@@ -3869,7 +4032,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.tab()?
             .comments
             .iter()
-            .rposition(|(p, a)| *p == page && a.rect.contains(px, py))
+            .rposition(|(p, a)| *p == page && a.reply_to.is_none() && a.rect.contains(px, py))
     }
 
     /// The movable comment under a document-space point; form fields come first.
@@ -3933,7 +4096,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         else {
             return false;
         };
-        if !movable(a.kind) {
+        if !movable(a.kind) || a.reply_to.is_some() {
             return false;
         }
         // The view may be turned; find the page-space direction through the layout.
@@ -4052,7 +4215,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         };
         let style = Style {
             color: markup_color(kind),
-            author: std::env::var("USERNAME").unwrap_or_default(),
+            author: user_name(),
         };
         let new = NewAnnot::TextMarkup { kind, rects };
         match self.engine.add_annotation(doc, sel.page, new, style) {
@@ -4390,6 +4553,30 @@ const MAX_ASPECT: f32 = 7.0;
 
 fn mark_name(initials: bool) -> &'static str {
     if initials { "initials" } else { "signature" }
+}
+
+/// Who new comments are by: the Windows user name.
+fn user_name() -> String {
+    std::env::var("USERNAME").unwrap_or_default()
+}
+
+/// A PDF date ("D:20261008165500+05'30'") as "2026-10-08 16:55".
+fn pdf_date(s: &str) -> Option<String> {
+    let digits: String = s
+        .strip_prefix("D:")
+        .unwrap_or(s)
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .take(12)
+        .collect();
+    if digits.len() < 8 {
+        return None;
+    }
+    let mut out = format!("{}-{}-{}", &digits[..4], &digits[4..6], &digits[6..8]);
+    if digits.len() == 12 {
+        out += &format!(" {}:{}", &digits[8..10], &digits[10..12]);
+    }
+    Some(out)
 }
 
 fn kind_name(kind: AnnotKind) -> &'static str {

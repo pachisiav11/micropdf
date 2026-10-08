@@ -68,9 +68,13 @@ export struct AttachmentRow {
 }
 
 export struct CommentRow {
+    /// Index into the tab's comments, which the callbacks take.
+    index: int,
     kind: string,
     text: string,
     detail: string,
+    reply: bool,
+    status: string,
 }
 
 export struct LayerRow {
@@ -365,6 +369,11 @@ export component MainWindow inherits Window {
     callback comment-clicked(int);
     callback comment-edit(int);
     callback comment-delete(int);
+    callback comment-reply(int);
+    callback comment-status(int, string);
+    callback comment-filter-edited(string);
+    in property <bool> has-comments;
+    in-out property <string> comment-filter;
     // x, y in pad space
     callback sign-pad-down(length, length);
     callback sign-pad-move(length, length);
@@ -795,7 +804,7 @@ export component MainWindow inherits Window {
                             spacing: 4px;
                             SidebarTab { text: "Pages"; active: root.sidebar-tab == 0; clicked => { root.sidebar-tab = 0; root.thumbs-scrolled(); } }
                             SidebarTab { text: "Outline"; active: root.sidebar-tab == 1; clicked => { root.sidebar-tab = 1; } }
-                            if root.comments.length > 0: SidebarTab { text: "Comments"; active: root.sidebar-tab == 5; clicked => { root.sidebar-tab = 5; } }
+                            if root.has-comments: SidebarTab { text: "Comments"; active: root.sidebar-tab == 5; clicked => { root.sidebar-tab = 5; } }
                             if root.layers.length > 0: SidebarTab { text: "Layers"; active: root.sidebar-tab == 4; clicked => { root.sidebar-tab = 4; } }
                             if root.attachments.length > 0: SidebarTab { text: "Files"; active: root.sidebar-tab == 3; clicked => { root.sidebar-tab = 3; } }
                             SidebarTab { text: "Info"; active: root.sidebar-tab == 2; clicked => { root.sidebar-tab = 2; } }
@@ -924,34 +933,94 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            ListView {
+                            Rectangle {
                                 visible: root.sidebar-tab == 5;
-                                for comment[i] in root.comments: Rectangle {
+                                VerticalLayout {
+                                LineEdit {
+                                    placeholder-text: "Filter comments";
+                                    accessible-label: "Filter comments";
+                                    text <=> root.comment-filter;
+                                    edited(t) => {
+                                        root.comment-filter-edited(t);
+                                    }
+                                }
+                                ListView {
+                                for comment in root.comments: Rectangle {
                                     height: comment.text != "" ? 56px : 40px;
                                     background: comment-touch.has-hover ? Theme.bg-hover : transparent;
                                     accessible-role: button;
-                                    accessible-label: comment.kind + ", " + comment.detail + (comment.text != "" ? ": " + comment.text : "");
+                                    accessible-label: comment.kind + ", " + comment.detail + (comment.status != "" ? ", " + comment.status : "") + (comment.text != "" ? ": " + comment.text : "");
                                     comment-touch := TouchArea {
                                         clicked => {
-                                            root.comment-clicked(i);
+                                            root.comment-clicked(comment.index);
                                         }
                                     }
                                     HorizontalLayout {
-                                        padding-left: 12px;
+                                        padding-left: comment.reply ? 30px : 12px;
                                         padding-right: 6px;
                                         spacing: 6px;
                                         VerticalLayout {
                                             alignment: center;
-                                            Text {
-                                                text: comment.kind + " \u{00B7} " + comment.detail;
-                                                font-size: 11px;
-                                                color: Theme.text-muted;
-                                                overflow: elide;
+                                            HorizontalLayout {
+                                                spacing: 6px;
+                                                Text {
+                                                    text: comment.kind + " \u{00B7} " + comment.detail;
+                                                    font-size: 11px;
+                                                    color: Theme.text-muted;
+                                                    overflow: elide;
+                                                    horizontal-stretch: 1;
+                                                }
+                                                if comment.status != "": Rectangle {
+                                                    border-radius: Theme.radius-sm;
+                                                    background: Theme.bg-active;
+                                                    HorizontalLayout {
+                                                        padding-left: 5px;
+                                                        padding-right: 5px;
+                                                        Text {
+                                                            text: comment.status;
+                                                            font-size: 10px;
+                                                            color: Theme.text;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
                                             }
                                             if comment.text != "": Text {
                                                 text: comment.text;
                                                 color: Theme.text;
                                                 overflow: elide;
+                                            }
+                                        }
+                                        if !comment.reply: Rectangle {
+                                            width: 28px;
+                                            border-radius: Theme.radius-sm;
+                                            background: more-touch.has-hover ? Theme.bg-active : transparent;
+                                            accessible-role: button;
+                                            accessible-label: "Reply or set status";
+                                            accessible-action-default => {
+                                                more-menu.show();
+                                            }
+                                            Icon {
+                                                text: "\u{E712}";
+                                                color: Theme.text-muted;
+                                            }
+                                            more-touch := TouchArea {
+                                                clicked => {
+                                                    more-menu.show();
+                                                }
+                                            }
+                                            more-menu := PopupWindow {
+                                                x: parent.width - 180px;
+                                                y: parent.height;
+                                                width: 180px;
+                                                Menu {
+                                                    MenuEntry { text: "Reply"; clicked => { root.comment-reply(comment.index); } }
+                                                    MenuEntry { text: "Accepted"; checked: comment.status == "Accepted"; clicked => { root.comment-status(comment.index, "Accepted"); } }
+                                                    MenuEntry { text: "Rejected"; checked: comment.status == "Rejected"; clicked => { root.comment-status(comment.index, "Rejected"); } }
+                                                    MenuEntry { text: "Cancelled"; checked: comment.status == "Cancelled"; clicked => { root.comment-status(comment.index, "Cancelled"); } }
+                                                    MenuEntry { text: "Completed"; checked: comment.status == "Completed"; clicked => { root.comment-status(comment.index, "Completed"); } }
+                                                    if comment.status != "": MenuEntry { text: "Clear status"; clicked => { root.comment-status(comment.index, "None"); } }
+                                                }
                                             }
                                         }
                                         Rectangle {
@@ -961,7 +1030,7 @@ export component MainWindow inherits Window {
                                             accessible-role: button;
                                             accessible-label: "Edit comment text";
                                             accessible-action-default => {
-                                                root.comment-edit(i);
+                                                root.comment-edit(comment.index);
                                             }
                                             Icon {
                                                 text: "\u{E70F}";
@@ -969,7 +1038,7 @@ export component MainWindow inherits Window {
                                             }
                                             edit-touch := TouchArea {
                                                 clicked => {
-                                                    root.comment-edit(i);
+                                                    root.comment-edit(comment.index);
                                                 }
                                             }
                                         }
@@ -980,7 +1049,7 @@ export component MainWindow inherits Window {
                                             accessible-role: button;
                                             accessible-label: "Delete comment";
                                             accessible-action-default => {
-                                                root.comment-delete(i);
+                                                root.comment-delete(comment.index);
                                             }
                                             Icon {
                                                 text: "\u{E74D}";
@@ -988,11 +1057,13 @@ export component MainWindow inherits Window {
                                             }
                                             delete-touch := TouchArea {
                                                 clicked => {
-                                                    root.comment-delete(i);
+                                                    root.comment-delete(comment.index);
                                                 }
                                             }
                                         }
                                     }
+                                }
+                                }
                                 }
                             }
 

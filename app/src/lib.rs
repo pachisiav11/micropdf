@@ -104,6 +104,15 @@ pub fn wire(window: &MainWindow) {
     window.on_comment_delete(|i| {
         viewer::with(|app| app.comment_delete(i as usize));
     });
+    window.on_comment_reply(|i| {
+        viewer::with(|app| app.comment_reply(i as usize));
+    });
+    window.on_comment_status(|i, state| {
+        viewer::with(|app| app.comment_status(i as usize, &state));
+    });
+    window.on_comment_filter_edited(|text| {
+        viewer::with(|app| app.comment_filter_edited(text.into()));
+    });
     window.on_sign_pad_down(|x, y| {
         viewer::with(|app| app.pad_down(x, y));
     });
