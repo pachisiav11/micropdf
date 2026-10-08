@@ -1838,6 +1838,12 @@ impl PdfDocument {
         journal_call(|err| unsafe { journal::mp_pdf_redo(context(), self.inner, err) })
     }
 
+    /// Cuts every embedded font down to the glyphs the pages use (`pdf_subset_fonts`).
+    pub fn subset_fonts(&mut self) -> Result<(), Error> {
+        // SAFETY: as above.
+        journal_call(|err| unsafe { journal::mp_pdf_subset_fonts(context(), self.inner, err) })
+    }
+
     pub fn set_outlines(&mut self, toc: &[Outline]) -> Result<(), Error> {
         self.delete_outlines()?;
 
@@ -2442,6 +2448,11 @@ mod journal {
             err: *mut *const c_char,
         ) -> c_int;
         pub fn mp_pdf_redo(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_subset_fonts(
             ctx: *mut fz_context,
             doc: *mut pdf_document,
             err: *mut *const c_char,

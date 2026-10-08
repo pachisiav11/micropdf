@@ -28,6 +28,8 @@ Changes:
   without naming it in the EmbeddedFiles tree, for file attachment comments. It also ends the
   undo operation MuPDF 1.27's `pdf_add_embedded_file` leaves open on success, which fixes
   `add_embedded_file` too.
+- `Text::show_glyph` and `PdfDocument::subset_fonts` — wrap `fz_show_glyph` and
+  `pdf_subset_fonts` through the same shim; micropdf writes comment summaries with them.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 

@@ -13,6 +13,7 @@ use crate::attachments;
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
 use crate::render::Preview;
+use crate::summary;
 use crate::xfdf;
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem, Rect};
 
@@ -193,6 +194,12 @@ enum Command {
         color: [f32; 3],
         height: u32,
         reply: Reply<Preview>,
+    },
+    SummarizeComments {
+        doc: DocId,
+        file: String,
+        target: PathBuf,
+        reply: Reply<usize>,
     },
     ExportComments {
         doc: DocId,
@@ -480,6 +487,22 @@ impl Engine {
             center,
             width,
             color,
+            reply,
+        })
+    }
+
+    /// Writes a PDF that lists the comments beside their pages to `target`; `file` is the
+    /// document's name, for the title. Returns how many comments it lists, without replies.
+    pub fn summarize_comments(
+        &self,
+        doc: DocId,
+        file: String,
+        target: PathBuf,
+    ) -> Result<usize, Error> {
+        self.call(|reply| Command::SummarizeComments {
+            doc,
+            file,
+            target,
             reply,
         })
     }
@@ -923,6 +946,15 @@ fn run(rx: mpsc::Receiver<Command>) {
                 reply,
             } => {
                 let _ = reply.send(annots::stamp_preview(&name, color, height));
+            }
+            Command::SummarizeComments {
+                doc,
+                file,
+                target,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| summary::write(d, &file, &target));
+                let _ = reply.send(result);
             }
             Command::ExportComments { doc, file, reply } => {
                 let _ = reply.send(with_doc(&docs, doc, |d| xfdf::export(d, &file)));

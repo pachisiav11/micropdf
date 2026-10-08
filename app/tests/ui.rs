@@ -836,6 +836,33 @@ fn steps() -> Vec<Step> {
                     && w.get_status_left().starts_with("Exported 3 comments to")
             },
         ),
+        step(
+            "summarize the comments",
+            |_| viewer::with(|app| app.summarize_comments(scratch("summary.pdf"))).unwrap(),
+            |w| {
+                active_title(w) == viewer::file_name(&scratch("summary.pdf"))
+                    && w.get_status_left().starts_with("Summarized 3 comments in")
+            },
+        ),
+        step(
+            "a second summary replaces the open one",
+            |w| {
+                w.invoke_command("prev-tab".into());
+                viewer::with(|app| app.summarize_comments(scratch("summary.pdf"))).unwrap();
+            },
+            |w| {
+                active_title(w) == viewer::file_name(&scratch("summary.pdf"))
+                    && w.get_tabs()
+                        .iter()
+                        .filter(|t| t.title.contains("summary"))
+                        .count()
+                        == 1
+            },
+        ),
+        step("back to the document", command("close-tab"), |w| {
+            // "• " marks the unsaved changes.
+            active_title(w) == format!("• {}", viewer::file_name(&scratch("sign.pdf")))
+        }),
         step("undo the note", command("undo"), |_| comments() == 2),
         step(
             "import brings it back",

@@ -31,6 +31,41 @@ impl Text {
             next: unsafe { (*self.inner).head },
         }
     }
+
+    /// Adds glyph `gid` of `font`, standing for the character `unicode`, placed by `trm`, set
+    /// horizontally left to right.
+    pub fn show_glyph(
+        &mut self,
+        font: &Font,
+        trm: &Matrix,
+        gid: i32,
+        unicode: i32,
+    ) -> Result<(), Error> {
+        let (text, font, trm) = (self.inner, font.inner, trm.into());
+        // SAFETY: `text` and `font` are valid; the shim catches MuPDF errors.
+        crate::pdf::document::journal_call(|err| unsafe {
+            shim::mp_show_glyph(context(), text, font, trm, gid, unicode, err)
+        })
+    }
+}
+
+/// The wrapper in `shim/journal.c`.
+mod shim {
+    use std::os::raw::{c_char, c_int};
+
+    use mupdf_sys::{fz_context, fz_font, fz_matrix, fz_text};
+
+    unsafe extern "C" {
+        pub fn mp_show_glyph(
+            ctx: *mut fz_context,
+            text: *mut fz_text,
+            font: *mut fz_font,
+            trm: fz_matrix,
+            glyph: c_int,
+            unicode: c_int,
+            err: *mut *const c_char,
+        ) -> c_int;
+    }
 }
 
 impl Drop for Text {

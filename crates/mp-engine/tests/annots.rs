@@ -858,3 +858,94 @@ fn restyle_changes_fill_opacity_and_width() {
         .unwrap();
     assert_eq!((note.width, note.fill), (None, None));
 }
+
+#[test]
+fn a_summary_lists_comments_beside_their_pages() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let target = Scratch::new("summary.pdf");
+    assert!(
+        engine
+            .summarize_comments(doc, "hello.pdf".into(), target.0.clone())
+            .is_err()
+    );
+
+    let note = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Note {
+                x: 20.0,
+                y: 20.0,
+                text: "Check the greeting — naïve?".into(),
+            },
+            style(),
+        )
+        .unwrap();
+    engine
+        .reply(doc, 0, note.id, "Looks fine".into(), "Ada".into())
+        .unwrap();
+    engine
+        .set_state(doc, 0, note.id, "Accepted".into(), "Ada".into())
+        .unwrap();
+    let n = engine
+        .summarize_comments(doc, "hello.pdf".into(), target.0.clone())
+        .unwrap();
+    assert_eq!(n, 1);
+    let size = std::fs::metadata(&target.0).unwrap().len();
+    // The fonts are cut down to the glyphs used: about 90 KB, against 1.2 MB in full.
+    assert!(size < 150_000, "{size} bytes");
+
+    let summary = engine.open(target.0.clone()).unwrap();
+    assert_eq!(summary.page_count, 1);
+    let list = engine.display_list(summary.id, 0).unwrap();
+    let page = mp_engine::page_text(&list).unwrap();
+    let text = page.text(0..page.chars.len());
+    for expected in [
+        "Comments on hello.pdf",
+        "1 comment on 1 page",
+        "Page 1",
+        "Note by Tester",
+        "Check the greeting — naïve?",
+        "Ada",
+        "Looks fine",
+        "Ada set the status to Accepted",
+        "Hello micropdf",
+    ] {
+        assert!(
+            text.contains(expected),
+            "{expected:?} missing from {text:?}"
+        );
+    }
+
+    // Comments that overflow the column go on to another copy of the page.
+    for i in 0..40 {
+        engine
+            .add_annotation(
+                doc,
+                0,
+                NewAnnot::Note {
+                    x: 100.0,
+                    y: 30.0 + i as f32 * 3.0,
+                    text: format!("Note number {i} with a few words to fill a line"),
+                },
+                style(),
+            )
+            .unwrap();
+    }
+    let longer = Scratch::new("summary-long.pdf");
+    assert_eq!(
+        engine
+            .summarize_comments(doc, "hello.pdf".into(), longer.0.clone())
+            .unwrap(),
+        41
+    );
+    let long = engine.open(longer.0.clone()).unwrap();
+    assert!(long.page_count > 1, "{} pages", long.page_count);
+    let list = engine.display_list(long.id, 1).unwrap();
+    let page = mp_engine::page_text(&list).unwrap();
+    assert!(
+        page.text(0..page.chars.len())
+            .contains("Page 1 (continued)")
+    );
+}

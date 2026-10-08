@@ -1039,12 +1039,22 @@ export component MainWindow inherits Window {
                             Rectangle {
                                 visible: root.sidebar-tab == 5;
                                 VerticalLayout {
-                                LineEdit {
-                                    placeholder-text: "Filter comments";
-                                    accessible-label: "Filter comments";
-                                    text <=> root.comment-filter;
-                                    edited(t) => {
-                                        root.comment-filter-edited(t);
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    LineEdit {
+                                        placeholder-text: "Filter comments";
+                                        accessible-label: "Filter comments";
+                                        text <=> root.comment-filter;
+                                        edited(t) => {
+                                            root.comment-filter-edited(t);
+                                        }
+                                    }
+                                    ToolButton {
+                                        icon: "\u{E8A5}";
+                                        tip: "Summarize comments";
+                                        clicked => {
+                                            root.command("summarize-comments");
+                                        }
                                     }
                                 }
                                 ListView {

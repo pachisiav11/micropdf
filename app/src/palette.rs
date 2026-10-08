@@ -69,6 +69,7 @@ pub const COMMANDS: &[Command] = &[
     c("flatten-form", "Flatten form fields into the page", ""),
     c("flatten-comments", "Flatten comments into the page", ""),
     c("export-comments", "Export comments (XFDF)", ""),
+    c("summarize-comments", "Summarize comments (PDF)", ""),
     c("reply", "Reply to the selected comment", ""),
     c("status-accepted", "Comment status: accepted", ""),
     c("status-rejected", "Comment status: rejected", ""),

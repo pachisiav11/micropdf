@@ -46,4 +46,5 @@
 - Added: 2026-10-08 17:55 | Completed: 2026-10-08 20:12 | M2 — comment style bar: colour swatches, fill, line width and opacity for the picked comment; each tool remembers its colour
 - Added: 2026-10-07 11:01 | Completed: 2026-10-08 20:22 | M2 — forms: edit fields in place on the page (not a dialog), Tab between fields, list boxes, FDF import/export
 - Added: 2026-10-08 16:25 | Completed: 2026-10-08 20:31 | M2 — signatures: show the mark under the pointer before the click places it
-- Added: 2026-10-08 16:32 | Completed: 2026-10-08 20:58 | M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)
+- Added: 2026-10-08 16:32 | Completed: 2026-10-08 20:39 | M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)
+- Added: 2026-10-08 20:39 | Completed: 2026-10-08 20:53 | M2 — comment summary: a new PDF with each commented page beside its numbered comments (Acrobat's Summarize Comments)

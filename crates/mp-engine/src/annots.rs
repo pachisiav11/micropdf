@@ -33,6 +33,47 @@ pub enum AnnotKind {
     Other,
 }
 
+impl AnnotKind {
+    /// What readers call this kind of comment, such as "Text box".
+    pub fn name(self) -> &'static str {
+        match self {
+            AnnotKind::Highlight => "Highlight",
+            AnnotKind::Underline => "Underline",
+            AnnotKind::StrikeOut => "Strike-out",
+            AnnotKind::Squiggly => "Squiggly",
+            AnnotKind::Note => "Note",
+            AnnotKind::FreeText => "Text box",
+            AnnotKind::Ink => "Drawing",
+            AnnotKind::Square => "Rectangle",
+            AnnotKind::Circle => "Ellipse",
+            AnnotKind::Line => "Line",
+            AnnotKind::Stamp => "Stamp",
+            AnnotKind::Callout => "Callout",
+            AnnotKind::File => "Attachment",
+            AnnotKind::Other => "Comment",
+        }
+    }
+}
+
+/// A PDF date ("D:20261008165500+05'30'") as "2026-10-08 16:55".
+pub fn readable_date(s: &str) -> Option<String> {
+    let digits: String = s
+        .strip_prefix("D:")
+        .unwrap_or(s)
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .take(12)
+        .collect();
+    if digits.len() < 8 {
+        return None;
+    }
+    let mut out = format!("{}-{}-{}", &digits[..4], &digits[4..6], &digits[6..8]);
+    if digits.len() == 12 {
+        out += &format!(" {}:{}", &digits[8..10], &digits[10..12]);
+    }
+    Some(out)
+}
+
 /// An annotation as the comment list shows it. `id` is its object number, stable while the
 /// document is open.
 #[derive(Debug, Clone, PartialEq)]

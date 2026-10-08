@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use mp_engine::{
     Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
     Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, REVIEW_STATES, Rect,
-    RenderPool, Restyle, STAMPS, Style, Tile, Xfa,
+    RenderPool, Restyle, STAMPS, Style, Tile, Xfa, readable_date,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer, SharedString,
@@ -3420,7 +3420,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let matches = |i: usize, status: Option<&str>| {
             let (page, a) = &comments[i];
             [
-                kind_name(a.kind),
+                a.kind.name(),
                 &a.contents,
                 &a.author,
                 status.unwrap_or_default(),
@@ -3440,7 +3440,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             let (page, a) = &comments[t.root];
             rows.push(CommentRow {
                 index: t.root as i32,
-                kind: kind_name(a.kind).into(),
+                kind: a.kind.name().into(),
                 text: a.contents.lines().next().unwrap_or_default().into(),
                 detail: if a.author.is_empty() {
                     format!("page {}", page + 1)
@@ -3453,7 +3453,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             });
             for &i in &t.replies {
                 let a = &comments[i].1;
-                let when = pdf_date(&a.modified);
+                let when = readable_date(&a.modified);
                 let detail = match (a.author.is_empty(), when) {
                     (false, Some(when)) => format!("{}, {when}", a.author),
                     (false, None) => a.author.clone(),
@@ -3939,7 +3939,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.push_dialog(Dialog {
             ask: Ask::Reply { page, parent },
             kind: "input",
-            title: format!("Reply to {}", kind_name(kind).to_lowercase()),
+            title: format!("Reply to {}", kind.name().to_lowercase()),
             text: String::new(),
             ok: "Reply",
             cancel: "Cancel",
@@ -3987,7 +3987,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.push_dialog(Dialog {
             ask: Ask::Comment { page, id, value },
             kind: "input",
-            title: format!("Edit {}", kind_name(kind).to_lowercase()),
+            title: format!("Edit {}", kind.name().to_lowercase()),
             text: String::new(),
             ok: "Save",
             cancel: "Cancel",
@@ -4483,6 +4483,45 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     /// Writes the active tab's comments to `target` as XFDF.
+    /// Writes a PDF listing the active tab's comments beside their pages to `target`, and
+    /// opens it.
+    pub fn summarize_comments(&mut self, target: PathBuf) {
+        let Some(tab) = self.tab() else { return };
+        let (doc, name, source) = (tab.info.id, tab.name(), tab.path.clone());
+        let target = std::path::absolute(&target).unwrap_or(target);
+        let fail = "Could not summarize the comments";
+        if same_path(&source, &target) {
+            self.message(
+                fail,
+                "The summary would replace the document. Choose a new name.".into(),
+            );
+            return;
+        }
+        // The file of an earlier summary open in a tab cannot be replaced while it is open.
+        if let Some(i) = self.tabs.iter().position(|t| same_path(&t.path, &target)) {
+            if self.tabs[i].dirty {
+                let text = format!(
+                    "{} is open with changes that are not saved.",
+                    file_name(&target)
+                );
+                self.message(fail, text);
+                return;
+            }
+            self.discard_tab(i);
+        }
+        match self.engine.summarize_comments(doc, name, target.clone()) {
+            Ok(n) => {
+                self.open(target.clone());
+                self.status(format!(
+                    "Summarized {} in {}",
+                    plural(n, "comment"),
+                    file_name(&target)
+                ));
+            }
+            Err(e) => self.message(fail, e.to_string()),
+        }
+    }
+
     pub fn export_comments(&mut self, target: PathBuf) {
         let Some(tab) = self.tab() else { return };
         let (doc, name) = (tab.info.id, tab.name());
@@ -4674,7 +4713,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         };
         tab.picked = Some((*page, a.id));
         tab.selection = None;
-        let (kind, can_move) = (kind_name(a.kind), movable(a.kind));
+        let (kind, can_move) = (a.kind.name(), movable(a.kind));
         self.refresh_marks();
         let message = if can_move {
             format!("{kind} selected. Drag to move it; Delete removes it; double-click edits it.")
@@ -5203,44 +5242,6 @@ fn stamp_color(name: &str) -> [f32; 3] {
 /// Who new comments are by: the Windows user name.
 fn user_name() -> String {
     std::env::var("USERNAME").unwrap_or_default()
-}
-
-/// A PDF date ("D:20261008165500+05'30'") as "2026-10-08 16:55".
-fn pdf_date(s: &str) -> Option<String> {
-    let digits: String = s
-        .strip_prefix("D:")
-        .unwrap_or(s)
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .take(12)
-        .collect();
-    if digits.len() < 8 {
-        return None;
-    }
-    let mut out = format!("{}-{}-{}", &digits[..4], &digits[4..6], &digits[6..8]);
-    if digits.len() == 12 {
-        out += &format!(" {}:{}", &digits[8..10], &digits[10..12]);
-    }
-    Some(out)
-}
-
-fn kind_name(kind: AnnotKind) -> &'static str {
-    match kind {
-        AnnotKind::Highlight => "Highlight",
-        AnnotKind::Underline => "Underline",
-        AnnotKind::StrikeOut => "Strike-out",
-        AnnotKind::Squiggly => "Squiggly",
-        AnnotKind::Note => "Note",
-        AnnotKind::FreeText => "Text box",
-        AnnotKind::Ink => "Drawing",
-        AnnotKind::Square => "Rectangle",
-        AnnotKind::Circle => "Ellipse",
-        AnnotKind::Line => "Line",
-        AnnotKind::Stamp => "Stamp",
-        AnnotKind::Callout => "Callout",
-        AnnotKind::File => "Attachment",
-        AnnotKind::Other => "Comment",
-    }
 }
 
 /// The colours the style bar offers.

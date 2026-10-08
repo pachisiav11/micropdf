@@ -1,12 +1,13 @@
 /*
- * fz_try wrappers for the parts of MuPDF's undo journal, annotations and form widgets that
- * mupdf-sys does not wrap (it does wrap pdf_begin_operation, pdf_end_operation and
- * pdf_abandon_operation).
+ * fz_try wrappers for the parts of MuPDF's undo journal, annotations, form widgets, text and
+ * font subsetting that mupdf-sys does not wrap (it does wrap pdf_begin_operation,
+ * pdf_end_operation and pdf_abandon_operation).
  *
  * mupdf-sys does not export its include directory, so the few declarations needed are
  * repeated here. They match MuPDF 1.27 (mupdf/fitz/context.h, mupdf/fitz/system.h,
- * mupdf/fitz/geometry.h, mupdf/pdf/object.h, mupdf/pdf/annot.h and mupdf/pdf/form.h). On
- * Windows MuPDF uses plain setjmp/longjmp (HAVE_SIGSETJMP is 0).
+ * mupdf/fitz/geometry.h, mupdf/fitz/text.h, mupdf/pdf/object.h, mupdf/pdf/annot.h,
+ * mupdf/pdf/form.h and mupdf/pdf/font.h). On Windows MuPDF uses plain setjmp/longjmp
+ * (HAVE_SIGSETJMP is 0).
  */
 #include <setjmp.h>
 
@@ -14,6 +15,8 @@ typedef struct fz_context fz_context;
 typedef struct pdf_document pdf_document;
 typedef struct pdf_annot pdf_annot;
 typedef struct fz_display_list fz_display_list;
+typedef struct fz_text fz_text;
+typedef struct fz_font fz_font;
 typedef struct { float a, b, c, d, e, f; } fz_matrix;
 
 extern const fz_matrix fz_identity;
@@ -31,6 +34,9 @@ void pdf_redo(fz_context *ctx, pdf_document *doc);
 int pdf_toggle_widget(fz_context *ctx, pdf_annot *widget);
 int pdf_choice_widget_options(fz_context *ctx, pdf_annot *tw, int exportval, const char *opts[]);
 void pdf_set_annot_appearance_from_display_list(fz_context *ctx, pdf_annot *annot, const char *appearance, const char *state, fz_matrix ctm, fz_display_list *list);
+/* The last two parameters are the enums fz_bidi_direction and fz_text_language. */
+void fz_show_glyph(fz_context *ctx, fz_text *text, fz_font *font, fz_matrix trm, int glyph, int unicode, int wmode, int bidi_level, int markup_dir, int language);
+void pdf_subset_fonts(fz_context *ctx, pdf_document *doc, int pages_len, const int *pages);
 
 /* The expansion of MuPDF's fz_try / fz_catch macros. */
 #define TRY(ctx) if (!setjmp(*fz_push_try(ctx))) if (fz_do_try(ctx)) do
@@ -93,6 +99,22 @@ int mp_pdf_choice_widget_options(fz_context *ctx, pdf_annot *widget, const char 
 int mp_pdf_set_annot_appearance(fz_context *ctx, pdf_annot *annot, fz_display_list *list, const char **err)
 {
 	TRY(ctx) { pdf_set_annot_appearance_from_display_list(ctx, annot, "N", NULL, fz_identity, list); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	return 0;
+}
+
+/* Adds one glyph, set horizontally left to right (FZ_BIDI_LTR), language unset. */
+int mp_show_glyph(fz_context *ctx, fz_text *text, fz_font *font, fz_matrix trm, int glyph, int unicode, const char **err)
+{
+	TRY(ctx) { fz_show_glyph(ctx, text, font, trm, glyph, unicode, 0, 0, 0, 0); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	return 0;
+}
+
+/* Cuts every embedded font down to the glyphs the document's pages use. */
+int mp_pdf_subset_fonts(fz_context *ctx, pdf_document *doc, const char **err)
+{
+	TRY(ctx) { pdf_subset_fonts(ctx, doc, 0, NULL); }
 	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
 	return 0;
 }

@@ -19,6 +19,7 @@ pub fn run(id: &str) {
         "export-form" => xfdf_dialog(Xfdf::Form, true),
         "import-form" => xfdf_dialog(Xfdf::Form, false),
         "export-comments" => xfdf_dialog(Xfdf::Comments, true),
+        "summarize-comments" => summary_dialog(),
         "import-comments" => xfdf_dialog(Xfdf::Comments, false),
         "sign-image" => sign_image_dialog(),
         "print" => crate::print::start(),
@@ -145,6 +146,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "export-form" => return Some("export-form"),
         "import-form" => return Some("import-form"),
         "export-comments" => return Some("export-comments"),
+        "summarize-comments" => return Some("summarize-comments"),
         "import-comments" => return Some("import-comments"),
         "sign-image" => return Some("sign-image"),
         _ => {
@@ -267,6 +269,33 @@ fn xfdf_dialog(what: Xfdf, export: bool) {
                     (Xfdf::Comments, true) => app.export_comments(target),
                     (Xfdf::Comments, false) => app.import_comments(target),
                 });
+            });
+        }
+    });
+}
+
+/// Asks where to write the summary of the active document's comments.
+fn summary_dialog() {
+    let Some(path) = viewer::with(|app| app.active_path()).flatten() else {
+        return;
+    };
+    if SAVE_DIALOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Summarize comments")
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(format!("{stem} comment summary.pdf"));
+        if let Some(dir) = path.parent() {
+            dialog = dialog.set_directory(dir);
+        }
+        let target = dialog.save_file();
+        SAVE_DIALOG.store(false, Ordering::SeqCst);
+        if let Some(target) = target {
+            let _ = slint::invoke_from_event_loop(move || {
+                viewer::with(|app| app.summarize_comments(target));
             });
         }
     });

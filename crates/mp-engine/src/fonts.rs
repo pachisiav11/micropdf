@@ -195,6 +195,11 @@ pub(crate) fn family(name: &str) -> Option<Font> {
     family_face(index(), &key(name), false, false).and_then(load)
 }
 
+/// An installed family's bold face, or the nearest it has.
+pub(crate) fn bold_family(name: &str) -> Option<Font> {
+    family_face(index(), &key(name), true, false).and_then(load)
+}
+
 fn load(id: usize) -> Option<Font> {
     let mut loaded = LOADED.lock().ok()?;
     if let Some((_, font)) = loaded.iter().find(|(i, _)| *i == id) {
