@@ -122,6 +122,10 @@ enum Command {
         page: usize,
         reply: Reply<Vec<Field>>,
     },
+    HasFields {
+        doc: DocId,
+        reply: Reply<bool>,
+    },
     SetContents {
         doc: DocId,
         page: usize,
@@ -211,6 +215,16 @@ enum Command {
     ImportXfdf {
         doc: DocId,
         xml: String,
+        reply: Reply<usize>,
+    },
+    ExportFdf {
+        doc: DocId,
+        file: String,
+        reply: Reply<Vec<u8>>,
+    },
+    ImportFdf {
+        doc: DocId,
+        data: Vec<u8>,
         reply: Reply<usize>,
     },
     Save {
@@ -488,6 +502,11 @@ impl Engine {
         self.call(|reply| Command::Fields { doc, page, reply })
     }
 
+    /// Whether the document has form fields, without loading its pages.
+    pub fn has_fields(&self, doc: DocId) -> Result<bool, Error> {
+        self.call(|reply| Command::HasFields { doc, reply })
+    }
+
     /// Fills in or toggles a field. Ask for new display lists afterwards; calculated fields
     /// on other pages may change too.
     pub fn edit_field(
@@ -523,6 +542,16 @@ impl Engine {
     /// Fills the form from XFDF. Returns how many fields took a value.
     pub fn import_xfdf(&self, doc: DocId, xml: String) -> Result<usize, Error> {
         self.call(|reply| Command::ImportXfdf { doc, xml, reply })
+    }
+
+    /// The form's values as FDF; `file` is the PDF's name, recorded in the FDF.
+    pub fn export_fdf(&self, doc: DocId, file: String) -> Result<Vec<u8>, Error> {
+        self.call(|reply| Command::ExportFdf { doc, file, reply })
+    }
+
+    /// Fills the form from FDF. Returns how many fields took a value.
+    pub fn import_fdf(&self, doc: DocId, data: Vec<u8>) -> Result<usize, Error> {
+        self.call(|reply| Command::ImportFdf { doc, data, reply })
     }
 
     /// Writes the document to `target`; see [`crate::annots::save`] for `incremental`.
@@ -865,6 +894,9 @@ fn run(rx: mpsc::Receiver<Command>) {
             Command::Fields { doc, page, reply } => {
                 let _ = reply.send(with_doc(&docs, doc, |d| forms::list(d, page)));
             }
+            Command::HasFields { doc, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, forms::has_fields));
+            }
             Command::EditField {
                 doc,
                 page,
@@ -881,6 +913,14 @@ fn run(rx: mpsc::Receiver<Command>) {
             }
             Command::ImportXfdf { doc, xml, reply } => {
                 let result = with_doc(&docs, doc, |d| forms::import_xfdf(d, &xml));
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
+            }
+            Command::ExportFdf { doc, file, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, |d| forms::export_fdf(d, &file)));
+            }
+            Command::ImportFdf { doc, data, reply } => {
+                let result = with_doc(&docs, doc, |d| forms::import_fdf(d, &data));
                 lists.remove_doc(doc);
                 let _ = reply.send(result);
             }

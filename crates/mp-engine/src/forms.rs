@@ -1,7 +1,7 @@
 //! Form fields: list them, fill them in and reset them. Each change is one undoable step.
 
 use mupdf::Document;
-use mupdf::pdf::{FieldFlags, PdfDocument, PdfPage, PdfWidget, WidgetType};
+use mupdf::pdf::{FieldFlags, PdfDocument, PdfObject, PdfPage, PdfWidget, WidgetType};
 
 use crate::annots::operation;
 use crate::{Error, Rect};
@@ -126,6 +126,20 @@ fn describe(w: &PdfWidget) -> Result<Field, Error> {
     })
 }
 
+/// Whether the document has AcroForm fields at all, without loading any page.
+pub fn has_fields(doc: &Document) -> Result<bool, Error> {
+    let Ok(pdf) = PdfDocument::try_from(doc.clone()) else {
+        return Ok(false);
+    };
+    let Some(form) = pdf.catalog()?.get_dict("AcroForm")? else {
+        return Ok(false);
+    };
+    Ok(match form.get_dict("Fields")? {
+        Some(fields) => fields.len()? > 0,
+        None => false,
+    })
+}
+
 /// The page's form widgets. Empty for documents that are not PDF.
 pub fn list(doc: &Document, page: usize) -> Result<Vec<Field>, Error> {
     let Ok(page) = pdf_page(doc, page) else {
@@ -189,14 +203,10 @@ pub(crate) fn escape(text: &str) -> String {
     out
 }
 
-/// The form's values as XFDF, the XML form-data format Acrobat reads. `file` names the PDF.
-pub fn export_xfdf(doc: &Document, file: &str) -> Result<String, Error> {
+/// Each fillable field once, in page order: full name, value and kind.
+fn values(doc: &Document) -> Result<Vec<(String, String, FieldKind)>, Error> {
     let mut seen = std::collections::HashSet::new();
-    let mut out = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <xfdf xmlns=\"http://ns.adobe.com/xfdf/\" xml:space=\"preserve\">\n",
-    );
-    out += &format!("<f href=\"{}\"/>\n<fields>\n", escape(file));
+    let mut out = Vec::new();
     for page in 0..doc.page_count()? as usize {
         for field in list(doc, page)? {
             let fillable = matches!(
@@ -205,16 +215,120 @@ pub fn export_xfdf(doc: &Document, file: &str) -> Result<String, Error> {
             );
             // Radio buttons and repeated widgets share one field.
             if fillable && !field.name.is_empty() && seen.insert(field.name.clone()) {
-                out += &format!(
-                    "<field name=\"{}\"><value>{}</value></field>\n",
-                    escape(&field.name),
-                    escape(&field.value)
-                );
+                out.push((field.name, field.value, field.kind));
             }
         }
     }
+    Ok(out)
+}
+
+/// The form's values as XFDF, the XML form-data format Acrobat reads. `file` names the PDF.
+pub fn export_xfdf(doc: &Document, file: &str) -> Result<String, Error> {
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <xfdf xmlns=\"http://ns.adobe.com/xfdf/\" xml:space=\"preserve\">\n",
+    );
+    out += &format!("<f href=\"{}\"/>\n<fields>\n", escape(file));
+    for (name, value, _) in values(doc)? {
+        out += &format!(
+            "<field name=\"{}\"><value>{}</value></field>\n",
+            escape(&name),
+            escape(&value)
+        );
+    }
     out += "</fields>\n</xfdf>\n";
     Ok(out)
+}
+
+/// The form's values as FDF, the older form-data format written in PDF syntax. `file` names
+/// the PDF.
+pub fn export_fdf(doc: &Document, file: &str) -> Result<Vec<u8>, Error> {
+    // Dotted names nest: "a.b" is the kid "b" of field "a".
+    #[derive(Default)]
+    struct Node {
+        value: Option<(String, FieldKind)>,
+        kids: Vec<(String, Node)>,
+    }
+    fn write(out: &mut Vec<u8>, kids: &[(String, Node)]) {
+        out.push(b'[');
+        for (name, node) in kids {
+            out.extend_from_slice(b"<< /T ");
+            out.extend_from_slice(&pdf_string(name));
+            if let Some((value, kind)) = &node.value {
+                out.extend_from_slice(b" /V ");
+                // Checkboxes and radio buttons take the name of their on state.
+                if matches!(kind, FieldKind::Checkbox | FieldKind::Radio) {
+                    out.extend_from_slice(&pdf_name(value));
+                } else {
+                    out.extend_from_slice(&pdf_string(value));
+                }
+            }
+            if !node.kids.is_empty() {
+                out.extend_from_slice(b" /Kids ");
+                write(out, &node.kids);
+            }
+            out.extend_from_slice(b" >>\n");
+        }
+        out.push(b']');
+    }
+    let mut root = Node::default();
+    for (name, value, kind) in values(doc)? {
+        let mut node = &mut root;
+        for part in name.split('.') {
+            let i = match node.kids.iter().position(|(n, _)| n == part) {
+                Some(i) => i,
+                None => {
+                    node.kids.push((part.to_owned(), Node::default()));
+                    node.kids.len() - 1
+                }
+            };
+            node = &mut node.kids[i].1;
+        }
+        node.value = Some((value, kind));
+    }
+    let mut out = b"%FDF-1.2\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /FDF << /F ".to_vec();
+    out.extend_from_slice(&pdf_string(file));
+    out.extend_from_slice(b" /Fields ");
+    write(&mut out, &root.kids);
+    out.extend_from_slice(b" >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%EOF\n");
+    Ok(out)
+}
+
+/// A PDF string: literal for ASCII text, else UTF-16BE with a byte order mark, in hex.
+fn pdf_string(text: &str) -> Vec<u8> {
+    if text.is_ascii() {
+        let mut out = vec![b'('];
+        for b in text.bytes() {
+            match b {
+                b'(' | b')' | b'\\' => out.extend_from_slice(&[b'\\', b]),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                b'\n' => out.extend_from_slice(b"\\n"),
+                _ => out.push(b),
+            }
+        }
+        out.push(b')');
+        out
+    } else {
+        let mut out = String::from("<FEFF");
+        for unit in text.encode_utf16() {
+            out += &format!("{unit:04X}");
+        }
+        out.push('>');
+        out.into_bytes()
+    }
+}
+
+/// A PDF name, with `#xx` escapes for bytes outside the regular characters.
+fn pdf_name(text: &str) -> Vec<u8> {
+    let mut out = vec![b'/'];
+    for b in text.bytes() {
+        if (0x21..0x7f).contains(&b) && !b"#()<>[]{}/%".contains(&b) {
+            out.push(b);
+        } else {
+            out.extend_from_slice(format!("#{b:02X}").as_bytes());
+        }
+    }
+    out
 }
 
 /// Field values in XFDF, keyed by full name. Nested fields join their names with dots.
@@ -236,9 +350,70 @@ fn parse_xfdf(xml: &str) -> Result<Vec<(String, String)>, Error> {
     Ok(values)
 }
 
+/// Field values in FDF, keyed by full name. Nested fields join their names with dots.
+fn parse_fdf(data: &[u8]) -> Result<Vec<(String, String)>, Error> {
+    fn walk(
+        fields: &PdfObject,
+        prefix: &str,
+        out: &mut Vec<(String, String)>,
+    ) -> Result<(), Error> {
+        for i in 0..fields.len()? as i32 {
+            let Some(field) = fields.get_array(i)? else {
+                continue;
+            };
+            let part = match field.get_dict("T")? {
+                Some(t) => t.as_string()?,
+                None => String::new(),
+            };
+            let name = match (prefix.is_empty(), part.is_empty()) {
+                (true, _) => part,
+                (false, true) => prefix.to_owned(),
+                (false, false) => format!("{prefix}.{part}"),
+            };
+            if let Some(v) = field.get_dict("V")? {
+                if v.is_name()? {
+                    out.push((
+                        name.clone(),
+                        String::from_utf8_lossy(&v.as_name()?).into_owned(),
+                    ));
+                } else if v.is_string()? {
+                    out.push((name.clone(), v.as_string()?));
+                }
+            }
+            if let Some(kids) = field.get_dict("Kids")? {
+                walk(&kids, &name, out)?;
+            }
+        }
+        Ok(())
+    }
+    let bad = || Error::Invalid("not an FDF file");
+    if !data.starts_with(b"%FDF") {
+        return Err(bad());
+    }
+    // FDF is PDF syntax without a cross-reference table; MuPDF reads it by repairing it.
+    let fdf = Document::from_bytes(data, "application/pdf").map_err(|_| bad())?;
+    let fdf = PdfDocument::try_from(fdf).map_err(|_| bad())?;
+    let fields = fdf
+        .catalog()?
+        .get_dict("FDF")?
+        .and_then(|f| f.get_dict("Fields").ok().flatten())
+        .ok_or_else(bad)?;
+    let mut out = Vec::new();
+    walk(&fields, "", &mut out)?;
+    Ok(out)
+}
+
 /// Fills the form from XFDF as one undoable step. Returns how many fields took a value.
 pub fn import_xfdf(doc: &Document, xml: &str) -> Result<usize, Error> {
-    let values: std::collections::HashMap<String, String> = parse_xfdf(xml)?.into_iter().collect();
+    fill(doc, parse_xfdf(xml)?.into_iter().collect())
+}
+
+/// Fills the form from FDF as one undoable step. Returns how many fields took a value.
+pub fn import_fdf(doc: &Document, data: &[u8]) -> Result<usize, Error> {
+    fill(doc, parse_fdf(data)?.into_iter().collect())
+}
+
+fn fill(doc: &Document, values: std::collections::HashMap<String, String>) -> Result<usize, Error> {
     operation(doc, "Import form data", || {
         let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
         prepare(&mut pdf)?;

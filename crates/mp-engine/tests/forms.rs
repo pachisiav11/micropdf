@@ -130,6 +130,46 @@ fn form_data_round_trips_through_xfdf() {
     assert!(engine.import_xfdf(doc, "not xml".into()).is_err());
 }
 
+#[test]
+fn form_data_round_trips_through_fdf() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("form.pdf")).unwrap().id;
+    let fields = engine.fields(doc, 0).unwrap();
+    let name = "Grace (n\u{e9}e) \\ Hopper \u{2014} \u{fc}";
+    engine
+        .edit_field(doc, 0, fields[0].id, FieldEdit::Value(name.into()))
+        .unwrap();
+    engine
+        .edit_field(doc, 0, fields[1].id, FieldEdit::Toggle)
+        .unwrap();
+
+    let fdf = engine.export_fdf(doc, "form (1).pdf".into()).unwrap();
+    let text = String::from_utf8_lossy(&fdf);
+    assert!(text.starts_with("%FDF-1.2"), "{text}");
+    assert!(text.contains("/F (form \\(1\\).pdf)"), "{text}");
+    assert!(text.contains("<< /T (agree) /V /Yes >>"), "{text}");
+    assert!(text.contains("<< /T (colour) /V (Green) >>"), "{text}");
+
+    engine.reset_form(doc).unwrap();
+    assert_eq!(engine.import_fdf(doc, fdf).unwrap(), 3);
+    let fields = engine.fields(doc, 0).unwrap();
+    assert_eq!(fields[0].value, name);
+    assert_eq!(fields[1].value, "Yes");
+    assert_eq!(fields[2].value, "Green");
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Import form data")
+    );
+
+    // Kids name their fields relative to the parent.
+    let nested = b"%FDF-1.2\n1 0 obj\n<< /FDF << /Fields [<< /T (name) /V (Nested) >> \
+        << /T (group) /Kids [<< /T (unknown) /V (x) >>] >>] >> >>\nendobj\n\
+        trailer\n<< /Root 1 0 R >>\n%EOF\n";
+    assert_eq!(engine.import_fdf(doc, nested.to_vec()).unwrap(), 1);
+    assert_eq!(engine.fields(doc, 0).unwrap()[0].value, "Nested");
+    assert!(engine.import_fdf(doc, b"not fdf".to_vec()).is_err());
+}
+
 fn field<'a>(fields: &'a [mp_engine::Field], name: &str) -> &'a mp_engine::Field {
     fields.iter().find(|f| f.name == name).unwrap()
 }

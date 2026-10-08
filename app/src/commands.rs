@@ -237,6 +237,9 @@ fn xfdf_dialog(what: Xfdf, export: bool) {
     };
     std::thread::spawn(move || {
         let mut dialog = rfd::FileDialog::new().add_filter(filter, &["xfdf"]);
+        if let Xfdf::Form = what {
+            dialog = dialog.add_filter("FDF form data", &["fdf"]);
+        }
         if let Some(dir) = path.parent() {
             dialog = dialog.set_directory(dir);
         }
@@ -383,9 +386,18 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
             app.set_tool(Tool::Select);
         } else if app.presenting() {
             app.toggle_present();
+        } else if app.clear_field_focus() {
+            // The form field let go of the keyboard.
         } else if !app.clear_selection() {
             app.close_find();
         }
+        return Handled;
+    }
+    if !ctrl && !alt && (is(Key::Tab) || is(Key::Backtab)) && app.field_tab(!shift && is(Key::Tab))
+    {
+        return Handled;
+    }
+    if !ctrl && !alt && (text == " " || is(Key::Return)) && app.use_focused_field() {
         return Handled;
     }
     if is(Key::Delete) && app.delete_picked() {

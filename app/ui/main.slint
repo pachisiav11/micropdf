@@ -429,8 +429,35 @@ export component MainWindow inherits Window {
     callback style-width-picked(float);
     callback style-opacity-picked(int);
 
+    // The form field being filled in, in document space.
+    in property <bool> field-editing;
+    in property <length> field-x;
+    in property <length> field-y;
+    in property <length> field-width;
+    in property <length> field-height;
+    in property <length> field-font-size: 12px;
+    in property <bool> field-multiline;
+    in property <string> field-name;
+    in-out property <string> field-text;
+    /// The options of the focused list or combo box.
+    in property <[string]> field-options;
+    /// Ends typing: 1 moves to the next field, -1 to the previous one, 0 stays, 2 means the
+    /// editor lost the keyboard.
+    callback field-commit(int);
+    callback field-cancel();
+    callback field-choose(int);
+
     public function show-stamp-menu() {
         stamp-menu.show();
+    }
+
+    public function focus-field-editor() {
+        field-input.focus();
+        field-input.select-all();
+    }
+
+    public function show-field-menu() {
+        field-menu.show();
     }
 
     changed viewport-y => { root.view-changed(); }
@@ -1239,9 +1266,74 @@ export component MainWindow inherits Window {
                                 : mark.kind == 1 ? #ff9a1f99
                                 : mark.kind == 2 ? #4a7dff4d
                                 : mark.kind == 4 ? #ffffff
+                                : mark.kind == 5 ? transparent
                                 : #8d9cff40;
-                            border-width: mark.kind == 4 ? 1px : 0px;
+                            border-width: mark.kind == 4 ? 1px : mark.kind == 5 ? 2px : 0px;
                             border-color: Theme.accent;
+                        }
+                        Rectangle {
+                            visible: root.field-editing;
+                            x: root.field-x;
+                            y: root.field-y;
+                            width: root.field-width;
+                            height: root.field-height;
+                            background: #ffffff;
+                            border-width: 2px;
+                            border-color: Theme.accent;
+                            clip: true;
+                            FocusScope {
+                                capture-key-pressed(e) => {
+                                    if (e.text == Key.Escape) {
+                                        root.field-cancel();
+                                        return accept;
+                                    }
+                                    if (e.text == Key.Tab || e.text == Key.Backtab) {
+                                        root.field-commit(e.text == Key.Backtab || e.modifiers.shift ? -1 : 1);
+                                        return accept;
+                                    }
+                                    if (e.text == Key.Return && (!root.field-multiline || e.modifiers.control)) {
+                                        root.field-commit(0);
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                                field-input := TextInput {
+                                    x: 4px;
+                                    y: root.field-multiline ? 3px : 0px;
+                                    width: parent.width - 8px;
+                                    height: root.field-multiline ? parent.height - 6px : parent.height;
+                                    text <=> root.field-text;
+                                    font-size: root.field-font-size;
+                                    color: #000000;
+                                    selection-background-color: #4a7dff66;
+                                    single-line: !root.field-multiline;
+                                    wrap: root.field-multiline ? TextWrap.word-wrap : TextWrap.no-wrap;
+                                    vertical-alignment: root.field-multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
+                                    accessible-label: root.field-name;
+                                    changed has-focus => {
+                                        if (!self.has-focus && root.field-editing) {
+                                            root.field-commit(2);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        field-menu := PopupWindow {
+                            x: root.field-x;
+                            y: root.field-y + root.field-height + 2px;
+                            width: max(root.field-width, 160px);
+                            height: min(root.field-options.length * 30px + 10px, 310px);
+                            Menu {
+                                ListView {
+                                    for option[i] in root.field-options: MenuEntry {
+                                        text: option;
+                                        checked: option == root.field-text;
+                                        clicked => {
+                                            root.field-choose(i);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         if root.draft-path != "": Path {
                             x: 0;

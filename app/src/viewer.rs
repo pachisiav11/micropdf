@@ -232,14 +232,17 @@ enum Ask {
         id: i32,
         value: String,
     },
-    /// New text for a form field; `value` fills the input at first.
-    Field {
-        page: usize,
-        id: i32,
-        value: String,
-    },
     Quit,
     Message,
+}
+
+/// The form field the keyboard is on.
+struct FieldFocus {
+    doc: DocId,
+    page: usize,
+    field: Field,
+    /// The editor is open on it for typing.
+    editing: bool,
 }
 
 struct Dialog {
@@ -331,6 +334,7 @@ pub struct App {
     placing: Option<Placing>,
     /// The standard stamp the Stamp tool places, by PDF name.
     stamp: Option<&'static str>,
+    field_focus: Option<FieldFocus>,
     cursor: i32,
     status_timer: Timer,
     search_timer: Timer,
@@ -423,6 +427,7 @@ impl App {
             pad: None,
             placing: None,
             stamp: None,
+            field_focus: None,
             cursor: 0,
             status_timer: Timer::default(),
             search_timer: Timer::default(),
@@ -1032,7 +1037,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 window.set_dialog_ok(d.ok.into());
                 window.set_dialog_cancel_text(d.cancel.into());
                 let input = match &d.ask {
-                    Ask::Field { value, .. } | Ask::Comment { value, .. } => value.clone(),
+                    Ask::Comment { value, .. } => value.clone(),
                     _ => String::new(),
                 };
                 window.set_dialog_input(input.into());
@@ -1116,7 +1121,6 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     self.add_comment(page, new, [1.0, 1.0, 0.8]);
                 }
             }
-            Ask::Field { page, id, .. } => self.edit_field(page, id, FieldEdit::Value(input)),
             Ask::Comment { page, id, .. } => {
                 if let Some(doc) = self.tab().map(|t| t.info.id) {
                     match self.engine.set_contents(doc, page, id, input) {
@@ -1999,6 +2003,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     pub fn pointer_down(&mut self, x: f32, y: f32, button: i32, shift: bool) {
+        // A click anywhere but the field editor ends typing, keeping the text.
+        self.commit_open_field();
         if self.presenting() {
             match button {
                 0 => self.next_page(),
@@ -2404,11 +2410,19 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
             }
         }
+        if let Some(f) = &self.field_focus
+            && f.doc == tab.info.id
+            && !f.editing
+            && let Some(frame) = tab.layout.to_view(f.page, &f.field.rect)
+        {
+            marks.push(mark_item(frame, 5));
+        }
         if marks != self.shown_marks {
             self.models.marks.set_vec(marks.clone());
             self.shown_marks = marks;
             self.refresh_style_bar();
         }
+        self.place_field_editor();
     }
 
     // ---------------------------------------------------------------- search
@@ -3620,19 +3634,25 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     fn field_at(&mut self, x: f32, y: f32) -> Option<(usize, Field)> {
         let (page, px, py) = self.hit(x, y)?;
-        let tab = self.tab()?;
-        let fields = match tab.fields.get(&page) {
-            Some(f) => Rc::clone(f),
-            None => {
-                let f = Rc::new(self.engine.fields(tab.info.id, page).unwrap_or_default());
-                self.tab_mut()?.fields.insert(page, Rc::clone(&f));
-                f
-            }
-        };
-        fields
+        self.page_fields(page)
             .iter()
             .find(|f| f.rect.contains(px, py))
             .map(|f| (page, f.clone()))
+    }
+
+    /// The form widgets of `page`, loaded once per edit.
+    fn page_fields(&mut self, page: usize) -> Rc<Vec<Field>> {
+        let Some(tab) = self.tab() else {
+            return Rc::default();
+        };
+        if let Some(f) = tab.fields.get(&page) {
+            return Rc::clone(f);
+        }
+        let f = Rc::new(self.engine.fields(tab.info.id, page).unwrap_or_default());
+        if let Some(tab) = self.tab_mut() {
+            tab.fields.insert(page, Rc::clone(&f));
+        }
+        f
     }
 
     fn use_field(&mut self, page: usize, field: Field) {
@@ -3640,37 +3660,237 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.status("This field is read-only".into());
             return;
         }
-        let label = if field.name.is_empty() {
-            "this field".to_owned()
-        } else {
-            format!("\u{201C}{}\u{201D}", field.name)
-        };
         match field.kind {
             FieldKind::Checkbox | FieldKind::Radio => {
                 self.edit_field(page, field.id, FieldEdit::Toggle);
+                self.focus_field(page, field, false);
             }
-            FieldKind::Text | FieldKind::Choice => {
-                let text = if field.options.is_empty() {
-                    String::new()
-                } else {
-                    format!("Choices: {}", field.options.join(", "))
-                };
-                self.push_dialog(Dialog {
-                    ask: Ask::Field {
-                        page,
-                        id: field.id,
-                        value: field.value,
-                    },
-                    kind: "input",
-                    title: format!("Fill in {label}"),
-                    text,
-                    ok: "Fill in",
-                    cancel: "Cancel",
-                });
-            }
+            FieldKind::Text | FieldKind::Choice => self.focus_field(page, field, true),
             FieldKind::Signature => self.status("Signing is not supported yet".into()),
             FieldKind::Button | FieldKind::Other => {}
         }
+    }
+
+    /// Puts the keyboard on `field`: a text field opens for typing over the page, a list or
+    /// combo box lists its options when `open` is set, and other fields get a focus ring.
+    fn focus_field(&mut self, page: usize, field: Field, open: bool) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        let Some(w) = self.window() else { return };
+        let kind = field.kind;
+        let editing = kind == FieldKind::Text;
+        w.set_field_text(field.value.clone().into());
+        w.set_field_multiline(field.multiline);
+        w.set_field_name(field.name.clone().into());
+        let options: Vec<SharedString> = field.options.iter().map(Into::into).collect();
+        w.set_field_options(ModelRc::new(VecModel::from(options)));
+        self.field_focus = Some(FieldFocus {
+            doc,
+            page,
+            field,
+            editing,
+        });
+        self.reveal_field();
+        self.refresh_marks();
+        if editing {
+            w.invoke_focus_field_editor();
+        } else {
+            w.invoke_focus_view();
+            if kind == FieldKind::Choice && open {
+                w.invoke_show_field_menu();
+            }
+        }
+    }
+
+    /// Scrolls the focused field into view.
+    fn reveal_field(&mut self) {
+        let Some((page, rect)) = self.field_focus.as_ref().map(|f| (f.page, f.field.rect)) else {
+            return;
+        };
+        let Some(tab) = self.tab() else { return };
+        if tab.mode == PageMode::Single && tab.current != page {
+            self.go_to(page, Some((rect.y0 - 40.0).max(0.0)), false);
+            return;
+        }
+        let Some(frame) = tab.layout.to_view(page, &rect) else {
+            return;
+        };
+        let (x, y) = self.scroll();
+        let (_, vh) = self.view_size();
+        if frame.y < y || frame.y + frame.height > y + vh {
+            self.set_scroll(x, frame.y - vh / 3.0);
+            self.update_view();
+        }
+    }
+
+    /// Lays the field editor over the focused text field, or hides it.
+    fn place_field_editor(&self) {
+        let Some(w) = self.window() else { return };
+        let placed = self
+            .field_focus
+            .as_ref()
+            .filter(|f| f.editing)
+            .and_then(|f| {
+                let tab = self.tab().filter(|t| t.info.id == f.doc)?;
+                Some((f, tab.layout.to_view(f.page, &f.field.rect)?))
+            });
+        let Some((f, frame)) = placed else {
+            w.set_field_editing(false);
+            return;
+        };
+        let rect = f.field.rect;
+        let scale = frame.height / rect.height().max(1.0);
+        let points = if f.field.multiline {
+            10.0
+        } else {
+            (rect.height() * 0.6).clamp(6.0, 14.0)
+        };
+        w.set_field_x(frame.x);
+        w.set_field_y(frame.y);
+        w.set_field_width(frame.width);
+        w.set_field_height(frame.height);
+        w.set_field_font_size(points * scale);
+        w.set_field_editing(true);
+    }
+
+    /// Ends typing in the focused field and keeps the text. `step` 1 or -1 moves on to the
+    /// next or previous field; 0 and 2 (the editor lost the keyboard) leave the form.
+    pub fn field_commit(&mut self, step: i32) {
+        let Some(f) = self.field_focus.as_mut().filter(|f| f.editing) else {
+            return;
+        };
+        f.editing = false;
+        let (page, id, old) = (f.page, f.field.id, f.field.value.clone());
+        let text = self
+            .window()
+            .map(|w| w.get_field_text().to_string())
+            .unwrap_or_default();
+        if !matches!(step, 1 | -1) {
+            self.field_focus = None;
+        }
+        self.place_field_editor();
+        if text != old {
+            self.edit_field(page, id, FieldEdit::Value(text));
+        }
+        match step {
+            1 | -1 => {
+                self.field_tab(step > 0);
+            }
+            0 => {
+                self.refresh_marks();
+                if let Some(w) = self.window() {
+                    w.invoke_focus_view();
+                }
+            }
+            _ => self.refresh_marks(),
+        }
+    }
+
+    /// Ends typing in the focused field and drops the text.
+    pub fn field_cancel(&mut self) {
+        if self.field_focus.take().is_some() {
+            self.refresh_marks();
+        }
+        if let Some(w) = self.window() {
+            w.invoke_focus_view();
+        }
+    }
+
+    /// Option `index` of the focused list or combo box was picked.
+    pub fn field_choose(&mut self, index: usize) {
+        let Some(f) = &self.field_focus else { return };
+        let Some(option) = f.field.options.get(index).cloned() else {
+            return;
+        };
+        let (page, id, old) = (f.page, f.field.id, f.field.value.clone());
+        if option != old {
+            self.edit_field(page, id, FieldEdit::Value(option.clone()));
+        }
+        if let Some(f) = self.field_focus.as_mut() {
+            f.field.value = option;
+        }
+    }
+
+    /// Commits the field being typed into, if any.
+    fn commit_open_field(&mut self) {
+        if self.field_focus.as_ref().is_some_and(|f| f.editing) {
+            self.field_commit(2);
+        }
+    }
+
+    /// Takes the keyboard off the form. False if no field had it.
+    pub fn clear_field_focus(&mut self) -> bool {
+        if self.field_focus.is_none() {
+            return false;
+        }
+        self.field_cancel();
+        true
+    }
+
+    /// Moves the keyboard to the next (or previous) field that takes input, across pages and
+    /// round to the start. False when the document has no fields.
+    pub fn field_tab(&mut self, forward: bool) -> bool {
+        let Some(tab) = self.tab() else { return false };
+        let (doc, count, current) = (tab.info.id, tab.page_count(), tab.current);
+        if count == 0 || !self.engine.has_fields(doc).unwrap_or(false) {
+            return false;
+        }
+        let (mut page, mut after) = match &self.field_focus {
+            Some(f) if f.doc == doc => (f.page, Some(f.field.id)),
+            _ => (current.min(count - 1), None),
+        };
+        for _ in 0..=count {
+            let mut usable: Vec<Field> = self
+                .page_fields(page)
+                .iter()
+                .filter(|f| takes_input(f))
+                .cloned()
+                .collect();
+            if !forward {
+                usable.reverse();
+            }
+            let next = match after {
+                Some(id) => usable
+                    .iter()
+                    .position(|f| f.id == id)
+                    .and_then(|i| usable.get(i + 1)),
+                None => usable.first(),
+            };
+            if let Some(field) = next.cloned() {
+                self.focus_field(page, field, false);
+                return true;
+            }
+            after = None;
+            page = if forward {
+                (page + 1) % count
+            } else {
+                (page + count - 1) % count
+            };
+        }
+        false
+    }
+
+    /// Space or Enter on the focused field: checks a box, lists a choice's options or opens
+    /// a text field for typing. False if no field has the keyboard.
+    pub fn use_focused_field(&mut self) -> bool {
+        let doc = self.tab().map(|t| t.info.id);
+        let Some(f) = self
+            .field_focus
+            .as_ref()
+            .filter(|f| !f.editing && Some(f.doc) == doc)
+        else {
+            return false;
+        };
+        let (page, field) = (f.page, f.field.clone());
+        match field.kind {
+            FieldKind::Checkbox | FieldKind::Radio => {
+                self.edit_field(page, field.id, FieldEdit::Toggle)
+            }
+            FieldKind::Choice | FieldKind::Text => self.focus_field(page, field, true),
+            _ => return false,
+        }
+        true
     }
 
     fn edit_field(&mut self, page: usize, id: i32, edit: FieldEdit) {
@@ -4129,25 +4349,36 @@ Open it in Adobe Acrobat Reader to fill it in.",
     pub fn export_form(&mut self, target: PathBuf) {
         let Some(tab) = self.tab() else { return };
         let (doc, name) = (tab.info.id, tab.name());
-        let result = self
-            .engine
-            .export_xfdf(doc, name)
+        let data = if is_fdf(&target) {
+            self.engine.export_fdf(doc, name)
+        } else {
+            self.engine.export_xfdf(doc, name).map(String::into_bytes)
+        };
+        let result = data
             .map_err(|e| e.to_string())
-            .and_then(|xml| std::fs::write(&target, xml).map_err(|e| e.to_string()));
+            .and_then(|data| std::fs::write(&target, data).map_err(|e| e.to_string()));
         match result {
             Ok(()) => self.status(format!("Exported form data to {}", file_name(&target))),
             Err(e) => self.message("Could not export form data", e),
         }
     }
 
-    /// Fills the active tab's form from the XFDF file at `path`.
+    /// Fills the active tab's form from the XFDF or FDF file at `path`.
     pub fn import_form(&mut self, path: PathBuf) {
         let Some(doc) = self.tab().map(|t| t.info.id) else {
             return;
         };
-        let result = std::fs::read_to_string(&path)
+        let result = std::fs::read(&path)
             .map_err(|e| e.to_string())
-            .and_then(|xml| self.engine.import_xfdf(doc, xml).map_err(|e| e.to_string()));
+            .and_then(|data| {
+                if data.starts_with(b"%FDF") {
+                    self.engine.import_fdf(doc, data)
+                } else {
+                    let xml = String::from_utf8_lossy(&data).into_owned();
+                    self.engine.import_xfdf(doc, xml)
+                }
+                .map_err(|e| e.to_string())
+            });
         match result {
             Ok(n) => {
                 self.edited(None);
@@ -4709,6 +4940,15 @@ fn movable(kind: AnnotKind) -> bool {
     )
 }
 
+/// Fields Tab stops at: those that take a value.
+fn takes_input(f: &Field) -> bool {
+    !f.read_only
+        && matches!(
+            f.kind,
+            FieldKind::Text | FieldKind::Choice | FieldKind::Checkbox | FieldKind::Radio
+        )
+}
+
 /// Notes and attached files keep their icon size.
 fn resizable(kind: AnnotKind) -> bool {
     movable(kind) && !matches!(kind, AnnotKind::Note | AnnotKind::File)
@@ -4962,6 +5202,11 @@ fn new_key(new: &NewAnnot) -> Option<&'static str> {
         NewAnnot::Callout { .. } => Some("callout"),
         _ => None,
     }
+}
+
+fn is_fdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("fdf"))
 }
 
 fn markup_color(kind: AnnotKind) -> [f32; 3] {

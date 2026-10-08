@@ -156,6 +156,20 @@ fn drag_hello(w: &MainWindow, points: &[(f32, f32)]) {
     w.invoke_pointer_up(x, y);
 }
 
+/// Whether the picked comment's outline sits on comment 0 of hello.pdf's page 1 as the engine
+/// has it now, so the viewer's copy of the comments has caught up with the last edit.
+fn picked_mark_current(w: &MainWindow) -> bool {
+    let r = comment_rect(0);
+    let Some(p) = w.get_pages().iter().find(|p| p.index == 0) else {
+        return false;
+    };
+    w.get_marks().iter().filter(|m| m.kind == 3).any(|m| {
+        let x0 = p.x + r.x0 / 300.0 * p.width;
+        let x1 = p.x + r.x1 / 300.0 * p.width;
+        (m.x + 1.0 - x0).abs() < 1.5 && (m.x + m.width - 1.0 - x1).abs() < 1.5
+    })
+}
+
 /// The colour of the last comment on page 1 of the active tab.
 fn last_color() -> Option<[f32; 3]> {
     viewer::with(|app| {
@@ -557,19 +571,60 @@ fn steps() -> Vec<Step> {
             active_title(w) == "form.pdf" && w.get_pages().row_count() > 0
         }),
         step(
-            "clicking a text field asks for its value",
+            "clicking a text field opens it for typing",
             |w| click_page(w, 0, 200.0, 91.0),
-            |w| w.get_dialog_kind() == "input" && w.get_dialog_title().contains("name"),
+            |w| w.get_field_editing() && w.get_field_text().is_empty(),
         ),
         step(
-            "the field takes the value",
-            |w| w.invoke_dialog_accept("Ada Lovelace".into()),
-            |_| field_value(0) == "Ada Lovelace",
+            "Tab fills it in and moves to the checkbox",
+            |w| {
+                w.set_field_text("Ada Lovelace".into());
+                w.invoke_field_commit(1);
+            },
+            |w| field_value(0) == "Ada Lovelace" && !w.get_field_editing() && marks(w, 5) == 1,
         ),
+        step("Space checks the focused checkbox", key(" "), |w| {
+            field_value(1) == "Yes" && w.get_undo_name() == "Check box"
+        }),
         step(
-            "clicking a checkbox checks it",
+            "clicking it unchecks it",
             |w| click_page(w, 0, 158.0, 132.0),
-            |w| field_value(1) == "Yes" && w.get_undo_name() == "Check box",
+            |_| field_value(1) == "Off",
+        ),
+        step("Space checks it again", key(" "), |_| {
+            field_value(1) == "Yes"
+        }),
+        step(
+            "Tab moves on to the combo box and Enter lists its options",
+            |w| {
+                w.invoke_key_input("\t".into(), false, false, false);
+                w.invoke_key_input(
+                    char::from(Key::Return).to_string().into(),
+                    false,
+                    false,
+                    false,
+                );
+            },
+            |w| w.get_field_options().row_count() == 3 && marks(w, 5) == 1,
+        ),
+        step(
+            "picking an option fills it in",
+            |w| w.invoke_field_choose(2),
+            |_| field_value(2) == "Blue",
+        ),
+        step(
+            "Shift+Tab goes back to the text field, open for typing",
+            |w| {
+                let back: slint::SharedString = char::from(Key::Backtab).to_string().into();
+                w.invoke_key_input(back.clone(), false, true, false);
+                w.invoke_key_input(back, false, true, false);
+            },
+            |w| w.get_field_editing() && w.get_field_text() == "Ada Lovelace",
+        ),
+        step(
+            "Esc closes the editor and keeps the value",
+            |w| w.invoke_field_cancel(),
+            |w| !w.get_field_editing() && field_value(0) == "Ada Lovelace" && marks(w, 5) == 0,
         ),
         step(
             "a field shows the hand cursor",
@@ -597,6 +652,25 @@ fn steps() -> Vec<Step> {
                 let done = field_value(0) == "Ada Lovelace" && field_value(1) == "Yes";
                 if done {
                     let _ = std::fs::remove_file(scratch("form.xfdf"));
+                }
+                done && w.get_status_left().starts_with("Filled in 3 fields")
+            },
+        ),
+        step(
+            "export the form data as FDF",
+            |_| viewer::with(|app| app.export_form(scratch("form.fdf"))).unwrap(),
+            |_| std::fs::read(scratch("form.fdf")).is_ok_and(|b| b.starts_with(b"%FDF")),
+        ),
+        step("reset clears it once more", command("reset-form"), |_| {
+            field_value(0).is_empty()
+        }),
+        step(
+            "FDF fills it in too",
+            |_| viewer::with(|app| app.import_form(scratch("form.fdf"))).unwrap(),
+            |w| {
+                let done = field_value(0) == "Ada Lovelace" && field_value(1) == "Yes";
+                if done {
+                    let _ = std::fs::remove_file(scratch("form.fdf"));
                 }
                 done && w.get_status_left().starts_with("Filled in 3 fields")
             },
@@ -776,7 +850,7 @@ fn steps() -> Vec<Step> {
         step(
             "the arrow keys nudge it",
             key(char::from(Key::RightArrow)),
-            |_| (comment_rect(0).x0 + comment_rect(0).x1) / 2.0 > 120.5,
+            |w| (comment_rect(0).x0 + comment_rect(0).x1) / 2.0 > 120.5 && picked_mark_current(w),
         ),
         step(
             "a comment shows the move cursor",

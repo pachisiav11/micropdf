@@ -107,6 +107,15 @@ pub fn wire(window: &MainWindow) {
     window.on_style_opacity_picked(|o| {
         viewer::with(|app| app.style_opacity(o));
     });
+    window.on_field_commit(|step| {
+        viewer::with(|app| app.field_commit(step));
+    });
+    window.on_field_cancel(|| {
+        viewer::with(|app| app.field_cancel());
+    });
+    window.on_field_choose(|i| {
+        viewer::with(|app| app.field_choose(i as usize));
+    });
     window.on_layer_toggle(|i| {
         viewer::with(|app| app.layer_toggle(i as usize));
     });
