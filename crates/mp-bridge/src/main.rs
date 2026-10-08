@@ -6,9 +6,11 @@
 //! queues a whole file) and `end`. The bridge writes the file and then either opens it in
 //! micropdf, handing it to the running app over the app's pipe or starting the app, or, for a
 //! local PDF the extension edited, puts it in place of that file. `open` opens a local PDF in
-//! micropdf as it is.
+//! micropdf as it is. The viewer's assistant asks its questions here too (assistant.rs).
 //!
 //! `micropdf-bridge --register` tells the browsers where the bridge is; `--unregister` undoes it.
+
+mod assistant;
 
 use std::fmt::Display;
 use std::fs::File;
@@ -265,7 +267,8 @@ fn serve(
                 },
                 None => error("no file is being sent"),
             },
-            other => error(format!("unknown message type {other:?}")),
+            other => assistant::reply(&message, &mp_ai::WinHttp, mp_ai::Setup::load)
+                .unwrap_or_else(|| error(format!("unknown message type {other:?}"))),
         };
         write_message(output, &reply)?;
     }

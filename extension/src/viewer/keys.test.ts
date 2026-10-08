@@ -27,6 +27,8 @@ describe("mapKey", () => {
     expect(mapKey(key("s", { ctrl: true }), plain, s)).toEqual({ id: "save" });
     expect(mapKey(key("S", { ctrl: true, shift: true }), plain, s)).toEqual({ id: "save-as" });
     expect(mapKey(key("p", { ctrl: true }), plain, s)).toEqual({ id: "print" });
+    expect(mapKey(key("A", { ctrl: true, shift: true }), plain, s)).toEqual({ id: "assistant" });
+    expect(mapKey(key("a", { ctrl: true }), plain, s)).toBeNull();
     expect(mapKey(key("Delete"), plain, s)).toEqual({ id: "delete" });
     expect(mapKey(key("c", { ctrl: true }), plain, s)).toBeNull();
     expect(mapKey(key("t", { ctrl: true }), plain, s)).toBeNull();

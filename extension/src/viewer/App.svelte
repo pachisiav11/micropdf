@@ -16,6 +16,7 @@
     needsText,
     spansOf,
   } from "./annotate";
+  import Assistant from "./Assistant.svelte";
   import Draw from "./Draw.svelte";
   import { type Command, mapKey, vimState } from "./keys";
   import {
@@ -121,6 +122,13 @@
   let asking: { title: string; text: string; resolve: (text: string | null) => void } | null = $state(null);
   let dialog: HTMLDialogElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
+  let assisting = $state(false);
+  /** The file's content hash, which names its assistant chat. */
+  let hash = $state("");
+  let texts: Promise<string[]> | null = null;
+  /** A page the assistant cited, outlined for a moment when shown. */
+  let flash: number | null = $state(null);
+  let flashTimer = 0;
 
   let view: HTMLElement | undefined = $state();
   // The content box, unlike clientWidth's border box, shrinks when a scrollbar appears.
@@ -184,6 +192,7 @@
   async function show(opened: Opened, start: number | null): Promise<void> {
     locked = opened.needsPassword;
     pages = opened.pages;
+    hash = opened.hash;
     versions = pages.map(() => 0);
     message = locked || pages.length ? "" : "The PDF has no pages.";
     if (opened.title.trim()) document.title = opened.title.trim();
@@ -313,6 +322,13 @@
       view.scrollTop = y;
       syncScroll();
     }
+  }
+
+  function cite(page: number): void {
+    go({ page });
+    flash = page;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => (flash = null), 900);
   }
 
   function remember(): void {
@@ -834,6 +850,9 @@
       case "delete":
         void deletePicked();
         break;
+      case "assistant":
+        assisting = !assisting;
+        break;
       case "escape":
         if (presenting) stopPresenting();
         else if (finding) closeFind();
@@ -979,6 +998,13 @@
           >{dirty ? "Save •" : "Save"}</button
         >
         <button class="text" title="Open in micropdf for Windows" onclick={() => handOff()}>Open in micropdf</button>
+        <button
+          class="text"
+          class:active={assisting}
+          aria-pressed={assisting}
+          title="Assistant (Ctrl+Shift+A)"
+          onclick={() => run({ id: "assistant" })}>Assistant</button
+        >
         <button class="icon" class:active={finding} aria-label="Find" title="Find (Ctrl+F)" onclick={openFind}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
         </button>
@@ -1081,6 +1107,18 @@
               />
             {/if}
           {/each}
+          {#if flash !== null}
+            {@const f = layout.frames[flash]}
+            {#if f}
+              <div
+                class="flash"
+                style:left="{f.x}px"
+                style:top="{f.y}px"
+                style:width="{f.width}px"
+                style:height="{f.height}px"
+              ></div>
+            {/if}
+          {/if}
           {#if isDraw(tool)}
             <Draw {layout} {tool} color={css(colorOf(tool))} ondraw={drawn} />
           {/if}
@@ -1111,6 +1149,15 @@
         </div>
       {/if}
     </main>
+    {#if assisting && pages.length && !presenting}
+      <Assistant
+        {hash}
+        {current}
+        pages={() => (texts ??= pdf.pageTexts())}
+        ongo={cite}
+        onclose={() => (assisting = false)}
+      />
+    {/if}
     {#if notice}
       <div class="notice" role="status">{notice}</div>
     {/if}
@@ -1372,6 +1419,13 @@
     position: absolute;
     border: 2px solid var(--color-accent);
     border-radius: var(--radius-sm);
+    pointer-events: none;
+  }
+
+  .flash {
+    position: absolute;
+    border: 2px solid var(--color-accent);
+    background: var(--color-accent-glow);
     pointer-events: none;
   }
 

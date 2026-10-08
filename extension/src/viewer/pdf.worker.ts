@@ -21,6 +21,7 @@ import type {
   Target,
   TextLine,
 } from "./pdf";
+import { contentHash } from "./hash";
 import { type ReadingMode, toRgba } from "./recolor";
 
 // mupdf.js loads its WebAssembly with a top-level await. Imported statically, it would hold up
@@ -30,6 +31,8 @@ let mupdf: typeof Mupdf;
 let doc: Mupdf.Document | null = null;
 /** The password that opened the document, to open it again after a save. */
 let password = "";
+/** The opened file's content hash. */
+let hash = "";
 /** Recently drawn pages, most recent last: tiles of the same page draw from one list. */
 const lists = new Map<number, Mupdf.DisplayList>();
 const LISTS = 8;
@@ -42,7 +45,7 @@ function loaded(): Mupdf.Document {
 /** The document's pages; `unlocked` once a password was accepted, since needsPassword() only
  * tries the empty one and stays true. */
 function describe(d: Mupdf.Document, unlocked = false): Opened {
-  if (!unlocked && d.needsPassword()) return { needsPassword: true, pages: [], title: "" };
+  if (!unlocked && d.needsPassword()) return { needsPassword: true, pages: [], title: "", hash };
   const pages = [];
   for (let i = 0; i < d.countPages(); i++) {
     const page = d.loadPage(i);
@@ -50,7 +53,7 @@ function describe(d: Mupdf.Document, unlocked = false): Opened {
     pages.push({ width: x1 - x0, height: y1 - y0 });
     page.destroy();
   }
-  return { needsPassword: false, pages, title: d.getMetaData("info:Title") ?? "" };
+  return { needsPassword: false, pages, title: d.getMetaData("info:Title") ?? "", hash };
 }
 
 /** Where `uri` leads: a page and height in this document, or the URI itself. Of other
@@ -143,6 +146,19 @@ function text(index: number): TextLine[] {
     .flatMap((b) => (b.type === "text" ? (b.lines ?? []) : []))
     .filter((l) => l.wmode === 0 && l.text.trim() !== "")
     .map((l) => ({ ...l.bbox, size: l.font.size, text: l.text }));
+}
+
+function pageTexts(): string[] {
+  const d = loaded();
+  const out = [];
+  for (let i = 0; i < d.countPages(); i++) {
+    const page = d.loadPage(i);
+    const stext = page.toStructuredText("");
+    out.push(stext.asText());
+    stext.destroy();
+    page.destroy();
+  }
+  return out;
 }
 
 function links(index: number): PageLink[] {
@@ -463,6 +479,7 @@ function handle(request: Request): unknown {
   switch (request.method) {
     case "open":
       password = "";
+      hash = contentHash(new Uint8Array(request.data));
       return describe(open(request.data));
     case "unlock":
       if (!loaded().authenticatePassword(request.password)) return null;
@@ -474,6 +491,8 @@ function handle(request: Request): unknown {
       return render(request.page, request.scale, request.mode, request.clip);
     case "text":
       return text(request.page);
+    case "pageTexts":
+      return pageTexts();
     case "links":
       return links(request.page);
     case "search":

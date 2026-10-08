@@ -1,6 +1,6 @@
 // Talks to micropdf-bridge, the native messaging host (crates/mp-bridge). A PDF goes as `begin`,
 // base64 `chunk`s, each acknowledged so the browser never queues a whole file, and `end`; `open`
-// opens a local PDF in the app as it is.
+// opens a local PDF in the app as it is. The assistant's questions go the same way (`request`).
 
 export const HOST = "com.micropdf.bridge";
 /** Bytes per chunk; base64 makes the message a third larger. */
@@ -9,7 +9,7 @@ export const CHUNK = 768 * 1024;
 /** A new file that opens in micropdf, or a local PDF to replace. */
 export type Destination = { name: string } | { target: string };
 
-type Reply = { type: string; path?: string; message?: string };
+type Reply = { type: string; path?: string; message?: string } & Record<string, unknown>;
 
 /** The part of chrome.runtime.Port the exchange uses, so tests can stand in for the bridge. */
 export interface PortLike {
@@ -19,7 +19,9 @@ export interface PortLike {
   disconnect(): void;
 }
 
-const connectNative = (): PortLike => chrome.runtime.connectNative(HOST);
+export type Connect = () => PortLike;
+
+const connectNative: Connect = () => chrome.runtime.connectNative(HOST);
 
 function base64(bytes: Uint8Array): string {
   let text = "";
@@ -73,6 +75,11 @@ export function sendPdf(bytes: Uint8Array, to: Destination, connect = connectNat
     }
     return (await ask({ type: "end" })).path ?? "";
   });
+}
+
+/** One message and the bridge's answer to it. */
+export function request<T>(message: object, connect = connectNative): Promise<Reply & T> {
+  return talk(connect, async (ask) => (await ask(message)) as Reply & T);
 }
 
 /** Opens the local PDF at `path` in micropdf. */

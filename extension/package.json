@@ -1,6 +1,6 @@
 {
   "name": "micropdf-extension",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "micropdf for Chromium browsers: view, annotate and fill PDFs, and hand them to the desktop app",
   "license": "AGPL-3.0-or-later",

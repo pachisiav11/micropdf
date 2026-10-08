@@ -31,6 +31,7 @@ export type Simple =
   | "save-as"
   | "print"
   | "delete"
+  | "assistant"
   | "escape";
 
 export type Command =
@@ -90,6 +91,7 @@ export function mapKey(
     const id = CTRL[k.key.length === 1 ? k.key.toLowerCase() : k.key];
     if (id === "undo" && k.shift) return c("redo");
     if (id === "save" && k.shift) return c("save-as");
+    if (k.shift && k.key.toLowerCase() === "a") return c("assistant");
     return id ? c(id) : null;
   }
   if (k.alt) {

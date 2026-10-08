@@ -78,6 +78,10 @@ permission once). The options page sets your name on comments and whether PDFs o
 the app or the browser's own viewer. For PDFs on this computer (file:// links), turn on "Allow
 access to file URLs" for the extension; the viewer then saves them in place through the bridge.
 
+The viewer's Assistant button (Ctrl+Shift+A) asks the same assistant through the bridge: the API key
+stays in Credential Manager, so set the assistant up in the desktop app first. A PDF has one chat in
+both, found by its content.
+
 `npm run serve` starts Vite's dev server, where the viewer opens the test PDFs from `fixtures/`
 without the extension, e.g. `http://localhost:5173/viewer.html#http://localhost:5173/@fs/<repo>/fixtures/hello.pdf`.
 

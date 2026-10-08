@@ -14,6 +14,8 @@ export interface Opened {
   needsPassword: boolean;
   pages: PageSize[];
   title: string;
+  /** The file's content hash, which names its assistant chat. */
+  hash: string;
 }
 
 /** A page, or part of one, drawn as RGBA pixels; `x` and `y` place it on the whole page. */
@@ -106,6 +108,7 @@ export type Request =
   | { method: "outline" }
   | { method: "render"; page: number; scale: number; mode: ReadingMode; clip?: Rect }
   | { method: "text"; page: number }
+  | { method: "pageTexts" }
   | { method: "links"; page: number }
   | { method: "search"; page: number; needle: string }
   | { method: "annotAt"; page: number; at: Point }
@@ -238,6 +241,11 @@ export class Pdf {
 
   text(page: number, wanted?: () => boolean): Promise<TextLine[]> {
     return this.call({ method: "text", page }, Priority.Page, wanted);
+  }
+
+  /** Each page's text, for the assistant. */
+  pageTexts(): Promise<string[]> {
+    return this.call({ method: "pageTexts" }, Priority.Document);
   }
 
   links(page: number, wanted?: () => boolean): Promise<PageLink[]> {

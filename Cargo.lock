@@ -2695,6 +2695,7 @@ name = "mp-bridge"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "mp-ai",
  "serde_json",
  "windows-sys 0.61.2",
 ]

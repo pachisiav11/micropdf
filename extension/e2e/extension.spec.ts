@@ -1,7 +1,7 @@
 // The built extension (dist/) in the installed Chrome, and Edge on Windows. Branded browsers ignore
 // --load-extension, so it is loaded over the DevTools protocol (Extensions.loadUnpacked), which
 // needs --enable-unsafe-extension-debugging and a debugging port. The native bridge is a stand-in
-// that reports each message to the test.
+// that reports each message to the test, and answers the assistant's questions itself.
 
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { type Server, createServer } from "node:http";
@@ -9,13 +9,22 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type BrowserContext, type Page, type Worker, test as base, chromium, expect } from "@playwright/test";
 import * as mupdf from "mupdf";
+import { contentHash } from "../src/viewer/hash";
 
 const DIST = resolve(import.meta.dirname, "../dist").replaceAll("\\", "/");
 const FIXTURES = resolve(import.meta.dirname, "../../fixtures");
 const ID = "phhaejfhblmccnkhnhjflbhckkanlnki";
 const VIEWER = `chrome-extension://${ID}/viewer.html`;
 
-type BridgeMessage = { type: string; name?: string; target?: string; path?: string; data?: string };
+type BridgeMessage = {
+  type: string;
+  name?: string;
+  target?: string;
+  path?: string;
+  data?: string;
+  hash?: string;
+  pages?: string[];
+};
 
 /** Serves the test PDFs as a website would; under /download/ they come as attachments. */
 function website(): Promise<Server> {
@@ -80,8 +89,18 @@ const test = base.extend<{ context: BrowserContext; worker: Worker; web: string;
         return {
           postMessage(m: { type: string }) {
             void report(m).then(() => {
-              const reply =
-                m.type === "begin" ? { type: "ready" } : m.type === "chunk" ? { type: "chunk" } : { type: "done", path: "C:\\out.pdf" };
+              const replies: Record<string, object> = {
+                begin: { type: "ready" },
+                chunk: { type: "chunk" },
+                assistant: { type: "assistant", model: "Anthropic · claude-test", notice: "", usage: "" },
+                chat: { type: "chat", turns: [] },
+                ask: {
+                  type: "answer",
+                  turn: { role: "assistant", text: "It greets **micropdf** [p. 1].", note: "40 in · 9 out" },
+                  usage: "today 40 in · 9 out",
+                },
+              };
+              const reply = replies[m.type] ?? { type: "done", path: "C:\\out.pdf" };
               for (const listener of listeners) listener(reply);
             });
           },
@@ -189,6 +208,25 @@ test("opens a PDF straight in micropdf when the reader asks for that", async ({ 
   await expect.poll(() => bridge.at(-1)?.type).toBe("end");
   await expect(page).toHaveURL(`${web}/`);
   expect(bridge[0]).toEqual({ type: "begin", name: "hello.pdf" });
+});
+
+test("asks the assistant through the bridge, and shows the page it cites", async ({ page, web, bridge }) => {
+  await page.goto(`${web}/hello.pdf`);
+  await drawn(page);
+  await page.getByRole("button", { name: "Assistant", exact: true }).click();
+  const panel = page.getByRole("complementary", { name: "Assistant" });
+  await expect(panel.getByText("Anthropic · claude-test")).toBeVisible();
+  await panel.getByRole("button", { name: "Summarize the document" }).click();
+  await expect(panel.locator(".answer p")).toHaveText("It greets micropdf p. 1.");
+  await expect(panel.getByText("today 40 in · 9 out")).toBeVisible();
+
+  const ask = bridge.find((m) => m.type === "ask")!;
+  expect(ask.pages?.map((p) => p.trim())).toEqual(["Hello micropdf"]);
+  expect(ask.hash).toBe(contentHash(readFileSync(join(FIXTURES, "hello.pdf"))));
+  expect(bridge.find((m) => m.type === "chat")?.hash).toBe(ask.hash);
+
+  await panel.getByRole("button", { name: "p. 1" }).click();
+  await expect(page.locator(".flash")).toBeVisible();
 });
 
 test("opens files from this computer, and saves them in place", async ({ context, page, bridge }) => {
