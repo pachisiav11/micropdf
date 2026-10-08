@@ -59,6 +59,11 @@ unpacked) in Chrome, Edge or Brave. The manifest carries a fixed key, so the ext
 
 To hand PDFs to the desktop app, register the native host once with
 `micropdf-bridge.exe --register` (the app's "Add micropdf to Windows PDF apps" does this too).
+Then "Open in micropdf" in the viewer, the toolbar button and the link menu open PDFs in the app;
+on other pages the toolbar button prints the page to a PDF first (it asks for the debugger
+permission once). The options page sets your name on comments and whether PDFs open in the viewer,
+the app or the browser's own viewer. For PDFs on this computer (file:// links), turn on "Allow
+access to file URLs" for the extension; the viewer then saves them in place through the bridge.
 
 `npm run serve` starts Vite's dev server, where the viewer opens the test PDFs from `fixtures/`
 without the extension, e.g. `http://localhost:5173/viewer.html#http://localhost:5173/@fs/<repo>/fixtures/hello.pdf`.

@@ -1,8 +1,7 @@
 import { mount } from "svelte";
 import "../tokens.css";
 import { followTheme } from "../theme";
-import "./viewer.css";
-import App from "./App.svelte";
+import Options from "./Options.svelte";
 
 followTheme();
-mount(App, { target: document.getElementById("app")! });
+mount(Options, { target: document.getElementById("app")! });

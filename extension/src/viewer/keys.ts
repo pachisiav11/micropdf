@@ -28,6 +28,8 @@ export type Simple =
   | "undo"
   | "redo"
   | "save"
+  | "save-as"
+  | "print"
   | "delete"
   | "escape";
 
@@ -70,6 +72,7 @@ const CTRL: Record<string, Simple> = {
   z: "undo",
   y: "redo",
   s: "save",
+  p: "print",
   Home: "first-page",
   End: "last-page",
 };
@@ -86,6 +89,7 @@ export function mapKey(
     if (k.key === "+") return c(k.shift ? "rotate-cw" : "zoom-in");
     const id = CTRL[k.key.length === 1 ? k.key.toLowerCase() : k.key];
     if (id === "undo" && k.shift) return c("redo");
+    if (id === "save" && k.shift) return c("save-as");
     return id ? c(id) : null;
   }
   if (k.alt) {

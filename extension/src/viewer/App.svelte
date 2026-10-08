@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { fileName, pdfSource, startPage } from "../rules";
+  import { openLocal, sendPdf } from "../bridge";
+  import { fileName, localPath, pdfSource, startPage } from "../rules";
+  import { loadSettings } from "../settings";
   import {
     DEFAULT_COLORS,
     type Markup,
@@ -110,6 +112,9 @@
   let canRedo = $state(false);
   let dirty = $state(false);
   let saveTo: FileSystemFileHandle | null = null;
+  /** The PDF's URL: on the web, or file:// on this computer. */
+  let source = "";
+  let printFrame: HTMLIFrameElement | null = null;
   let author = $state("");
   let notice = $state("");
   let noticeTimer = 0;
@@ -190,21 +195,50 @@
     if (start !== null) await goPage(start);
   }
 
+  /** Reads the PDF; fetch cannot read file:// URLs, which XMLHttpRequest can with file access. */
+  async function load(url: string): Promise<ArrayBuffer> {
+    if (!/^file:/i.test(url)) {
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error(`the server answered ${response.status}`);
+      return response.arrayBuffer();
+    }
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("GET", url);
+      request.responseType = "arraybuffer";
+      request.onload = () => resolve(request.response as ArrayBuffer);
+      request.onerror = () => reject(new Error("the browser did not let micropdf read the file"));
+      request.send();
+    });
+  }
+
   onMount(async () => {
     const src = pdfSource(location.href);
     if (!src) {
       message = "Open a link to a PDF to view it here.";
       return;
     }
+    source = src;
     name = fileName(src);
     document.title = name;
+    const settings = await loadSettings();
+    author = settings.author;
     try {
-      const response = await fetch(src, { credentials: "include" });
-      if (!response.ok) throw new Error(`the server answered ${response.status}`);
-      await show(await pdf.open(await response.arrayBuffer()), startPage(src));
+      await show(await pdf.open(await load(src)), startPage(src));
     } catch (e) {
       message = `Could not open the PDF: ${e instanceof Error ? e.message : e}`;
+      return;
     }
+    if (settings.open === "app" && pages.length) void handOff(true);
+  });
+
+  // The extension's toolbar button asks the viewer in its tab to hand its PDF on.
+  $effect(() => {
+    const messages = typeof chrome === "undefined" ? undefined : chrome.runtime?.onMessage;
+    if (!messages) return;
+    const listener = (m: { type?: string }) => void (m.type === "open-in-app" && handOff());
+    messages.addListener(listener);
+    return () => messages.removeListener(listener);
   });
 
   async function unlock(e: SubmitEvent): Promise<void> {
@@ -619,32 +653,84 @@
     void apply(change, "fill in the field");
   }
 
-  /** Writes the PDF with every change to a file the reader picks once, then to the same file. */
-  async function save(): Promise<void> {
+  /** Writes the PDF with every change: a local PDF in place, through micropdf-bridge; a web one
+   * to a file the reader picks once, then to the same file. */
+  async function save(saveAs = false): Promise<void> {
     if (!pages.length) return;
+    const local = saveAs ? null : localPath(source);
     const w = window as { showSaveFilePicker?: (o: object) => Promise<FileSystemFileHandle> };
     const suggestedName = /\.pdf$/i.test(name) ? name : `${name}.pdf`;
     const types = [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }];
     try {
       // The file first: a cancelled dialog leaves the document and its history alone.
-      saveTo ??= w.showSaveFilePicker ? await w.showSaveFilePicker({ suggestedName, types }) : null;
-      const bytes = await pdf.save();
-      canUndo = canRedo = false;
-      if (saveTo) {
+      if (!local && (saveAs || !saveTo) && w.showSaveFilePicker) {
+        saveTo = await w.showSaveFilePicker({ suggestedName, types });
+      }
+      const saved = await pdf.save();
+      canUndo = saved.canUndo;
+      canRedo = saved.canRedo;
+      if (local) {
+        await sendPdf(saved.bytes, { target: local });
+      } else if (saveTo) {
         const out = await saveTo.createWritable();
-        await out.write(bytes);
+        await out.write(saved.bytes);
         await out.close();
       } else {
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+        a.href = URL.createObjectURL(new Blob([saved.bytes], { type: "application/pdf" }));
         a.download = suggestedName;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
       }
       dirty = false;
-      say(`Saved ${saveTo?.name ?? suggestedName}`);
+      say(`Saved ${local ?? saveTo?.name ?? suggestedName}`);
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === "AbortError")) say(`Could not save: ${reason(e)}`);
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      say(`Could not save${local ? " in place" : ""}: ${reason(e)}${local ? ". Save as (Ctrl+Shift+S) still works." : ""}`);
+    }
+  }
+
+  /** Opens the PDF in micropdf for Windows: a local one as it is unless it has changes here, else
+   * the bytes, changes included. `leave` takes the tab back afterwards. */
+  async function handOff(leave = false): Promise<void> {
+    if (!pages.length) return;
+    const local = localPath(source);
+    try {
+      if (local && !dirty) {
+        await openLocal(local);
+      } else {
+        const saved = await pdf.save();
+        canUndo = saved.canUndo;
+        canRedo = saved.canRedo;
+        await sendPdf(saved.bytes, { name });
+      }
+    } catch (e) {
+      say(`Could not open in micropdf: ${reason(e)}`);
+      return;
+    }
+    if (!leave) say("Opened in micropdf");
+    else if (window.history.length > 1) window.history.back();
+    else void chrome.tabs.getCurrent().then((tab) => void (tab?.id && chrome.tabs.remove(tab.id)));
+  }
+
+  /** Prints the PDF itself, through the browser's own viewer in a frame, not this page. */
+  async function print(): Promise<void> {
+    if (!pages.length) return;
+    try {
+      const bytes = await pdf.copy();
+      if (printFrame) {
+        URL.revokeObjectURL(printFrame.src);
+        printFrame.remove();
+      }
+      const frame = document.createElement("iframe");
+      frame.className = "print";
+      frame.title = "Print";
+      frame.src = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      frame.onload = () => frame.contentWindow?.print();
+      document.body.append(frame);
+      printFrame = frame;
+    } catch (e) {
+      say(`Could not print: ${reason(e)}`);
     }
   }
 
@@ -739,7 +825,11 @@
         history(cmd.id === "redo");
         break;
       case "save":
-        void save();
+      case "save-as":
+        void save(cmd.id === "save-as");
+        break;
+      case "print":
+        void print();
         break;
       case "delete":
         void deletePicked();
@@ -885,9 +975,10 @@
           aria-pressed={commenting}
           onclick={() => ((commenting = !commenting), commenting || (tool = "select"))}>Comment</button
         >
-        <button class="text" title="Save a copy with your changes (Ctrl+S)" onclick={save}
+        <button class="text" title="Save (Ctrl+S); Save as (Ctrl+Shift+S)" onclick={() => save()}
           >{dirty ? "Save •" : "Save"}</button
         >
+        <button class="text" title="Open in micropdf for Windows" onclick={() => handOff()}>Open in micropdf</button>
         <button class="icon" class:active={finding} aria-label="Find" title="Find (Ctrl+F)" onclick={openFind}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
         </button>

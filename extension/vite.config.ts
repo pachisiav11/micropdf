@@ -1,7 +1,7 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vitest/config";
 
-// Builds the extension into dist/, which loads unpacked: the viewer page, the service worker
+// Builds the extension into dist/, which loads unpacked: the viewer and options pages, the service worker
 // (kept at the root as background.js, where the manifest points) and the mupdf.js worker, with
 // public/ (the manifest and icons) copied as is.
 export default defineConfig({
@@ -16,6 +16,7 @@ export default defineConfig({
     rolldownOptions: {
       input: {
         viewer: "viewer.html",
+        options: "options.html",
         background: "src/background.ts",
       },
       output: {

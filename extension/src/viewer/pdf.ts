@@ -117,7 +117,14 @@ export type Request =
   | { method: "toggleField"; page: number; id: number }
   | { method: "undo" }
   | { method: "redo" }
-  | { method: "save" };
+  | { method: "save" }
+  | { method: "copy" };
+
+export interface Saved {
+  bytes: Uint8Array<ArrayBuffer>;
+  canUndo: boolean;
+  canRedo: boolean;
+}
 
 export interface Call {
   id: number;
@@ -280,7 +287,12 @@ export class Pdf {
 
   /** The document's bytes with every change, appended to the original when possible; the undo
    * history starts again after it. */
-  save(): Promise<Uint8Array<ArrayBuffer>> {
+  save(): Promise<Saved> {
     return this.call({ method: "save" }, Priority.Document);
+  }
+
+  /** The document's bytes with every change, for printing; the document stays as it is. */
+  copy(): Promise<Uint8Array<ArrayBuffer>> {
+    return this.call({ method: "copy" }, Priority.Document);
   }
 }

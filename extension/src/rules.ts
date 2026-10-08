@@ -25,11 +25,29 @@ export function pdfRule(viewer: string): chrome.declarativeNetRequest.Rule {
   };
 }
 
-/** The PDF a viewer URL made by {@link pdfRule} is for, or null. */
+/** The PDF a viewer URL is for, or null: a web PDF ({@link pdfRule}) or a file on this computer
+ * (the service worker sends file:// PDFs to the viewer). */
 export function pdfSource(viewerUrl: string): string | null {
   const hash = new URL(viewerUrl).hash.slice(1);
-  if (!/^https?:\/\//i.test(hash)) return null;
+  if (!/^(https?|file):\/\//i.test(hash)) return null;
   return hash;
+}
+
+/** The Windows path of a file:// URL, as C:\dir.pdf or \server\share.pdf; null for others. */
+export function localPath(url: string): string | null {
+  if (!/^file:/i.test(url)) return null;
+  const u = new URL(url);
+  const path = decodeURIComponent(u.pathname).replace(/^\/([A-Za-z]:)/, "$1").replaceAll("/", "\\");
+  return u.host ? `\\\\${u.host}${path}` : path;
+}
+
+/** Whether the path of `url` ends in .pdf. */
+export function looksLikePdf(url: string): boolean {
+  try {
+    return /\.pdf$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
 }
 
 /** A name for the PDF at `url`: the last part of its path, decoded. */

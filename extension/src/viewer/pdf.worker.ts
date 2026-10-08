@@ -17,6 +17,7 @@ import type {
   Reply,
   Request,
   Rgb,
+  Saved,
   Target,
   TextLine,
 } from "./pdf";
@@ -430,23 +431,32 @@ function open(data: Uint8Array | ArrayBuffer): Mupdf.Document {
   return doc;
 }
 
-/** The document's bytes with every change. The undo history ends here: mupdf takes a saved
- * update as part of the file it opened, so a second incremental save would point at offsets the
- * original bytes lack; the document is opened again from what was saved. */
-function save(): Uint8Array<ArrayBuffer> {
-  const d = pdfDoc();
-  let buffer: Mupdf.Buffer;
-  try {
-    buffer = d.saveToBuffer("incremental");
-  } catch {
-    // A repaired file cannot take an incremental update; write it whole.
-    buffer = d.saveToBuffer("");
-  }
+function bytesOf(buffer: Mupdf.Buffer): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(buffer.asUint8Array());
   buffer.destroy();
-  const reopened = open(bytes);
-  if (reopened.needsPassword()) reopened.authenticatePassword(password);
   return bytes;
+}
+
+/** The document's bytes with every change, appended to the original. A changed document's undo
+ * history ends here: mupdf takes a saved update as part of the file it opened, so a second
+ * incremental save would point at offsets the original bytes lack; the document is opened again
+ * from what was saved. An unchanged one saves as its original bytes. */
+function save(): Saved {
+  const d = pdfDoc();
+  // A repaired file cannot take an incremental update; it is written whole.
+  const bytes = bytesOf(d.saveToBuffer(d.wasRepaired() ? "" : "incremental"));
+  if (d.hasUnsavedChanges()) {
+    const reopened = open(bytes);
+    if (reopened.needsPassword()) reopened.authenticatePassword(password);
+  }
+  return { bytes, canUndo: pdfDoc().canUndo(), canRedo: pdfDoc().canRedo() };
+}
+
+/** The document's bytes with every change, leaving it and its history as they are: a whole new
+ * file when changed, which unlike an incremental save does not move mupdf's idea of the file. */
+function copy(): Uint8Array<ArrayBuffer> {
+  const d = pdfDoc();
+  return bytesOf(d.saveToBuffer(d.hasUnsavedChanges() || d.wasRepaired() ? "" : "incremental"));
 }
 
 function handle(request: Request): unknown {
@@ -496,6 +506,8 @@ function handle(request: Request): unknown {
       return history(request.method);
     case "save":
       return save();
+    case "copy":
+      return copy();
   }
 }
 
@@ -509,11 +521,8 @@ self.onmessage = async (e: MessageEvent<Call>) => {
     reply = { id, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
   const result = reply.ok ? reply.result : null;
-  const transfer =
-    result instanceof Uint8Array
-      ? [result.buffer]
-      : result && typeof result === "object" && "pixels" in result
-        ? [(result as Drawn).pixels.buffer]
-        : [];
+  // Pixels and file bytes move to the page instead of being copied.
+  const moved = result instanceof Uint8Array ? result : ((result as Partial<Drawn & Saved>)?.pixels ?? (result as Partial<Saved>)?.bytes);
+  const transfer = moved ? [moved.buffer] : [];
   (self as unknown as Worker).postMessage(reply, transfer);
 };

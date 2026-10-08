@@ -5,7 +5,8 @@
 //! extension sends a PDF as `begin`, base64 `chunk`s (each acknowledged, so the browser never
 //! queues a whole file) and `end`. The bridge writes the file and then either opens it in
 //! micropdf, handing it to the running app over the app's pipe or starting the app, or, for a
-//! local PDF the extension edited, puts it in place of that file.
+//! local PDF the extension edited, puts it in place of that file. `open` opens a local PDF in
+//! micropdf as it is.
 //!
 //! `micropdf-bridge --register` tells the browsers where the bridge is; `--unregister` undoes it.
 
@@ -142,21 +143,24 @@ fn unused(dir: &Path, name: &str) -> PathBuf {
         .expect("some name is free")
 }
 
+/// `path` if it names an existing .pdf file by its full path.
+fn local_pdf(path: &str) -> io::Result<PathBuf> {
+    let path = PathBuf::from(path);
+    let pdf = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    if !path.is_absolute() || !pdf || !path.is_file() {
+        return Err(invalid(format!(
+            "{} is not a PDF file on this computer",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
 fn begin(message: &Value, inbox: &Path) -> io::Result<Transfer> {
     let (target, in_place) = match message["target"].as_str() {
-        Some(target) => {
-            let target = PathBuf::from(target);
-            let pdf = target
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
-            if !target.is_absolute() || !pdf || !target.is_file() {
-                return Err(invalid(format!(
-                    "{} is not a PDF file on this computer",
-                    target.display()
-                )));
-            }
-            (target, true)
-        }
+        Some(target) => (local_pdf(target)?, true),
         None => {
             std::fs::create_dir_all(inbox)?;
             let name = file_name(message["name"].as_str().unwrap_or_default());
@@ -224,6 +228,12 @@ fn serve(
     while let Some(message) = read_message(input)? {
         let reply = match message["type"].as_str().unwrap_or_default() {
             "hello" => json!({"type": "hello", "version": env!("CARGO_PKG_VERSION")}),
+            "open" => match local_pdf(message["path"].as_str().unwrap_or_default())
+                .and_then(|path| open(&path).map(|()| path))
+            {
+                Ok(path) => json!({"type": "done", "path": path}),
+                Err(e) => error(e),
+            },
             "begin" => {
                 if let Some(old) = transfer.take() {
                     old.abandon();
@@ -519,6 +529,23 @@ mod tests {
         assert_eq!(replies[2]["type"], "done", "{replies:?}");
         assert!(opened.is_empty());
         assert_eq!(std::fs::read(&target).unwrap(), b"%PDF-1.4 new");
+    }
+
+    #[test]
+    fn a_local_pdf_opens_as_it_is() {
+        let dir = Scratch::new("local");
+        let pdf = dir.0.join("Local.PDF");
+        std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let (replies, opened) = run(
+            &[
+                json!({"type": "open", "path": pdf}),
+                json!({"type": "open", "path": dir.0.join("gone.pdf")}),
+            ],
+            &dir.0,
+        );
+        assert_eq!(replies[0], json!({"type": "done", "path": pdf}));
+        assert_eq!(replies[1]["type"], "error");
+        assert_eq!(opened, [pdf]);
     }
 
     #[test]

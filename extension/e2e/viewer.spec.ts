@@ -184,3 +184,10 @@ test("presents one page at a time", async ({ page }) => {
   await expect(page.locator(".page")).toHaveCount(3);
   await expect(pageNumber(page)).toHaveValue("3");
 });
+
+test("prints the PDF itself, not the viewer page", async ({ page }) => {
+  await open(page, "hello.pdf");
+  await drawn(page);
+  await page.keyboard.press("Control+p");
+  await expect(page.locator("iframe.print")).toHaveAttribute("src", /^blob:/);
+});

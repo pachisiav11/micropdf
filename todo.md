@@ -11,7 +11,4 @@
 - 2026-10-07 00:18: M9 — library + batch (v0.9)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
-- 2026-10-08 21:19: M3.5 — extension hand-off (button, toolbar action, link context menu), save page as PDF (optional debugger permission), options page, file:// handling
 - 2026-10-08 21:19: M3.6 — Playwright suite with the unpacked extension (open web PDF, annotate, save, hand-off with a mocked bridge). The viewer suite (e2e/viewer.spec.ts) runs in the installed Chrome; loading the unpacked extension needs Playwright's Chromium (branded Chrome ignores --load-extension since 137), a ~170 MB download: ask the user first
-- 2026-10-09 01:41: M3.5 — extension print: Ctrl+P prints the PDF (a hidden frame with the bytes in the browser's own viewer), not the viewer page
-- 2026-10-09 02:04: M3.5 — extension save in place through the bridge (the viewer saves with the File System Access API or a download now)

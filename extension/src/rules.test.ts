@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileName, pdfRule, pdfSource, startPage } from "./rules";
+import { fileName, localPath, looksLikePdf, pdfRule, pdfSource, startPage } from "./rules";
 
 const VIEWER = "chrome-extension://phhaejfhblmccnkhnhjflbhckkanlnki/viewer.html";
 
@@ -20,11 +20,26 @@ describe("pdfRule", () => {
 });
 
 describe("pdfSource", () => {
-  it("reads only web URLs", () => {
+  it("reads only web and file URLs", () => {
     expect(pdfSource(`${VIEWER}#https://a.test/x.pdf`)).toBe("https://a.test/x.pdf");
+    expect(pdfSource(`${VIEWER}#file:///C:/x.pdf`)).toBe("file:///C:/x.pdf");
     expect(pdfSource(`${VIEWER}#javascript:alert(1)`)).toBeNull();
     expect(pdfSource(VIEWER)).toBeNull();
   });
+});
+
+describe("localPath", () => {
+  it("turns file URLs into Windows paths", () => {
+    expect(localPath("file:///C:/My%20Docs/a.pdf")).toBe(String.raw`C:\My Docs\a.pdf`);
+    expect(localPath("file://server/share/a.pdf")).toBe(String.raw`\\server\share\a.pdf`);
+    expect(localPath("https://a.test/a.pdf")).toBeNull();
+  });
+});
+
+it("tells PDF paths by their ending", () => {
+  expect(looksLikePdf("https://a.test/x.PDF?dl=1")).toBe(true);
+  expect(looksLikePdf("https://a.test/x.html")).toBe(false);
+  expect(looksLikePdf("nonsense")).toBe(false);
 });
 
 describe("fileName", () => {
