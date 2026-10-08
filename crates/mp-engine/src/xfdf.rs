@@ -145,7 +145,12 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
             {
                 attrs.push(("color", c));
             }
-            for (key, attr) in [("T", "title"), ("NM", "name"), ("M", "date")] {
+            for (key, attr) in [
+                ("T", "title"),
+                ("NM", "name"),
+                ("M", "date"),
+                ("Subj", "subject"),
+            ] {
                 if let Some(v) = string(&obj, key)? {
                     attrs.push((attr, v));
                 }
@@ -196,8 +201,37 @@ pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
             {
                 attrs.push(("head", head));
             }
+            if subtype == "Line"
+                && let Some(le) = get(&obj, "LE")?
+                && le.is_array()?
+            {
+                for (i, attr) in [(0, "head"), (1, "tail")] {
+                    if let Some(n) = le.get_array(i)?
+                        && n.is_name()?
+                    {
+                        attrs.push((attr, String::from_utf8_lossy(&n.as_name()?).into_owned()));
+                    }
+                }
+            }
             if let Some(w) = border_width(&obj)? {
                 attrs.push(("width", num(w)));
+            }
+            if let Some(be) = get(&obj, "BE")?
+                && name(&be, "S")?.as_deref() == Some("C")
+            {
+                attrs.push(("style", "cloudy".into()));
+                if let Some(i) = get(&be, "I")?
+                    && i.is_number()?
+                {
+                    attrs.push(("intensity", num(i.as_float()?)));
+                }
+            } else if let Some(bs) = get(&obj, "BS")?
+                && name(&bs, "S")?.as_deref() == Some("D")
+            {
+                attrs.push(("style", "dash".into()));
+                if let Some(d) = get(&bs, "D")? {
+                    attrs.push(("dashes", join(&numbers(&d)?, ",")));
+                }
             }
             if let Some(ic) = get(&obj, "IC")?
                 && let Some(ic) = hex(&numbers(&ic)?)
@@ -444,6 +478,19 @@ fn read_appearance(pdf: &mut PdfDocument, text: &str) -> Result<Option<PdfObject
     })
 }
 
+/// A name for PDF syntax: letters and digits pass, anything else becomes #xx.
+fn pdf_name(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                (b as char).to_string()
+            } else {
+                format!("#{b:02X}")
+            }
+        })
+        .collect()
+}
+
 fn parse_numbers(text: &str) -> Option<Vec<f32>> {
     text.split([',', ';', ' '])
         .filter(|s| !s.is_empty())
@@ -544,8 +591,22 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
             {
                 obj.dict_put("LE", PdfObject::new_name(head)?)?;
             }
+            if subtype == PdfAnnotationType::Line
+                && (node.has_attribute("head") || node.has_attribute("tail"))
+            {
+                let end = |attr| pdf_name(node.attribute(attr).unwrap_or("None"));
+                obj.dict_put(
+                    "LE",
+                    pdf.new_object_from_str(&format!("[/{} /{}]", end("head"), end("tail")))?,
+                )?;
+            }
             obj.dict_put("Rect", array(&pdf, &[x0, y0, x1, y1])?)?;
-            for (attr, key) in [("title", "T"), ("name", "NM"), ("date", "M")] {
+            for (attr, key) in [
+                ("title", "T"),
+                ("name", "NM"),
+                ("date", "M"),
+                ("subject", "Subj"),
+            ] {
                 if let Some(v) = node.attribute(attr) {
                     obj.dict_put(key, PdfObject::new_string(v)?)?;
                 }
@@ -571,10 +632,30 @@ pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
             if let Some(icon) = node.attribute("icon") {
                 obj.dict_put("Name", PdfObject::new_name(icon)?)?;
             }
-            if let Some(w) = node.attribute("width").and_then(|w| w.parse::<f32>().ok()) {
+            let width = node.attribute("width").and_then(|w| w.parse::<f32>().ok());
+            let style = node.attribute("style");
+            let mut bs = String::new();
+            if let Some(w) = width {
+                bs += &format!("/W {}", num(w));
+            }
+            if style == Some("dash") {
+                let dashes = node
+                    .attribute("dashes")
+                    .and_then(parse_numbers)
+                    .unwrap_or_else(|| vec![3.0]);
+                bs += &format!(" /S /D /D [{}]", join(&dashes, " "));
+            }
+            if !bs.is_empty() {
+                obj.dict_put("BS", pdf.new_object_from_str(&format!("<<{bs}>>"))?)?;
+            }
+            if style == Some("cloudy") {
+                let intensity = node
+                    .attribute("intensity")
+                    .and_then(|i| i.parse::<f32>().ok())
+                    .unwrap_or(1.0);
                 obj.dict_put(
-                    "BS",
-                    pdf.new_object_from_str(&format!("<</W {}>>", num(w)))?,
+                    "BE",
+                    pdf.new_object_from_str(&format!("<</S /C /I {}>>", num(intensity)))?,
                 )?;
             }
             if let Some(q) = node.attribute("coords").and_then(parse_numbers) {

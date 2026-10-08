@@ -1,4 +1,4 @@
-import { ScrollView, LineEdit, ListView } from "std-widgets.slint";
+import { ScrollView, LineEdit, ListView, CheckBox } from "std-widgets.slint";
 import { Theme } from "tokens.slint";
 
 export { Theme }
@@ -72,7 +72,8 @@ export struct Swatch {
     color: color,
 }
 
-export struct StampItem {
+// A PDF name and what to call it: a stamp, a line end.
+export struct Named {
     name: string,
     label: string,
 }
@@ -407,11 +408,15 @@ export component MainWindow inherits Window {
     public function focus-dialog() {
         dialog-edit.focus();
     }
+    public function focus-dialog-author() {
+        dialog-author-edit.focus();
+    }
     public function focus-sign() {
         sign-focus.focus();
     }
 
-    in property <[StampItem]> stamps;
+    in property <[Named]> stamps;
+    in property <[Named]> line-ends;
 
     // The style bar: the picked comment's look, or the colour of the active comment tool.
     in property <[Swatch]> swatches;
@@ -428,6 +433,28 @@ export component MainWindow inherits Window {
     callback style-fill-toggled();
     callback style-width-picked(float);
     callback style-opacity-picked(int);
+    /// The picked comment's border: 0 solid, 1 dashed, 2 cloudy; -1 when it has none.
+    in property <int> style-border: -1;
+    /// Whether the picked comment can be cloudy: rectangles and ellipses.
+    in property <bool> style-cloudy;
+    /// The picked line's start and end, as PDF names; empty for other kinds.
+    in property <string> style-start;
+    in property <string> style-end;
+    /// The picked text box's text size in points; 0 when it has none.
+    in property <float> style-font-size;
+    /// Whether the style bar is for a picked comment, not a tool, so it has properties.
+    in property <bool> style-picked;
+    callback style-border-picked(int);
+    callback style-end-picked(bool, string);
+    callback style-font-size-picked(float);
+    callback style-properties();
+    property <bool> ends-start;
+
+    // The properties dialog.
+    in-out property <string> dialog-author;
+    in-out property <string> dialog-subject;
+    in-out property <bool> dialog-locked;
+    in-out property <bool> dialog-printed;
 
     // The form field being filled in, in document space.
     in property <bool> field-editing;
@@ -1558,6 +1585,99 @@ export component MainWindow inherits Window {
                                     opacity-menu.show();
                                 }
                             }
+                            if root.style-border >= 0: ToolButton {
+                                label: root.style-border == 1 ? "Dashed" : root.style-border == 2 ? "Cloudy" : "Solid";
+                                tip: "Border";
+                                clicked => {
+                                    border-menu.show();
+                                }
+                            }
+                            if root.style-start != "": ToolButton {
+                                label: "Start";
+                                tip: "Line start";
+                                clicked => {
+                                    root.ends-start = true;
+                                    ends-menu.show();
+                                }
+                            }
+                            if root.style-end != "": ToolButton {
+                                label: "End";
+                                tip: "Line end";
+                                clicked => {
+                                    root.ends-start = false;
+                                    ends-menu.show();
+                                }
+                            }
+                            if root.style-font-size > 0: ToolButton {
+                                label: "Aa " + root.style-font-size;
+                                tip: "Text size";
+                                clicked => {
+                                    size-menu.show();
+                                }
+                            }
+                            if root.style-picked: ToolButton {
+                                icon: "\u{E946}";
+                                tip: "Properties";
+                                clicked => {
+                                    root.style-properties();
+                                }
+                            }
+                        }
+                        border-menu := PopupWindow {
+                            x: parent.width - 120px;
+                            y: root.style-cloudy ? -102px : -72px;
+                            width: 120px;
+                            Menu {
+                                MenuEntry {
+                                    text: "Solid";
+                                    checked: root.style-border == 0;
+                                    clicked => {
+                                        root.style-border-picked(0);
+                                    }
+                                }
+                                MenuEntry {
+                                    text: "Dashed";
+                                    checked: root.style-border == 1;
+                                    clicked => {
+                                        root.style-border-picked(1);
+                                    }
+                                }
+                                if root.style-cloudy: MenuEntry {
+                                    text: "Cloudy";
+                                    checked: root.style-border == 2;
+                                    clicked => {
+                                        root.style-border-picked(2);
+                                    }
+                                }
+                            }
+                        }
+                        ends-menu := PopupWindow {
+                            x: parent.width - 150px;
+                            y: -(root.line-ends.length * 30px + 12px);
+                            width: 150px;
+                            Menu {
+                                for e in root.line-ends: MenuEntry {
+                                    text: e.label;
+                                    checked: (root.ends-start ? root.style-start : root.style-end) == e.name;
+                                    clicked => {
+                                        root.style-end-picked(root.ends-start, e.name);
+                                    }
+                                }
+                            }
+                        }
+                        size-menu := PopupWindow {
+                            x: parent.width - 120px;
+                            y: -222px;
+                            width: 120px;
+                            Menu {
+                                for s in [8, 10, 12, 14, 18, 24, 36]: MenuEntry {
+                                    text: s + " pt";
+                                    checked: abs(root.style-font-size - s) < 0.1;
+                                    clicked => {
+                                        root.style-font-size-picked(s);
+                                    }
+                                }
+                            }
                         }
                         width-menu := PopupWindow {
                             x: parent.width - 120px;
@@ -2004,6 +2124,37 @@ export component MainWindow inherits Window {
                             text: root.dialog-text;
                             color: Theme.text-muted;
                             wrap: word-wrap;
+                        }
+                        Rectangle {
+                            visible: root.dialog-kind == "properties";
+                            height: self.visible ? props-layout.preferred-height : 0px;
+                            props-layout := VerticalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Author";
+                                    color: Theme.text-muted;
+                                }
+                                dialog-author-edit := LineEdit {
+                                    text <=> root.dialog-author;
+                                    accessible-label: "Author";
+                                }
+                                Text {
+                                    text: "Subject";
+                                    color: Theme.text-muted;
+                                }
+                                LineEdit {
+                                    text <=> root.dialog-subject;
+                                    accessible-label: "Subject";
+                                }
+                                CheckBox {
+                                    text: "Locked: it cannot be moved, resized, restyled or deleted";
+                                    checked <=> root.dialog-locked;
+                                }
+                                CheckBox {
+                                    text: "Printed with the page";
+                                    checked <=> root.dialog-printed;
+                                }
+                            }
                         }
                         dialog-edit := LineEdit {
                             visible: root.dialog-kind == "password" || root.dialog-kind == "input";

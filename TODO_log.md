@@ -48,3 +48,4 @@
 - Added: 2026-10-08 16:25 | Completed: 2026-10-08 20:31 | M2 — signatures: show the mark under the pointer before the click places it
 - Added: 2026-10-08 16:32 | Completed: 2026-10-08 20:39 | M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)
 - Added: 2026-10-08 20:39 | Completed: 2026-10-08 20:53 | M2 — comment summary: a new PDF with each commented page beside its numbered comments (Acrobat's Summarize Comments)
+- Added: 2026-10-08 20:39 | Completed: 2026-10-08 21:05 | M2 — comment properties: border (solid, dashed, cloudy), line ends, text size in the style bar; a Properties dialog for author, subject, locked and printed; a locked comment cannot be moved, resized, restyled or deleted

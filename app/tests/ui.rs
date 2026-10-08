@@ -188,6 +188,15 @@ fn last_color() -> Option<[f32; 3]> {
     .flatten()
 }
 
+/// The last comment on page 1 of the active tab, as the engine has it now.
+fn last_annot() -> Option<mp_engine::Annot> {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        app.engine().annotations(doc, 0).ok()?.pop()
+    })
+    .flatten()
+}
+
 /// The comment list's last row, as "kind: text".
 fn last_comment(w: &MainWindow) -> String {
     let rows = w.get_comments();
@@ -1101,6 +1110,52 @@ fn steps() -> Vec<Step> {
                     && w.get_style_fill() == 1
                     && w.get_style_width() == 3.0
                     && w.get_style_opacity() == 50
+            },
+        ),
+        step(
+            "the rectangle can have a cloudy border",
+            |w| w.invoke_style_border_picked(2),
+            |w| {
+                w.get_style_border() == 2
+                    && w.get_style_cloudy()
+                    && w.get_style_picked()
+                    && last_annot().is_some_and(|a| a.border == Some(mp_engine::Border::Cloudy))
+            },
+        ),
+        step(
+            "Properties shows its author",
+            |w| w.invoke_style_properties(),
+            |w| {
+                w.get_dialog_kind() == "properties"
+                    && !w.get_dialog_author().is_empty()
+                    && w.get_dialog_printed()
+            },
+        ),
+        step(
+            "saving locks it under a new author",
+            |w| {
+                w.set_dialog_author("Grace".into());
+                w.set_dialog_subject("Layout".into());
+                w.set_dialog_locked(true);
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                w.get_dialog_kind().is_empty()
+                    && w.get_undo_name() == "Change properties"
+                    && last_annot().is_some_and(|a| a.locked && a.author == "Grace")
+            },
+        ),
+        step(
+            "a locked comment is not deleted",
+            key(char::from(Key::Delete)),
+            |w| comments() == 8 && w.get_status_left().contains("locked"),
+        ),
+        step(
+            "nor restyled",
+            |w| w.invoke_style_opacity_picked(100),
+            |w| {
+                w.get_undo_name() == "Change properties"
+                    && last_annot().is_some_and(|a| (a.opacity - 0.5).abs() < 0.01)
             },
         ),
         step(

@@ -19,7 +19,8 @@ mod types;
 mod xfdf;
 
 pub use annots::{
-    Annot, AnnotKind, History, NewAnnot, REVIEW_STATES, Restyle, STAMPS, Style, readable_date,
+    Annot, AnnotKind, Border, History, LINE_ENDS, NewAnnot, Properties, REVIEW_STATES, Restyle,
+    STAMPS, Style, readable_date,
 };
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;

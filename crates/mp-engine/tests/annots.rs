@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mp_engine::{AnnotKind, Engine, NewAnnot, Rect, Restyle, Style};
+use mp_engine::{AnnotKind, Border, Engine, NewAnnot, Properties, Rect, Restyle, Style};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -948,4 +948,117 @@ fn a_summary_lists_comments_beside_their_pages() {
         page.text(0..page.chars.len())
             .contains("Page 1 (continued)")
     );
+}
+
+#[test]
+fn borders_line_ends_text_size_and_properties() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let add = |new| engine.add_annotation(doc, 0, new, style()).unwrap();
+    let square = add(NewAnnot::Shape {
+        kind: AnnotKind::Square,
+        rect: Rect {
+            x0: 20.0,
+            y0: 20.0,
+            x1: 120.0,
+            y1: 80.0,
+        },
+        width: 2.0,
+    });
+    let line = add(NewAnnot::Line {
+        from: (20.0, 150.0),
+        to: (200.0, 170.0),
+        width: 1.0,
+    });
+    let text = add(NewAnnot::FreeText {
+        rect: Rect {
+            x0: 150.0,
+            y0: 20.0,
+            x1: 280.0,
+            y1: 60.0,
+        },
+        text: "Sized".into(),
+    });
+    let find = |id| {
+        engine
+            .annotations(doc, 0)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap()
+    };
+    assert_eq!(square.border, Some(Border::Solid));
+    assert_eq!(line.line_ends, Some(("None".into(), "None".into())));
+    assert!(text.font_size.is_some());
+    assert_eq!(text.border, None);
+
+    let restyle = |id, change| engine.restyle(doc, 0, id, change).unwrap();
+    restyle(square.id, Restyle::Border(Border::Cloudy));
+    assert_eq!(find(square.id).border, Some(Border::Cloudy));
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Change border")
+    );
+    restyle(line.id, Restyle::Border(Border::Dashed));
+    assert_eq!(find(line.id).border, Some(Border::Dashed));
+    restyle(line.id, Restyle::LineEnds("None", "ClosedArrow"));
+    assert_eq!(
+        find(line.id).line_ends,
+        Some(("None".into(), "ClosedArrow".into()))
+    );
+    assert!(
+        engine
+            .restyle(doc, 0, line.id, Restyle::LineEnds("Wiggle", "None"))
+            .is_err()
+    );
+    restyle(text.id, Restyle::FontSize(18.0));
+    assert_eq!(find(text.id).font_size, Some(18.0));
+
+    assert!(find(square.id).printed);
+    let props = Properties {
+        author: "Grace".into(),
+        subject: "Layout".into(),
+        locked: true,
+        printed: false,
+    };
+    engine
+        .set_properties(doc, 0, square.id, props.clone())
+        .unwrap();
+    let s = find(square.id);
+    assert_eq!((s.author.as_str(), s.subject.as_str()), ("Grace", "Layout"));
+    assert!(s.locked && !s.printed);
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Change properties")
+    );
+
+    // XFDF carries all of it.
+    let (xml, _) = engine.export_comments(doc, "hello.pdf".into()).unwrap();
+    for attr in [
+        "style=\"cloudy\"",
+        "style=\"dash\"",
+        "tail=\"ClosedArrow\"",
+        "subject=\"Layout\"",
+        "locked",
+    ] {
+        assert!(xml.contains(attr), "{attr} missing from {xml}");
+    }
+    let fresh = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(fresh, xml).unwrap(), 3);
+    let copies = engine.annotations(fresh, 0).unwrap();
+    let copy = |kind| copies.iter().find(|a| a.kind == kind).unwrap();
+    assert_eq!(copy(AnnotKind::Square).border, Some(Border::Cloudy));
+    assert!(copy(AnnotKind::Square).locked && !copy(AnnotKind::Square).printed);
+    assert_eq!(copy(AnnotKind::Square).subject, "Layout");
+    assert_eq!(copy(AnnotKind::Line).border, Some(Border::Dashed));
+    assert_eq!(
+        copy(AnnotKind::Line).line_ends,
+        Some(("None".into(), "ClosedArrow".into()))
+    );
+    assert_eq!(copy(AnnotKind::FreeText).font_size, Some(18.0));
+
+    engine.undo(doc).unwrap();
+    let s = find(square.id);
+    assert_eq!(s.author, "Tester");
+    assert!(!s.locked && s.printed);
 }

@@ -4,8 +4,9 @@ use std::path::Path;
 
 use mupdf::color::AnnotationColor;
 use mupdf::pdf::{
-    AnnotationFlags, AnnotationQuadPoints, EmbeddedFileOptions, PdfAnnotation, PdfAnnotationType,
-    PdfDocument, PdfObject, PdfPage, PdfWriteOptions,
+    AnnotationBorderEffect, AnnotationBorderStyle, AnnotationFlags, AnnotationQuadPoints,
+    EmbeddedFileOptions, LineEndingStyle, PdfAnnotation, PdfAnnotationType, PdfDocument, PdfObject,
+    PdfPage, PdfWriteOptions,
 };
 use mupdf::{Document, Point, Quad};
 
@@ -98,6 +99,61 @@ pub struct Annot {
     pub state: Option<String>,
     /// When it last changed, as a PDF date ("D:20261008165500+05'30'"), or empty.
     pub modified: String,
+    /// How the outline is drawn, for rectangles, ellipses and lines.
+    pub border: Option<Border>,
+    /// A line's start and end, as PDF names from [`LINE_ENDS`].
+    pub line_ends: Option<(String, String)>,
+    /// A text box's or callout's text size in points.
+    pub font_size: Option<f32>,
+    pub subject: String,
+    /// Readers keep a locked comment from being moved, resized, restyled or deleted.
+    pub locked: bool,
+    /// Whether it appears when the page is printed.
+    pub printed: bool,
+}
+
+/// How a rectangle, ellipse or line outline is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Border {
+    Solid,
+    Dashed,
+    /// Scalloped like a cloud; rectangles and ellipses only.
+    Cloudy,
+}
+
+/// The line ends readers draw, as PDF names, and what to call them.
+pub const LINE_ENDS: [(&str, &str); 8] = [
+    ("None", "None"),
+    ("OpenArrow", "Open arrow"),
+    ("ClosedArrow", "Closed arrow"),
+    ("Circle", "Circle"),
+    ("Square", "Square"),
+    ("Diamond", "Diamond"),
+    ("Butt", "Bar"),
+    ("Slash", "Slash"),
+];
+
+fn line_end(name: &str) -> Option<LineEndingStyle> {
+    Some(match name {
+        "None" => LineEndingStyle::None,
+        "OpenArrow" => LineEndingStyle::OpenArrow,
+        "ClosedArrow" => LineEndingStyle::ClosedArrow,
+        "Circle" => LineEndingStyle::Circle,
+        "Square" => LineEndingStyle::Square,
+        "Diamond" => LineEndingStyle::Diamond,
+        "Butt" => LineEndingStyle::Butt,
+        "Slash" => LineEndingStyle::Slash,
+        _ => return None,
+    })
+}
+
+/// Who wrote a comment and what it is about, whether it is locked and whether it prints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Properties {
+    pub author: String,
+    pub subject: String,
+    pub locked: bool,
+    pub printed: bool,
 }
 
 /// The review states a comment can be given, as PDF names.
@@ -249,6 +305,53 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
     let state = name(&obj, "State")?;
     let shape = matches!(kind, AnnotKind::Square | AnnotKind::Circle);
     let lined = shape || matches!(kind, AnnotKind::Line | AnnotKind::Ink);
+    let border = if shape || kind == AnnotKind::Line {
+        let cloudy = obj
+            .get_dict("BE")?
+            .map(|be| name(&be, "S"))
+            .transpose()?
+            .flatten()
+            .as_deref()
+            == Some("C");
+        let dashed = obj
+            .get_dict("BS")?
+            .map(|bs| name(&bs, "S"))
+            .transpose()?
+            .flatten()
+            .as_deref()
+            == Some("D");
+        Some(if cloudy && shape {
+            Border::Cloudy
+        } else if dashed {
+            Border::Dashed
+        } else {
+            Border::Solid
+        })
+    } else {
+        None
+    };
+    let line_ends = if kind == AnnotKind::Line {
+        let mut ends = (String::from("None"), String::from("None"));
+        if let Some(le) = obj.get_dict("LE")?
+            && le.is_array()?
+        {
+            let at = |i| -> Result<String, Error> {
+                Ok(match le.get_array(i)? {
+                    Some(n) if n.is_name()? => String::from_utf8_lossy(&n.as_name()?).into_owned(),
+                    _ => "None".into(),
+                })
+            };
+            ends = (at(0)?, at(1)?);
+        }
+        Some(ends)
+    } else {
+        None
+    };
+    let font_size = if matches!(kind, AnnotKind::FreeText | AnnotKind::Callout) {
+        annot.default_appearance()?.map(|da| da.size)
+    } else {
+        None
+    };
     Ok(Some(Annot {
         id: annot.xref()?,
         kind,
@@ -270,6 +373,12 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
         reply_to: reply_to(&obj)?,
         state,
         modified: string(&obj, "M")?.unwrap_or_default(),
+        border,
+        line_ends,
+        font_size,
+        subject: string(&obj, "Subj")?.unwrap_or_default(),
+        locked: annot.flags()?.contains(AnnotationFlags::IS_LOCKED),
+        printed: annot.flags()?.contains(AnnotationFlags::IS_PRINT),
     }))
 }
 
@@ -658,6 +767,11 @@ pub enum Restyle {
     Opacity(f32),
     /// Line width in points, for shapes, lines and ink.
     Width(f32),
+    Border(Border),
+    /// A line's start and end, as PDF names from [`LINE_ENDS`].
+    LineEnds(&'static str, &'static str),
+    /// A text box's or callout's text size in points.
+    FontSize(f32),
 }
 
 /// Changes one property of a comment's look, as one undoable step.
@@ -667,6 +781,9 @@ pub fn restyle(doc: &Document, page: usize, id: i32, change: Restyle) -> Result<
         Restyle::Fill(_) => "Change fill",
         Restyle::Opacity(_) => "Change opacity",
         Restyle::Width(_) => "Change line width",
+        Restyle::Border(_) => "Change border",
+        Restyle::LineEnds(..) => "Change line ends",
+        Restyle::FontSize(_) => "Change text size",
     };
     operation(doc, name, || {
         let mut page = pdf_page(doc, page)?;
@@ -686,7 +803,76 @@ pub fn restyle(doc: &Document, page: usize, id: i32, change: Restyle) -> Result<
             }
             Restyle::Opacity(o) => annot.set_opacity(o.clamp(0.0, 1.0))?,
             Restyle::Width(w) => annot.set_border_width(w.max(0.0))?,
+            Restyle::Border(border) => {
+                let (style, effect) = match border {
+                    Border::Solid => (AnnotationBorderStyle::Solid, AnnotationBorderEffect::None),
+                    Border::Dashed => (AnnotationBorderStyle::Dashed, AnnotationBorderEffect::None),
+                    Border::Cloudy => {
+                        (AnnotationBorderStyle::Solid, AnnotationBorderEffect::Cloudy)
+                    }
+                };
+                // Only rectangles and ellipses (of the kinds with a border) take an effect.
+                let shape = matches!(
+                    annot.r#type()?,
+                    PdfAnnotationType::Square | PdfAnnotationType::Circle
+                );
+                if border == Border::Cloudy && !shape {
+                    return Err(Error::Invalid("only rectangles and ellipses can be cloudy"));
+                }
+                annot.set_border_style(style)?;
+                if border == Border::Dashed {
+                    annot.set_border_dash_pattern(&[4.0, 3.0])?;
+                }
+                if shape {
+                    annot.set_border_effect(effect)?;
+                }
+                if border == Border::Cloudy {
+                    annot.set_border_effect_intensity(1.0)?;
+                }
+            }
+            Restyle::LineEnds(start, end) => {
+                let (Some(start), Some(end)) = (line_end(start), line_end(end)) else {
+                    return Err(Error::Invalid("not a line end"));
+                };
+                annot.set_line_ending_styles(start, end)?;
+            }
+            Restyle::FontSize(size) => {
+                let (font, color) = match annot.default_appearance()? {
+                    Some(da) => (da.font_name, da.color),
+                    None => ("Helv".to_owned(), None),
+                };
+                annot.set_default_appearance(&font, size.clamp(4.0, 144.0), color)?;
+            }
         }
+        page.update()?;
+        Ok(())
+    })
+}
+
+/// Sets comment `id`'s author, subject, lock and print flag, as one undoable step.
+pub fn set_properties(
+    doc: &Document,
+    page: usize,
+    id: i32,
+    props: &Properties,
+) -> Result<(), Error> {
+    operation(doc, "Change properties", || {
+        let mut page = pdf_page(doc, page)?;
+        let mut annot = page
+            .annotations()
+            .find(|a| a.xref().ok() == Some(id))
+            .ok_or(Error::NotFound)?;
+        annot.set_author(&props.author)?;
+        let mut obj = annot.object();
+        if props.subject.is_empty() {
+            obj.dict_delete("Subj")?;
+        } else {
+            obj.dict_put("Subj", PdfObject::new_string(&props.subject)?)?;
+        }
+        let mut flags = annot.flags()?;
+        flags.set(AnnotationFlags::IS_LOCKED, props.locked);
+        flags.set(AnnotationFlags::IS_PRINT, props.printed);
+        annot.set_flags(flags)?;
         page.update()?;
         Ok(())
     })

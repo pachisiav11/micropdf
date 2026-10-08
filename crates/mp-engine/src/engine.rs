@@ -8,7 +8,7 @@ use mupdf::link::LinkDestination;
 use mupdf::pdf::PdfDocument;
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
-use crate::annots::{self, Annot, History, NewAnnot, Restyle, Style};
+use crate::annots::{self, Annot, History, NewAnnot, Properties, Restyle, Style};
 use crate::attachments;
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
@@ -146,6 +146,13 @@ enum Command {
         page: usize,
         id: i32,
         change: Restyle,
+        reply: Reply<()>,
+    },
+    SetProperties {
+        doc: DocId,
+        page: usize,
+        id: i32,
+        props: Properties,
         reply: Reply<()>,
     },
     Reply {
@@ -459,13 +466,30 @@ impl Engine {
         })
     }
 
-    /// Changes the colour, fill, opacity or line width of comment `id`.
+    /// Changes one part of comment `id`'s look, such as its colour or border.
     pub fn restyle(&self, doc: DocId, page: usize, id: i32, change: Restyle) -> Result<(), Error> {
         self.call(|reply| Command::Restyle {
             doc,
             page,
             id,
             change,
+            reply,
+        })
+    }
+
+    /// Sets comment `id`'s author and subject, whether it is locked and whether it prints.
+    pub fn set_properties(
+        &self,
+        doc: DocId,
+        page: usize,
+        id: i32,
+        props: Properties,
+    ) -> Result<(), Error> {
+        self.call(|reply| Command::SetProperties {
+            doc,
+            page,
+            id,
+            props,
             reply,
         })
     }
@@ -911,6 +935,17 @@ fn run(rx: mpsc::Receiver<Command>) {
                 reply,
             } => {
                 let result = with_doc(&docs, doc, |d| annots::restyle(d, page, id, change));
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::SetProperties {
+                doc,
+                page,
+                id,
+                props,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| annots::set_properties(d, page, id, &props));
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
             }

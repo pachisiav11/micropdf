@@ -16,4 +16,4 @@
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
 - 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
-- 2026-10-08 20:39: M2 — comment properties: author, subject, line ends, dashed borders, text box font size; locked and print flags
+- 2026-10-08 21:05: M2 — exit check: every comment kind and a filled form, saved full, incremental, via XFDF/FDF and flattened; pypdf strict parse and PDFium (Chrome's engine) render

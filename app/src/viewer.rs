@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use mp_engine::{
-    Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
-    Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, REVIEW_STATES, Rect,
-    RenderPool, Restyle, STAMPS, Style, Tile, Xfa, readable_date,
+    Annot, AnnotKind, Attachment, Border, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind,
+    History, LINE_ENDS, Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, Properties,
+    REVIEW_STATES, Rect, RenderPool, Restyle, STAMPS, Style, Tile, Xfa, readable_date,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer, SharedString,
@@ -25,8 +25,8 @@ use crate::palette;
 use crate::recolor::ReadingMode;
 use crate::settings::{SavedMark, Settings};
 use crate::{
-    AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem,
-    PaletteItem, StampItem, Swatch, TabItem, Theme, ThumbItem, TileItem,
+    AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, Named, OutlineRow,
+    PageItem, PaletteItem, Swatch, TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -232,6 +232,12 @@ enum Ask {
         id: i32,
         value: String,
     },
+    /// New author, subject or lock for a comment; `props` are the current ones.
+    Properties {
+        page: usize,
+        id: i32,
+        props: Properties,
+    },
     Quit,
     Message,
 }
@@ -384,14 +390,18 @@ impl App {
         window.set_attachments(ModelRc::from(models.attachments.clone()));
         window.set_layers(ModelRc::from(models.layers.clone()));
         window.set_comments(ModelRc::from(models.comments.clone()));
-        let stamps: Vec<StampItem> = STAMPS
-            .iter()
-            .map(|(name, label)| StampItem {
-                name: (*name).into(),
-                label: (*label).into(),
-            })
-            .collect();
-        window.set_stamps(ModelRc::new(VecModel::from(stamps)));
+        let named = |list: &[(&str, &str)]| {
+            let items: Vec<Named> = list
+                .iter()
+                .map(|(name, label)| Named {
+                    name: (*name).into(),
+                    label: (*label).into(),
+                })
+                .collect();
+            ModelRc::new(VecModel::from(items))
+        };
+        window.set_stamps(named(&STAMPS));
+        window.set_line_ends(named(&LINE_ENDS));
         let swatches: Vec<Swatch> = SWATCHES
             .iter()
             .map(|(name, [r, g, b])| Swatch {
@@ -1045,9 +1055,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     _ => String::new(),
                 };
                 window.set_dialog_input(input.into());
+                if let Ask::Properties { props, .. } = &d.ask {
+                    window.set_dialog_author(props.author.clone().into());
+                    window.set_dialog_subject(props.subject.clone().into());
+                    window.set_dialog_locked(props.locked);
+                    window.set_dialog_printed(props.printed);
+                }
                 window.set_dialog_kind(d.kind.into());
                 if d.kind == "password" || d.kind == "input" {
                     window.invoke_focus_dialog();
+                } else if d.kind == "properties" {
+                    window.invoke_focus_dialog_author();
                 } else {
                     window.invoke_focus_view();
                 }
@@ -1083,6 +1101,20 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
             },
             Ask::OpenUri(uri) => shell_open(&uri),
+            Ask::Properties { page, id, .. } => {
+                let props = self.window().map(|w| Properties {
+                    author: w.get_dialog_author().trim().to_owned(),
+                    subject: w.get_dialog_subject().trim().to_owned(),
+                    locked: w.get_dialog_locked(),
+                    printed: w.get_dialog_printed(),
+                });
+                if let (Some(props), Some(doc)) = (props, self.tab().map(|t| t.info.id)) {
+                    match self.engine.set_properties(doc, page, id, props) {
+                        Ok(()) => self.edited(Some(page)),
+                        Err(e) => self.status(format!("Could not change the comment: {e}")),
+                    }
+                }
+            }
             Ask::Restore(files) => self.open_paths(files),
             Ask::Discard(path) => {
                 if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
@@ -2402,7 +2434,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             };
             if let Some(f) = tab.layout.to_view(page, &rect) {
                 marks.push(mark_item(f, 3));
-                if resizable(a.kind) {
+                if resizable(a) {
                     for (x, y) in corners(f) {
                         marks.push(MarkItem {
                             x: x - HANDLE,
@@ -4606,7 +4638,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
     fn movable_at(&mut self, x: f32, y: f32) -> Option<usize> {
         let index = self.comment_at(x, y)?;
         let (_, a) = self.tab()?.comments.get(index)?;
-        (movable(a.kind) && self.field_at(x, y).is_none()).then_some(index)
+        (movable(a) && self.field_at(x, y).is_none()).then_some(index)
     }
 
     fn picked_index(&self) -> Option<usize> {
@@ -4622,7 +4654,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
     fn handle_at(&self, x: f32, y: f32) -> Option<usize> {
         let tab = self.tab()?;
         let (page, a) = tab.comments.get(self.picked_index()?)?;
-        if !resizable(a.kind) {
+        if !resizable(a) {
             return None;
         }
         let f = tab.layout.to_view(*page, &a.rect)?;
@@ -4663,7 +4695,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         else {
             return false;
         };
-        if !movable(a.kind) || a.reply_to.is_some() {
+        if !movable(&a) || a.reply_to.is_some() {
             return false;
         }
         // The view may be turned; find the page-space direction through the layout.
@@ -4713,9 +4745,11 @@ Open it in Adobe Acrobat Reader to fill it in.",
         };
         tab.picked = Some((*page, a.id));
         tab.selection = None;
-        let (kind, can_move) = (a.kind.name(), movable(a.kind));
+        let (kind, can_move, locked) = (a.kind.name(), movable(a), a.locked);
         self.refresh_marks();
-        let message = if can_move {
+        let message = if locked {
+            format!("{kind} selected. It is locked; unlock it in its properties to change it.")
+        } else if can_move {
             format!("{kind} selected. Drag to move it; Delete removes it; double-click edits it.")
         } else {
             format!("{kind} selected. Delete removes it; double-click edits its text.")
@@ -4723,7 +4757,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.status(message);
     }
 
-    /// Changes the picked comment's colour, fill, line width or opacity.
+    /// Changes one part of the picked comment's look.
     fn restyle_picked(&mut self, change: Restyle) {
         let Some((doc, page, id)) = self
             .tab()
@@ -4732,6 +4766,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.status("Select a comment first".into());
             return;
         };
+        if self.picked_locked() {
+            return;
+        }
         match self.engine.restyle(doc, page, id, change) {
             Ok(()) => self.edited(Some(page)),
             Err(e) => self.status(format!("Could not change the comment: {e}")),
@@ -4763,6 +4800,24 @@ Open it in Adobe Acrobat Reader to fill it in.",
             })
             .map_or(-1, |i| i as i32)
         };
+        let picked = tool_key(self.tool)
+            .is_none()
+            .then(|| self.styled_comment())
+            .flatten();
+        let border = picked.and_then(|a| a.border).map_or(-1, |b| match b {
+            Border::Solid => 0,
+            Border::Dashed => 1,
+            Border::Cloudy => 2,
+        });
+        let (start, end) = picked.and_then(|a| a.line_ends.clone()).unwrap_or_default();
+        w.set_style_border(border);
+        w.set_style_cloudy(
+            picked.is_some_and(|a| matches!(a.kind, AnnotKind::Square | AnnotKind::Circle)),
+        );
+        w.set_style_start(start.into());
+        w.set_style_end(end.into());
+        w.set_style_font_size(picked.and_then(|a| a.font_size).unwrap_or(0.0));
+        w.set_style_picked(picked.is_some());
         let (visible, color, fill, width, opacity) = if let Some(key) = tool_key(self.tool) {
             (true, swatch(self.chosen_color(Some(key))), -1, 0.0, -1)
         } else if let Some(a) = self.styled_comment() {
@@ -4823,11 +4878,78 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.restyle_picked(Restyle::Opacity(percent as f32 / 100.0));
     }
 
+    /// 0 solid, 1 dashed, 2 cloudy.
+    pub fn style_border(&mut self, index: i32) {
+        let border = match index {
+            1 => Border::Dashed,
+            2 => Border::Cloudy,
+            _ => Border::Solid,
+        };
+        self.restyle_picked(Restyle::Border(border));
+    }
+
+    /// Sets the picked line's start (`start`) or end to the line end named `name`.
+    pub fn style_line_end(&mut self, start: bool, name: &str) {
+        let Some(&(name, _)) = LINE_ENDS.iter().find(|(n, _)| *n == name) else {
+            return;
+        };
+        let Some((old_start, old_end)) = self.styled_comment().and_then(|a| a.line_ends.clone())
+        else {
+            return;
+        };
+        let keep = |old: &str| {
+            LINE_ENDS
+                .iter()
+                .find(|(n, _)| *n == old)
+                .map_or("None", |e| e.0)
+        };
+        let ends = if start {
+            (name, keep(&old_end))
+        } else {
+            (keep(&old_start), name)
+        };
+        self.restyle_picked(Restyle::LineEnds(ends.0, ends.1));
+    }
+
+    pub fn style_font_size(&mut self, size: f32) {
+        self.restyle_picked(Restyle::FontSize(size));
+    }
+
+    /// Asks for the picked comment's author and subject, and whether it is locked and prints.
+    pub fn style_properties(&mut self) {
+        let Some((page, a)) = self
+            .picked_index()
+            .and_then(|i| self.tab()?.comments.get(i).cloned())
+        else {
+            return;
+        };
+        self.push_dialog(Dialog {
+            ask: Ask::Properties {
+                page,
+                id: a.id,
+                props: Properties {
+                    author: a.author.clone(),
+                    subject: a.subject.clone(),
+                    locked: a.locked,
+                    printed: a.printed,
+                },
+            },
+            kind: "properties",
+            title: format!("{} properties", a.kind.name()),
+            text: String::new(),
+            ok: "Save",
+            cancel: "Cancel",
+        });
+    }
+
     /// Deletes the picked comment. Returns false if none is picked.
     pub fn delete_picked(&mut self) -> bool {
         let Some(index) = self.picked_index() else {
             return false;
         };
+        if self.picked_locked() {
+            return true;
+        }
         if let Some(tab) = self.tab_mut() {
             tab.picked = None;
         }
@@ -4835,13 +4957,30 @@ Open it in Adobe Acrobat Reader to fill it in.",
         true
     }
 
+    /// Whether the picked comment is locked; if so, says how to unlock it.
+    fn picked_locked(&mut self) -> bool {
+        let locked = self
+            .picked_index()
+            .and_then(|i| self.tab()?.comments.get(i))
+            .is_some_and(|(_, a)| a.locked);
+        if locked {
+            self.status("The comment is locked. Unlock it in its properties first.".into());
+        }
+        locked
+    }
+
     pub fn comment_delete(&mut self, index: usize) {
-        let Some((doc, page, id)) = self
-            .tab()
-            .and_then(|t| t.comments.get(index).map(|(p, a)| (t.info.id, *p, a.id)))
-        else {
+        let Some((doc, page, id, locked)) = self.tab().and_then(|t| {
+            t.comments
+                .get(index)
+                .map(|(p, a)| (t.info.id, *p, a.id, a.locked))
+        }) else {
             return;
         };
+        if locked {
+            self.status("The comment is locked. Unlock it in its properties first.".into());
+            return;
+        }
         match self.engine.delete_annotation(doc, page, id) {
             Ok(()) => self.edited(Some(page)),
             Err(e) => self.status(format!("Could not delete the comment: {e}")),
@@ -5065,12 +5204,16 @@ const HANDLE: f32 = 4.0;
 /// The smallest side a resize leaves, in points.
 const MIN_SIDE: f32 = 6.0;
 
-/// Text markup follows its text; the other kinds can move.
-fn movable(kind: AnnotKind) -> bool {
-    !matches!(
-        kind,
-        AnnotKind::Highlight | AnnotKind::Underline | AnnotKind::StrikeOut | AnnotKind::Squiggly
-    )
+/// Text markup follows its text and a locked comment stays put; the rest can move.
+fn movable(a: &Annot) -> bool {
+    !a.locked
+        && !matches!(
+            a.kind,
+            AnnotKind::Highlight
+                | AnnotKind::Underline
+                | AnnotKind::StrikeOut
+                | AnnotKind::Squiggly
+        )
 }
 
 /// Fields Tab stops at: those that take a value.
@@ -5083,8 +5226,8 @@ fn takes_input(f: &Field) -> bool {
 }
 
 /// Notes and attached files keep their icon size.
-fn resizable(kind: AnnotKind) -> bool {
-    movable(kind) && !matches!(kind, AnnotKind::Note | AnnotKind::File)
+fn resizable(a: &Annot) -> bool {
+    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::File)
 }
 
 /// A frame's corners: top left, then clockwise.

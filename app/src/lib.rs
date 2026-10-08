@@ -110,6 +110,18 @@ pub fn wire(window: &MainWindow) {
     window.on_style_opacity_picked(|o| {
         viewer::with(|app| app.style_opacity(o));
     });
+    window.on_style_border_picked(|b| {
+        viewer::with(|app| app.style_border(b));
+    });
+    window.on_style_end_picked(|start, name| {
+        viewer::with(|app| app.style_line_end(start, &name));
+    });
+    window.on_style_font_size_picked(|size| {
+        viewer::with(|app| app.style_font_size(size));
+    });
+    window.on_style_properties(|| {
+        viewer::with(|app| app.style_properties());
+    });
     window.on_field_commit(|step| {
         viewer::with(|app| app.field_commit(step));
     });
