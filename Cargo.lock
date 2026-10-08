@@ -2681,6 +2681,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp-bridge"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "mp-engine"
 version = "0.0.0"
 dependencies = [

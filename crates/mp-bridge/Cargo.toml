@@ -1,0 +1,18 @@
+[package]
+name = "mp-bridge"
+description = "Native messaging host that hands PDFs from the micropdf browser extension to the app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "micropdf-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Chunks arrive base64-encoded inside JSON; already in the tree through mp-engine.
+base64 = "0.23"
+serde_json = "1.0.151"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

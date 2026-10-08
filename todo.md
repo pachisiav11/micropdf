@@ -18,7 +18,6 @@
 - 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
 - 2026-10-08 21:19: M2 — exit check in Acrobat DC (user away): open target/m2-exit/*.pdf (cargo run -p mp-engine --example m2_exit); comments, replies, review state, lock, attachment, signature and form values show; Acrobat imports comments.xfdf and fields.fdf into a fresh form.pdf
 - 2026-10-08 21:19: M2 — qpdf --check of target/m2-exit/*.pdf: qpdf is not installed; ask the user before installing it (winget install qpdf.qpdf)
-- 2026-10-08 21:19: M3.1 — micropdf-bridge.exe: native messaging host (chunked transfer, hand-off to the app over its pipe, start the app if needed, save in place for file:// PDFs), --register/--unregister for Chrome, Edge and Brave
 - 2026-10-08 21:19: M3.2 — extension package: Vite + Svelte 5 + TS, MV3 manifest with a fixed key, DNR redirect of PDF responses, viewer page with mupdf.js in a worker, text layer
 - 2026-10-08 21:19: M3.3 — extension viewer: thumbnails, outline, search, zoom, page modes, Vim layer
 - 2026-10-08 21:19: M3.4 — extension annotate + save (File System Access or download; save in place through the bridge), form fill

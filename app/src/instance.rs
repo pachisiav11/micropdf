@@ -1,5 +1,6 @@
 //! Single instance: the first micropdf process listens on a per-user named pipe; later launches
-//! hand their file arguments to it and exit, so files open as tabs in one window.
+//! hand their file arguments to it and exit, so files open as tabs in one window. The browser
+//! extension's bridge (crates/mp-bridge) sends PDFs the same way.
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};

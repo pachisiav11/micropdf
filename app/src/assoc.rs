@@ -10,6 +10,7 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
     RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
 };
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 
 const PROG_ID: &str = "micropdf.pdf";
@@ -147,14 +148,33 @@ fn notify_shell() {
     };
 }
 
-/// Adds micropdf to "Open with" for PDF files and to Default apps, for the running exe.
+/// Runs the browser extension's bridge, when it ships beside the app, with `arg`.
+fn bridge(arg: &str) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let bridge = std::env::current_exe()?.with_file_name("micropdf-bridge.exe");
+    if !bridge.is_file() {
+        return Ok(());
+    }
+    let status = std::process::Command::new(bridge)
+        .arg(arg)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("the browser extension bridge failed"))
+    }
+}
+
+/// Adds micropdf to "Open with" for PDF files and to Default apps, for the running exe, and
+/// lets the browser extension reach it.
 pub fn register() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     for entry in entries(&exe.to_string_lossy()) {
         write(&entry)?;
     }
     notify_shell();
-    Ok(())
+    bridge("--register")
 }
 
 /// Removes everything [`register`] wrote.
@@ -177,7 +197,7 @@ pub fn unregister() -> io::Result<()> {
         unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
     }
     notify_shell();
-    Ok(())
+    bridge("--unregister")
 }
 
 /// Whether PDF files are registered to open with this exe.
