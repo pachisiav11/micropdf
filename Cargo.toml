@@ -23,8 +23,10 @@ mupdf = { version = "0.8", default-features = false, features = [
 ] }
 
 [patch.crates-io]
-# Adds Context::shrink_store; see third_party/README.md.
+# Adds Context::shrink_store and more; see third_party/README.md.
 mupdf = { path = "third_party/mupdf-rs" }
+# Fixes MuPDF's JavaScript getField; see third_party/README.md.
+mupdf-sys = { path = "third_party/mupdf-sys" }
 
 [profile.release]
 lto = "thin"

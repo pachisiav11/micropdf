@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use mp_engine::{
     Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
-    Layer, Link, LinkTarget, NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile,
+    Layer, Link, LinkTarget, NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile, Xfa,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
@@ -502,6 +502,7 @@ impl App {
                 frac: 0.0,
                 x_frac: 0.5,
             });
+        let xfa = self.engine.xfa(info.id).unwrap_or(Xfa::None);
         let generation = self.bump();
         let thumb_generation = self.bump();
         let tab = DocTab {
@@ -552,6 +553,22 @@ impl App {
         self.watch(&path);
         self.select(self.tabs.len() - 1);
         self.save_session();
+        match xfa {
+            Xfa::None => {}
+            Xfa::Static => self.status(
+                "This form also holds XFA data. Filling it in removes the XFA copy, so every                  reader shows your values."
+                    .into(),
+            ),
+            Xfa::Dynamic => self.message(
+                "This form needs Adobe Reader",
+                format!(
+                    "{} is a dynamic XFA form. Its fields exist only as Adobe XML form data,                      which micropdf cannot show, so the page holds the file's placeholder text                      instead of the form.
+
+Open it in Adobe Acrobat Reader to fill it in.",
+                    file_name(&path)
+                ),
+            ),
+        }
     }
 
     fn bump(&mut self) -> u64 {

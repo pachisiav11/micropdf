@@ -31,12 +31,63 @@ pub struct Field {
     pub options: Vec<String>,
 }
 
+/// Whether a form carries XFA, Adobe's XML form format, which micropdf does not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Xfa {
+    None,
+    /// XFA beside ordinary AcroForm fields, which micropdf fills.
+    Static,
+    /// XFA only: the pages hold a placeholder, and the real form exists only in the XFA.
+    Dynamic,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldEdit {
     /// New text for a text field, or the chosen option of a list or combo box.
     Value(String),
     /// Checks or unchecks a checkbox or radio button.
     Toggle,
+}
+
+pub fn xfa(doc: &Document) -> Result<Xfa, Error> {
+    let Ok(pdf) = PdfDocument::try_from(doc.clone()) else {
+        return Ok(Xfa::None);
+    };
+    let catalog = pdf.catalog()?;
+    let Some(form) = catalog.get_dict("AcroForm")? else {
+        return Ok(Xfa::None);
+    };
+    if form.get_dict("XFA")?.is_none() {
+        return Ok(Xfa::None);
+    }
+    let needs_rendering = match catalog.get_dict("NeedsRendering")? {
+        Some(v) => v.as_bool()?,
+        None => false,
+    };
+    let fields = match form.get_dict("Fields")? {
+        Some(f) => f.len()?,
+        None => 0,
+    };
+    Ok(if needs_rendering || fields == 0 {
+        Xfa::Dynamic
+    } else {
+        Xfa::Static
+    })
+}
+
+/// Prepares the document for a change to its fields: turns on form JavaScript, so calculate,
+/// format and validate actions run, and removes any XFA packet, which readers such as Acrobat
+/// would otherwise show instead of the new AcroForm values.
+fn prepare(pdf: &mut PdfDocument) -> Result<(), Error> {
+    if !pdf.is_js_supported()? {
+        pdf.enable_js()?;
+    }
+    if let Some(mut form) = pdf.catalog()?.get_dict("AcroForm")?
+        && form.get_dict("XFA")?.is_some()
+    {
+        form.dict_delete("XFA")?;
+    }
+    Ok(())
 }
 
 fn pdf_page(doc: &Document, page: usize) -> Result<PdfPage, Error> {
@@ -90,6 +141,7 @@ pub fn edit(doc: &Document, page: usize, id: i32, edit: &FieldEdit) -> Result<()
     };
     operation(doc, name, || {
         let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        prepare(&mut pdf)?;
         let mut page = pdf_page(doc, page)?;
         let mut widget = page.load_widget(id)?.ok_or(Error::NotFound)?;
         if widget.is_readonly()? {
@@ -100,7 +152,7 @@ pub fn edit(doc: &Document, page: usize, id: i32, edit: &FieldEdit) -> Result<()
             FieldEdit::Toggle => widget.toggle()?,
         };
         if !changed {
-            return Err(Error::Invalid("the field did not take the value"));
+            return Err(Error::Invalid("the form did not accept that value"));
         }
         page.update()?;
         Ok(())
@@ -111,6 +163,7 @@ pub fn edit(doc: &Document, page: usize, id: i32, edit: &FieldEdit) -> Result<()
 pub fn reset(doc: &Document) -> Result<(), Error> {
     operation(doc, "Reset form", || {
         let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        prepare(&mut pdf)?;
         for i in 0..doc.page_count()? {
             let mut page = pdf_page(doc, i as usize)?;
             for mut widget in page.widgets() {
@@ -188,6 +241,7 @@ pub fn import_xfdf(doc: &Document, xml: &str) -> Result<usize, Error> {
     let values: std::collections::HashMap<String, String> = parse_xfdf(xml)?.into_iter().collect();
     operation(doc, "Import form data", || {
         let mut pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        prepare(&mut pdf)?;
         let mut filled = std::collections::HashSet::new();
         for i in 0..doc.page_count()? {
             let mut page = pdf_page(doc, i as usize)?;

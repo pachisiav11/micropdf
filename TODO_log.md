@@ -31,3 +31,5 @@
 - Added: 2026-10-07 11:16 | Completed: 2026-10-07 11:18 | M2 — the unsaved marker clears when undo or redo returns to the saved state
 - Added: 2026-10-07 11:18 | Completed: 2026-10-07 11:20 | M2 — F5 on a tab with unsaved edits asks before it reloads
 - Added: 2026-10-07 11:20 | Completed: 2026-10-07 11:22 | M2 — hand cursor over comments and form fields; form widgets cached per page
+- Added: 2026-10-07 11:01 | Completed: 2026-10-08 15:41 | M2 — forms: JavaScript calculate, format and validate (MuPDF getField fixed in a vendored mupdf-sys)
+- Added: 2026-10-08 15:15 | Completed: 2026-10-08 15:41 | M2 — XFA forms: detect them; a notice for dynamic XFA; filling a static XFA form drops the XFA copy

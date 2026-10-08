@@ -8,6 +8,10 @@ attachment.pdf     one page; embeds notes.txt in the EmbeddedFiles name tree.
 layers.pdf         one page; two optional content groups, "Grid" on and "Notes" off.
 cjk.pdf            one page; Chinese, Japanese and Korean lines in fonts that are not embedded,
                    so they render only through installed system fonts.
+calc.pdf           AcroForm with JavaScript: total = a + b (calculate, two decimals format), and a
+                   rejects values over 100 (validate).
+xfa-static.pdf     AcroForm text field plus an XFA packet (a static XFA form).
+xfa-dynamic.pdf    dynamic XFA: NeedsRendering, no AcroForm fields, a placeholder page.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
@@ -160,6 +164,69 @@ def cjk() -> bytes:
     ])
 
 
+def js(code: bytes) -> bytes:
+    return b"<< /S /JavaScript /JS (" + code + b") >>"
+
+
+def text_field(name: bytes, rect: bytes, extra: bytes = b"") -> bytes:
+    return (b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (" + name + b") /V () /Rect [" + rect +
+            b"] /F 4 /P 3 0 R /DA (/Helv 12 Tf 0 g) /MK << /BC [0.5 0.5 0.5] >> " + extra + b">>")
+
+
+def calc() -> bytes:
+    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6-8 fields a, b, total
+    total_actions = (b"/AA << /C " + js(b'AFSimple_Calculate("SUM", new Array ("a", "b"));') +
+                     b" /F " + js(b'AFNumber_Format(2, 0, 0, 0, "", true);') + b" >> ")
+    a_actions = b"/AA << /V " + js(b"if (event.value > 100) event.rc = false;") + b" >> "
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R 8 0 R] /CO [8 0 R] "
+        b"/DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R 8 0 R] >>",
+        stream(b"BT /F1 14 Tf 72 700 Td (A:) Tj 0 -40 Td (B:) Tj 0 -40 Td (Total:) Tj ET"),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        text_field(b"a", b"150 690 300 712", a_actions),
+        text_field(b"b", b"150 650 300 672"),
+        text_field(b"total", b"150 610 300 632", total_actions),
+    ]
+    return serialize(objs)
+
+
+XFA_PACKET = (b'<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">'
+              b'<template xmlns="http://www.xfa.org/schema/xfa-template/2.8/"/></xdp:xdp>')
+
+
+def xfa_static() -> bytes:
+    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6 text field, 7 XFA packet
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /XFA 7 0 R "
+        b"/DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>",
+        stream(b"BT /F1 14 Tf 72 700 Td (Name:) Tj ET"),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        text_field(b"name", b"150 690 400 712"),
+        stream(XFA_PACKET),
+    ]
+    return serialize(objs)
+
+
+def xfa_dynamic() -> bytes:
+    # 1 catalog, 2 pages, 3 page, 4 contents, 5 font, 6 XFA packet
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R /NeedsRendering true /AcroForm << /Fields [] /XFA 6 0 R >> >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        stream(b"BT /F1 14 Tf 72 700 Td (Please wait... this form needs Adobe Reader.) Tj ET"),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream(XFA_PACKET),
+    ]
+    return serialize(objs)
+
+
 def main() -> None:
     (FIXTURES / "outline-links.pdf").write_bytes(outline_links())
     (FIXTURES / "form.pdf").write_bytes(form())
@@ -169,8 +236,11 @@ def main() -> None:
     (FIXTURES / "attachment.pdf").write_bytes(attachment())
     (FIXTURES / "layers.pdf").write_bytes(layers())
     (FIXTURES / "cjk.pdf").write_bytes(cjk())
+    (FIXTURES / "calc.pdf").write_bytes(calc())
+    (FIXTURES / "xfa-static.pdf").write_bytes(xfa_static())
+    (FIXTURES / "xfa-dynamic.pdf").write_bytes(xfa_dynamic())
     print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf, "
-          "cjk.pdf")
+          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf")
 
 
 if __name__ == "__main__":

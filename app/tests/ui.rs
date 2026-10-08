@@ -630,6 +630,27 @@ fn steps() -> Vec<Step> {
             |w| field_value(0) == "?" && w.get_undo_name() == "Flatten form fields",
         ),
         step(
+            "a static XFA form opens as a normal form",
+            open("xfa-static.pdf"),
+            |w| {
+                active_title(w) == "xfa-static.pdf"
+                    && w.get_status_left().starts_with("This form also holds XFA")
+            },
+        ),
+        step(
+            "a dynamic XFA form explains itself",
+            open("xfa-dynamic.pdf"),
+            |w| {
+                w.get_dialog_kind() == "message"
+                    && w.get_dialog_title() == "This form needs Adobe Reader"
+            },
+        ),
+        step(
+            "the notice closes",
+            |w| w.invoke_dialog_accept("".into()),
+            |w| w.get_dialog_kind().is_empty() && active_title(w) == "xfa-dynamic.pdf",
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

@@ -18,7 +18,7 @@ pub use annots::{Annot, AnnotKind, History, NewAnnot, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::has_cjk;
-pub use forms::{Field, FieldEdit, FieldKind};
+pub use forms::{Field, FieldEdit, FieldKind, Xfa};
 pub use mupdf::CjkFontOrdering;
 pub use mupdf::DisplayList;
 pub use render::{PageImage, RenderPool, Tile, render, render_tile, rendered_size};

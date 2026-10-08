@@ -22,3 +22,19 @@ Changes:
   `pdf_choice_widget_options` through the same shim.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
+
+## mupdf-sys
+
+`mupdf-sys` 0.8.0 from crates.io (same repository, AGPL-3.0), patched in the same way. The
+package's 64 MB `mupdf` directory (the MuPDF 1.27.2 sources) is not kept: `build.rs` takes it
+from the package in Cargo's download cache (`~/.cargo/registry/cache`), or downloads the package
+from crates.io with `curl`, checks it against the published SHA-256 and unpacks the directory
+into `OUT_DIR`. Everything else is the published crate.
+
+Changes:
+
+- `build.rs` — the source unpacking above, and one more source patch: MuPDF 1.27.2 leaves out the
+  `NULL` that ends `pdf_dict_getl`'s key list in the JavaScript `getField` and `resetForm`
+  (`source/pdf/pdf-js.c`), so `getField` returns `null` and form calculate scripts fail. MuPDF
+  fixed this after 1.27.2; drop the patch when the bundled MuPDF has the fix.
+- `Cargo.toml` — `flate2`, `sha2` and `tar` build dependencies; no `include` list.

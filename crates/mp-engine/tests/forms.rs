@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mp_engine::{Engine, FieldEdit, FieldKind};
+use mp_engine::{Engine, FieldEdit, FieldKind, Xfa};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -128,4 +128,55 @@ fn form_data_round_trips_through_xfdf() {
     assert_eq!(engine.import_xfdf(doc, nested.into()).unwrap(), 1);
     assert_eq!(engine.fields(doc, 0).unwrap()[0].value, "Nested");
     assert!(engine.import_xfdf(doc, "not xml".into()).is_err());
+}
+
+fn field<'a>(fields: &'a [mp_engine::Field], name: &str) -> &'a mp_engine::Field {
+    fields.iter().find(|f| f.name == name).unwrap()
+}
+
+#[test]
+fn form_javascript_calculates_formats_and_validates() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("calc.pdf")).unwrap().id;
+    let fields = engine.fields(doc, 0).unwrap();
+    let (a, b) = (field(&fields, "a").id, field(&fields, "b").id);
+    engine
+        .edit_field(doc, 0, a, FieldEdit::Value("2".into()))
+        .unwrap();
+    engine
+        .edit_field(doc, 0, b, FieldEdit::Value("3.5".into()))
+        .unwrap();
+    let fields = engine.fields(doc, 0).unwrap();
+    assert_eq!(field(&fields, "total").value, "5.5");
+    // The format action shows two decimals.
+    let list = engine.display_list(doc, 0).unwrap();
+    let text = mp_engine::page_text(&list).unwrap();
+    assert!(text.text(0..text.chars.len()).contains("5.50"));
+
+    // a rejects values over 100 and keeps its old value.
+    let rejected = engine.edit_field(doc, 0, a, FieldEdit::Value("200".into()));
+    assert!(rejected.is_err());
+    let fields = engine.fields(doc, 0).unwrap();
+    assert_eq!(field(&fields, "a").value, "2");
+    assert_eq!(field(&fields, "total").value, "5.5");
+}
+
+#[test]
+fn xfa_forms_are_detected_and_dropped_on_fill() {
+    let engine = Engine::start();
+    let plain = engine.open(fixture("form.pdf")).unwrap().id;
+    assert_eq!(engine.xfa(plain).unwrap(), Xfa::None);
+    let dynamic = engine.open(fixture("xfa-dynamic.pdf")).unwrap().id;
+    assert_eq!(engine.xfa(dynamic).unwrap(), Xfa::Dynamic);
+
+    let doc = engine.open(fixture("xfa-static.pdf")).unwrap().id;
+    assert_eq!(engine.xfa(doc).unwrap(), Xfa::Static);
+    let name = engine.fields(doc, 0).unwrap()[0].id;
+    engine
+        .edit_field(doc, 0, name, FieldEdit::Value("Ada".into()))
+        .unwrap();
+    // Filling in removes the XFA packet, so every reader shows the AcroForm value.
+    assert_eq!(engine.xfa(doc).unwrap(), Xfa::None);
+    engine.undo(doc).unwrap();
+    assert_eq!(engine.xfa(doc).unwrap(), Xfa::Static);
 }

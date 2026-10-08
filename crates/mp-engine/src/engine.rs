@@ -9,7 +9,7 @@ use mupdf::pdf::{PdfDocument, PdfObject};
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
 use crate::annots::{self, Annot, History, NewAnnot, Style};
-use crate::forms::{self, Field, FieldEdit};
+use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
@@ -138,6 +138,10 @@ enum Command {
     ResetForm {
         doc: DocId,
         reply: Reply<()>,
+    },
+    Xfa {
+        doc: DocId,
+        reply: Reply<Xfa>,
     },
     ExportXfdf {
         doc: DocId,
@@ -347,6 +351,11 @@ impl Engine {
 
     pub fn reset_form(&self, doc: DocId) -> Result<(), Error> {
         self.call(|reply| Command::ResetForm { doc, reply })
+    }
+
+    /// Whether the form carries XFA; see [`Xfa`].
+    pub fn xfa(&self, doc: DocId) -> Result<Xfa, Error> {
+        self.call(|reply| Command::Xfa { doc, reply })
     }
 
     /// The form's values as XFDF; `file` is the PDF's name, recorded in the XFDF.
@@ -634,6 +643,9 @@ fn run(rx: mpsc::Receiver<Command>) {
                 let result = with_doc(&docs, doc, |d| forms::import_xfdf(d, &xml));
                 lists.remove_doc(doc);
                 let _ = reply.send(result);
+            }
+            Command::Xfa { doc, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, forms::xfa));
             }
             Command::ResetForm { doc, reply } => {
                 let result = with_doc(&docs, doc, forms::reset);
