@@ -16,5 +16,4 @@
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
 - 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
-- 2026-10-08 16:25: M2 — signatures: show the mark under the pointer before the click places it
 - 2026-10-08 16:32: M2 — XFDF: export and import stamps and signatures with their appearance (Acrobat's <appearance> element)

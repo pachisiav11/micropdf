@@ -8,6 +8,7 @@ use mupdf::{
 };
 
 use crate::annots::{Annot, describe, operation};
+use crate::render::{self, Preview};
 use crate::{Error, Rect};
 
 /// A signature or initials.
@@ -150,6 +151,11 @@ fn draw(mark: &Mark, color: [f32; 3]) -> Result<DisplayList, Error> {
 pub fn aspect(mark: &Mark) -> Result<f32, Error> {
     let b = draw(mark, [0.0; 3])?.bounds();
     Ok((b.x1 - b.x0) / (b.y1 - b.y0))
+}
+
+/// The mark drawn black, `height` pixels tall, to show under the pointer before it is placed.
+pub fn preview(mark: &Mark, height: u32) -> Result<Preview, Error> {
+    render::preview(&draw(mark, [0.0; 3])?, height)
 }
 
 /// Places `mark` on `page`, `width` points wide and centred on `center`, as one undoable step.

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::{AccessibleRole, ElementQuery};
 use micropdf::settings::Settings;
-use micropdf::{MainWindow, viewer, wire};
+use micropdf::{MainWindow, PageItem, viewer, wire};
 use slint::platform::Key;
 use slint::{ComponentHandle, Model};
 
@@ -138,13 +138,22 @@ fn click_page(w: &MainWindow, index: i32, x: f32, y: f32) {
     w.invoke_pointer_up(dx, dy);
 }
 
-/// Drags through `points` (points from the top-left of hello.pdf's 300x200 page 1).
-fn drag_hello(w: &MainWindow, points: &[(f32, f32)]) {
-    let p = w
-        .get_pages()
+fn hello_page(w: &MainWindow) -> PageItem {
+    w.get_pages()
         .iter()
         .find(|p| p.index == 0)
-        .expect("page is laid out");
+        .expect("page is laid out")
+}
+
+/// Moves the pointer to (x, y) points from the top-left of hello.pdf's 300x200 page 1.
+fn hover_hello(w: &MainWindow, (x, y): (f32, f32)) {
+    let p = hello_page(w);
+    w.invoke_hover(p.x + x / 300.0 * p.width, p.y + y / 200.0 * p.height);
+}
+
+/// Drags through `points` (points from the top-left of hello.pdf's 300x200 page 1).
+fn drag_hello(w: &MainWindow, points: &[(f32, f32)]) {
+    let p = hello_page(w);
     let at = |(x, y): (f32, f32)| (p.x + x / 300.0 * p.width, p.y + y / 200.0 * p.height);
     let (x, y) = at(points[0]);
     w.invoke_pointer_down(x, y, 0, false);
@@ -769,6 +778,18 @@ fn steps() -> Vec<Step> {
             |w| w.get_sign_kind().is_empty() && w.get_tool() == 7 && w.get_has_signature(),
         ),
         step(
+            "the signature shows under the pointer",
+            |w| hover_hello(w, (150.0, 160.0)),
+            |w| {
+                let p = hello_page(w);
+                let middle = w.get_ghost_y() + w.get_ghost_height() / 2.0;
+                w.get_ghost_visible()
+                    && w.get_ghost_height() <= 36.0 / 200.0 * p.height + 1.0
+                    && (middle - (p.y + 160.0 / 200.0 * p.height)).abs() < 1.0
+                    && w.get_ghost_image().size().height >= 160
+            },
+        ),
+        step(
             "clicking the page signs it",
             |w| drag_hello(w, &[(150.0, 160.0)]),
             |w| comments() == 1 && w.get_undo_name() == "Sign" && w.get_tool() == 0,
@@ -922,9 +943,33 @@ fn steps() -> Vec<Step> {
             w.get_tool() == 8 && w.get_stamps().row_count() == 14
         }),
         step(
+            "the stamp shows under the pointer, kept on the page",
+            |w| hover_hello(w, (60.0, 40.0)),
+            |w| {
+                let p = hello_page(w);
+                w.get_ghost_visible()
+                    && (w.get_ghost_x() - p.x).abs() < 1.0
+                    && (w.get_ghost_width() - p.width / 2.0).abs() < 1.0
+                    && w.get_ghost_image().size().height == 160
+            },
+        ),
+        step(
+            "it hides when the pointer leaves",
+            |w| w.invoke_pointer_left(),
+            |w| !w.get_ghost_visible(),
+        ),
+        step(
             "clicking places it",
-            |w| drag_hello(w, &[(60.0, 40.0)]),
-            |w| comments() == 6 && w.get_tool() == 0 && w.get_undo_name() == "Add stamp",
+            |w| {
+                hover_hello(w, (60.0, 40.0));
+                drag_hello(w, &[(60.0, 40.0)]);
+            },
+            |w| {
+                comments() == 6
+                    && w.get_tool() == 0
+                    && w.get_undo_name() == "Add stamp"
+                    && !w.get_ghost_visible()
+            },
         ),
         step(
             "a callout from a drag",

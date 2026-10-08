@@ -12,6 +12,7 @@ use crate::annots::{self, Annot, History, NewAnnot, Restyle, Style};
 use crate::attachments;
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
+use crate::render::Preview;
 use crate::xfdf;
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem, Rect};
 
@@ -181,6 +182,17 @@ enum Command {
     MarkAspect {
         mark: Mark,
         reply: Reply<f32>,
+    },
+    MarkPreview {
+        mark: Mark,
+        height: u32,
+        reply: Reply<Preview>,
+    },
+    StampPreview {
+        name: String,
+        color: [f32; 3],
+        height: u32,
+        reply: Reply<Preview>,
     },
     ExportComments {
         doc: DocId,
@@ -485,6 +497,30 @@ impl Engine {
     /// A mark's width over its height.
     pub fn mark_aspect(&self, mark: Mark) -> Result<f32, Error> {
         self.call(|reply| Command::MarkAspect { mark, reply })
+    }
+
+    /// A mark drawn black, `height` pixels tall, to show where it will go.
+    pub fn mark_preview(&self, mark: Mark, height: u32) -> Result<Preview, Error> {
+        self.call(|reply| Command::MarkPreview {
+            mark,
+            height,
+            reply,
+        })
+    }
+
+    /// The standard stamp `name` in `color`, `height` pixels tall.
+    pub fn stamp_preview(
+        &self,
+        name: String,
+        color: [f32; 3],
+        height: u32,
+    ) -> Result<Preview, Error> {
+        self.call(|reply| Command::StampPreview {
+            name,
+            color,
+            height,
+            reply,
+        })
     }
 
     /// Draws comments and/or form fields into the page content; see [`crate::annots::flatten`].
@@ -872,6 +908,21 @@ fn run(rx: mpsc::Receiver<Command>) {
             }
             Command::MarkAspect { mark, reply } => {
                 let _ = reply.send(marks::aspect(&mark));
+            }
+            Command::MarkPreview {
+                mark,
+                height,
+                reply,
+            } => {
+                let _ = reply.send(marks::preview(&mark, height));
+            }
+            Command::StampPreview {
+                name,
+                color,
+                height,
+                reply,
+            } => {
+                let _ = reply.send(annots::stamp_preview(&name, color, height));
             }
             Command::ExportComments { doc, file, reply } => {
                 let _ = reply.send(with_doc(&docs, doc, |d| xfdf::export(d, &file)));

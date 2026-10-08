@@ -17,6 +17,14 @@ pub struct PageImage {
     pub rgb: Vec<u8>,
 }
 
+/// A render with premultiplied alpha on a clear background, rows packed with no padding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// A rectangle of device pixels within a page rendered at some scale and rotation. The page's
 /// rendered bounds always start at (0, 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -94,6 +102,23 @@ pub fn render(list: &DisplayList, scale: f32) -> Result<PageImage, Error> {
     Ok(page_image(&pixmap))
 }
 
+/// Renders `list` `height` pixels tall on a clear background.
+pub(crate) fn preview(list: &DisplayList, height: u32) -> Result<Preview, Error> {
+    let b = list.bounds();
+    let scale = height as f32 / (b.y1 - b.y0).max(1.0);
+    let pixmap = list.to_pixmap(
+        &Matrix::new_scale(scale, scale),
+        &Colorspace::device_rgb(),
+        true,
+    )?;
+    shrink_store();
+    Ok(Preview {
+        width: pixmap.width(),
+        height: pixmap.height(),
+        rgba: packed(&pixmap),
+    })
+}
+
 /// Size in device pixels of a page rendered at `scale` and `rotation` (degrees, multiple of 90).
 pub fn rendered_size(list: &DisplayList, scale: f32, rotation: i32) -> (i32, i32) {
     let b = list.bounds().transform(&page_matrix(scale, rotation));
@@ -151,15 +176,22 @@ fn work(rx: &Mutex<Receiver<Job>>) {
 }
 
 fn page_image(pixmap: &Pixmap) -> PageImage {
-    let (width, height) = (pixmap.width(), pixmap.height());
-    let row = width as usize * pixmap.n() as usize;
+    PageImage {
+        width: pixmap.width(),
+        height: pixmap.height(),
+        rgb: packed(pixmap),
+    }
+}
+
+/// The pixmap's samples without row padding.
+fn packed(pixmap: &Pixmap) -> Vec<u8> {
+    let row = pixmap.width() as usize * pixmap.n() as usize;
     let stride = pixmap.stride() as usize;
-    let rgb = pixmap
+    pixmap
         .samples()
         .chunks(stride)
-        .take(height as usize)
+        .take(pixmap.height() as usize)
         .flat_map(|line| &line[..row])
         .copied()
-        .collect();
-    PageImage { width, height, rgb }
+        .collect()
 }

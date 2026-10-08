@@ -174,3 +174,42 @@ fn a_moved_signature_keeps_its_look() {
     let filled = pixels(&engine, doc, new, red) as f32;
     assert!(filled > new.width() * new.height() * 0.9, "{filled}");
 }
+
+#[test]
+fn previews_are_clear_around_what_they_draw() {
+    let engine = Engine::start();
+    let mark = Mark::Ink {
+        strokes: vec![vec![(0.0, 0.0), (100.0, 100.0), (200.0, 0.0)]],
+        width: 8.0,
+    };
+    let p = engine.mark_preview(mark, 100).unwrap();
+    // Edges round out to whole pixels.
+    assert!((100..=101).contains(&p.height), "{}", p.height);
+    assert!(
+        (p.width as f32 - 100.0 * 208.0 / 108.0).abs() < 2.0,
+        "{}",
+        p.width
+    );
+    assert_eq!(p.rgba.len(), (p.width * p.height * 4) as usize);
+    let alpha = |x: u32, y: u32| p.rgba[((y * p.width + x) * 4 + 3) as usize];
+    // The V's top middle is empty; its bottom tip is ink.
+    assert_eq!(alpha(p.width / 2, 2), 0);
+    assert!(alpha(p.width / 2, p.height - 4) > 200);
+
+    let s = engine
+        .stamp_preview("Approved".into(), [0.0, 0.6, 0.0], 50)
+        .unwrap();
+    assert!((50..=51).contains(&s.height), "{}", s.height);
+    assert!((s.width as f32 - 190.0).abs() < 2.0, "{}", s.width);
+    let green = s
+        .rgba
+        .chunks(4)
+        .filter(|px| px[3] > 200 && px[1] > 100 && px[0] < 60 && px[2] < 60)
+        .count();
+    assert!(green > 200, "{green} green pixels");
+    assert!(
+        engine
+            .stamp_preview("Nonsense".into(), [0.0; 3], 50)
+            .is_err()
+    );
+}

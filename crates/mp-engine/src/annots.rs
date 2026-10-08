@@ -9,6 +9,7 @@ use mupdf::pdf::{
 };
 use mupdf::{Document, Point, Quad};
 
+use crate::render::{self, Preview};
 use crate::{Error, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +428,24 @@ fn label(new: &NewAnnot) -> &'static str {
         NewAnnot::Callout { .. } => "Add callout",
         NewAnnot::File { .. } => "Attach file",
     }
+}
+
+/// The standard stamp `name` in `color`, `height` pixels tall, drawn as a placed one would be.
+pub fn stamp_preview(name: &str, color: [f32; 3], height: u32) -> Result<Preview, Error> {
+    let (width, tall) = (190.0, 190.0 / STAMP_ASPECT);
+    let mut pdf = PdfDocument::new();
+    pdf.new_page(mupdf::Size::new(width, tall))?;
+    let new = NewAnnot::Stamp {
+        name: name.to_owned(),
+        center: (width / 2.0, tall / 2.0),
+        width,
+    };
+    let style = Style {
+        color,
+        author: String::new(),
+    };
+    add_now(&pdf, 0, &new, &style)?;
+    render::preview(&pdf.load_page(0)?.to_display_list(true)?, height)
 }
 
 pub fn add(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result<Annot, Error> {

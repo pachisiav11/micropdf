@@ -45,6 +45,9 @@ pub fn wire(window: &MainWindow) {
     window.on_hover(|x, y| {
         viewer::with(|app| app.hover(x, y));
     });
+    window.on_pointer_left(|| {
+        viewer::with(|app| app.pointer_left());
+    });
     window.on_wheel_zoom(|delta, x, y| {
         viewer::with(|app| app.wheel_zoom(delta, x, y));
     });

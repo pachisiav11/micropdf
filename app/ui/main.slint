@@ -447,6 +447,15 @@ export component MainWindow inherits Window {
     callback field-cancel();
     callback field-choose(int);
 
+    // The signature or stamp about to be placed, under the pointer, in document space.
+    in property <bool> ghost-visible;
+    in property <length> ghost-x;
+    in property <length> ghost-y;
+    in property <length> ghost-width;
+    in property <length> ghost-height;
+    in property <image> ghost-image;
+    callback pointer-left();
+
     public function show-stamp-menu() {
         stamp-menu.show();
     }
@@ -1272,6 +1281,22 @@ export component MainWindow inherits Window {
                             border-color: Theme.accent;
                         }
                         Rectangle {
+                            visible: root.ghost-visible;
+                            x: root.ghost-x;
+                            y: root.ghost-y;
+                            width: root.ghost-width;
+                            height: root.ghost-height;
+                            border-width: 1px;
+                            border-color: Theme.accent;
+                            Image {
+                                width: 100%;
+                                height: 100%;
+                                source: root.ghost-image;
+                                image-fit: fill;
+                                opacity: 0.6;
+                            }
+                        }
+                        Rectangle {
                             visible: root.field-editing;
                             x: root.field-x;
                             y: root.field-y;
@@ -1378,6 +1403,11 @@ export component MainWindow inherits Window {
                             changed mouse-y => {
                                 if (!self.pressed) {
                                     root.hover(self.mouse-x, self.mouse-y);
+                                }
+                            }
+                            changed has-hover => {
+                                if (!self.has-hover) {
+                                    root.pointer-left();
                                 }
                             }
                             scroll-event(e) => {

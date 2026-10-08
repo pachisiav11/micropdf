@@ -25,6 +25,6 @@ pub use forms::{Field, FieldEdit, FieldKind, Xfa};
 pub use marks::Mark;
 pub use mupdf::CjkFontOrdering;
 pub use mupdf::DisplayList;
-pub use render::{PageImage, RenderPool, Tile, render, render_tile, rendered_size};
+pub use render::{PageImage, Preview, RenderPool, Tile, render, render_tile, rendered_size};
 pub use text::{PageText, TextChar, page_text, search};
 pub use types::{Attachment, Layer, Link, LinkTarget, OutlineItem, Rect};

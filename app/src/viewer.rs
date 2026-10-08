@@ -16,8 +16,8 @@ use mp_engine::{
     RenderPool, Restyle, STAMPS, Style, Tile, Xfa,
 };
 use slint::{
-    ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, Timer,
-    TimerMode, VecModel,
+    ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer, SharedString,
+    Timer, TimerMode, VecModel,
 };
 
 use crate::layout::{Frame, Layout, PageMode, Params, Zoom};
@@ -334,6 +334,9 @@ pub struct App {
     placing: Option<Placing>,
     /// The standard stamp the Stamp tool places, by PDF name.
     stamp: Option<&'static str>,
+    /// The page and centre, in page space, where a click with the Sign or Stamp tool places
+    /// its mark; the preview shows there.
+    ghost: Option<(usize, (f32, f32))>,
     field_focus: Option<FieldFocus>,
     cursor: i32,
     status_timer: Timer,
@@ -427,6 +430,7 @@ impl App {
             pad: None,
             placing: None,
             stamp: None,
+            ghost: None,
             field_focus: None,
             cursor: 0,
             status_timer: Timer::default(),
@@ -1980,6 +1984,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if self.drag.is_some() || self.presenting() {
             return;
         }
+        self.move_ghost(self.hit(x, y));
         let cursor = if let Some(corner) = self.handle_at(x, y) {
             if corner % 2 == 0 { 4 } else { 5 }
         } else if self.movable_at(x, y).is_some() {
@@ -2423,6 +2428,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.refresh_style_bar();
         }
         self.place_field_editor();
+        self.place_ghost();
     }
 
     // ---------------------------------------------------------------- search
@@ -3480,6 +3486,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if tool != Tool::Stamp {
             self.stamp = None;
         }
+        self.ghost = None;
+        self.place_ghost();
         if let Some(w) = self.window() {
             w.set_tool(tool as i32);
         }
@@ -4205,6 +4213,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             aspect,
         });
         self.set_tool(Tool::Sign);
+        self.load_ghost();
         self.sign_hint(initials);
     }
 
@@ -4260,6 +4269,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     aspect,
                 });
                 self.set_tool(Tool::Sign);
+                self.load_ghost();
                 self.sign_hint(initials);
             }
             Err(e) => self.status(format!(
@@ -4294,17 +4304,19 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
         self.set_tool(Tool::Stamp);
         self.stamp = Some(name);
+        self.load_ghost();
         self.status(format!(
             "Click the page to place the {label} stamp. Esc cancels."
         ));
     }
 
     fn place_stamp(&mut self, page: usize, x: f32, y: f32) {
-        let Some(name) = self.stamp else { return };
-        let half = (STAMP_WIDTH / 2.0, STAMP_WIDTH / 2.0 * 50.0 / 190.0);
+        let (Some(name), Some(size)) = (self.stamp, self.placed_size()) else {
+            return;
+        };
         let new = NewAnnot::Stamp {
             name: name.to_owned(),
-            center: self.inside_page(page, (x, y), half),
+            center: self.inside_page(page, (x, y), (size.0 / 2.0, size.1 / 2.0)),
             width: STAMP_WIDTH,
         };
         self.add_comment(page, new, stamp_color(name));
@@ -4323,19 +4335,18 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     fn place_mark(&mut self, page: usize, x: f32, y: f32) {
-        let (Some(doc), Some(placing)) = (self.tab().map(|t| t.info.id), &self.placing) else {
+        let (Some(doc), Some(placing), Some((width, height))) = (
+            self.tab().map(|t| t.info.id),
+            &self.placing,
+            self.placed_size(),
+        ) else {
             return;
         };
-        let height = if placing.initials {
-            INITIALS_HEIGHT
-        } else {
-            SIGNATURE_HEIGHT
-        };
-        let width = height * placing.aspect.min(MAX_ASPECT);
         let mark = placing.mark.clone();
+        let center = self.inside_page(page, (x, y), (width / 2.0, height / 2.0));
         match self
             .engine
-            .place_mark(doc, page, mark, (x, y), width, [0.0, 0.0, 0.0])
+            .place_mark(doc, page, mark, center, width, [0.0, 0.0, 0.0])
         {
             Ok(_) => {
                 self.set_tool(Tool::Select);
@@ -4343,6 +4354,89 @@ Open it in Adobe Acrobat Reader to fill it in.",
             }
             Err(e) => self.status(format!("Could not sign: {e}")),
         }
+    }
+
+    /// The size in points of what a click with the Sign or Stamp tool places.
+    fn placed_size(&self) -> Option<(f32, f32)> {
+        match self.tool {
+            Tool::Sign => {
+                let p = self.placing.as_ref()?;
+                let height = if p.initials {
+                    INITIALS_HEIGHT
+                } else {
+                    SIGNATURE_HEIGHT
+                };
+                // A mark wider than MAX_ASPECT keeps its shape and comes out shorter.
+                let width = height * p.aspect.min(MAX_ASPECT);
+                Some((width, width / p.aspect))
+            }
+            Tool::Stamp => self
+                .stamp
+                .map(|_| (STAMP_WIDTH, STAMP_WIDTH * 50.0 / 190.0)),
+            _ => None,
+        }
+    }
+
+    /// Draws what the Sign or Stamp tool places, for the preview under the pointer.
+    fn load_ghost(&self) {
+        let preview = match (self.tool, &self.placing, self.stamp) {
+            (Tool::Sign, Some(p), _) => self.engine.mark_preview(p.mark.clone(), GHOST_PIXELS),
+            (Tool::Stamp, _, Some(name)) => {
+                self.engine
+                    .stamp_preview(name.into(), stamp_color(name), GHOST_PIXELS)
+            }
+            _ => return,
+        };
+        // Without a picture the preview is still an outline of where the mark goes.
+        let image = preview.map_or_else(
+            |_| Image::default(),
+            |p| {
+                Image::from_rgba8_premultiplied(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                    &p.rgba, p.width, p.height,
+                ))
+            },
+        );
+        if let Some(w) = self.window() {
+            w.set_ghost_image(image);
+        }
+    }
+
+    /// Moves the preview to the page point under the pointer, or hides it for `None`.
+    fn move_ghost(&mut self, at: Option<(usize, f32, f32)>) {
+        let ghost = self.placed_size().zip(at).map(|((w, h), (page, x, y))| {
+            (page, self.inside_page(page, (x, y), (w / 2.0, h / 2.0)))
+        });
+        if ghost != self.ghost {
+            self.ghost = ghost;
+            self.place_ghost();
+        }
+    }
+
+    pub fn pointer_left(&mut self) {
+        self.move_ghost(None);
+    }
+
+    fn place_ghost(&self) {
+        let Some(w) = self.window() else { return };
+        let frame = self
+            .ghost
+            .zip(self.placed_size())
+            .and_then(|((page, (x, y)), (gw, gh))| {
+                let rect = Rect {
+                    x0: x - gw / 2.0,
+                    y0: y - gh / 2.0,
+                    x1: x + gw / 2.0,
+                    y1: y + gh / 2.0,
+                };
+                self.tab()?.layout.to_view(page, &rect)
+            });
+        if let Some(f) = frame {
+            w.set_ghost_x(f.x);
+            w.set_ghost_y(f.y);
+            w.set_ghost_width(f.width);
+            w.set_ghost_height(f.height);
+        }
+        w.set_ghost_visible(frame.is_some());
     }
 
     /// Writes the active tab's form values to `target` as XFDF.
@@ -5090,6 +5184,8 @@ fn mark_name(initials: bool) -> &'static str {
 
 /// How wide a new stamp is, in points.
 const STAMP_WIDTH: f32 = 150.0;
+/// How tall the preview of a signature or stamp is drawn; it scales to the zoom.
+const GHOST_PIXELS: u32 = 160;
 /// A new callout's text box, in points.
 const CALLOUT_SIZE: (f32, f32) = (150.0, 44.0);
 
