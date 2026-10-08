@@ -22,6 +22,8 @@ Changes:
   `pdf_choice_widget_options` through the same shim.
 - `PdfAnnotation::set_appearance` — wraps `pdf_set_annot_appearance_from_display_list` through
   the same shim; micropdf draws signatures into stamps with it.
+- `PdfAnnotation::set_hidden_for_editing` — wraps `pdf_set_annot_hidden_for_editing`; micropdf
+  leaves comment replies out of page drawing with it.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 
@@ -42,6 +44,7 @@ Changes:
 - `msbuild.rs` — leaves Tesseract, Leptonica and zxing-cpp out of `libmupdf` (and turns OCR
   output and barcodes off) unless the `tesseract` or `zxingcpp` feature is on; the stock
   solution always builds them in. MuPDF always builds in its Release configuration, without
-  whole-program optimization in debug builds: the Debug configuration links the debug C runtime,
-  which clashes with the release runtime Rust links (LNK4098).
+  whole-program optimization unless Rust optimizes (opt-level 2, 3, s or z): the Debug
+  configuration links the debug C runtime, which clashes with the release runtime Rust links
+  (LNK4098), and whole-program optimization makes every test binary's link take minutes.
 - `Cargo.toml` — `flate2`, `sha2` and `tar` build dependencies; no `include` list.

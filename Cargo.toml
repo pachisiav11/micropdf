@@ -32,3 +32,11 @@ mupdf-sys = { path = "third_party/mupdf-sys" }
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Full debug info for every dependency made the debug build cache tens of gigabytes. Line
+# tables keep file:line in our backtraces; dependencies need none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

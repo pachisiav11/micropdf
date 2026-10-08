@@ -83,10 +83,11 @@ impl Msbuild {
         self.drop_optional_libraries(build_dir)?;
 
         // micropdf: always the Release configuration. The Debug one links the debug C runtime,
-        // which clashes with the release runtime Rust links (LNK4098). Debug builds skip
-        // whole-program optimization so each test binary links quickly.
+        // which clashes with the release runtime Rust links (LNK4098). Unoptimized builds skip
+        // whole-program optimization so each test binary links quickly. This goes by the
+        // optimization level, not DEBUG: the dev profile builds dependencies without debug info.
         let configuration = "Release";
-        let whole_program = !target.debug_profile();
+        let whole_program = matches!(&*target.opt_level, "2" | "3" | "s" | "z");
 
         let platform = match &*target.arch {
             "i386" | "i586" | "i686" => "Win32",
