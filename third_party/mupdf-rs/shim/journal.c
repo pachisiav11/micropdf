@@ -1,16 +1,22 @@
 /*
- * fz_try wrappers for the parts of MuPDF's undo journal and form widgets that mupdf-sys does
- * not wrap (it does wrap pdf_begin_operation, pdf_end_operation and pdf_abandon_operation).
+ * fz_try wrappers for the parts of MuPDF's undo journal, annotations and form widgets that
+ * mupdf-sys does not wrap (it does wrap pdf_begin_operation, pdf_end_operation and
+ * pdf_abandon_operation).
  *
  * mupdf-sys does not export its include directory, so the few declarations needed are
- * repeated here. They match MuPDF 1.27 (mupdf/fitz/context.h, mupdf/fitz/system.h and
- * mupdf/pdf/object.h, mupdf/pdf/annot.h and mupdf/pdf/form.h). On Windows MuPDF uses plain setjmp/longjmp (HAVE_SIGSETJMP is 0).
+ * repeated here. They match MuPDF 1.27 (mupdf/fitz/context.h, mupdf/fitz/system.h,
+ * mupdf/fitz/geometry.h, mupdf/pdf/object.h, mupdf/pdf/annot.h and mupdf/pdf/form.h). On
+ * Windows MuPDF uses plain setjmp/longjmp (HAVE_SIGSETJMP is 0).
  */
 #include <setjmp.h>
 
 typedef struct fz_context fz_context;
 typedef struct pdf_document pdf_document;
 typedef struct pdf_annot pdf_annot;
+typedef struct fz_display_list fz_display_list;
+typedef struct { float a, b, c, d, e, f; } fz_matrix;
+
+extern const fz_matrix fz_identity;
 
 jmp_buf *fz_push_try(fz_context *ctx);
 int fz_do_try(fz_context *ctx);
@@ -24,6 +30,7 @@ void pdf_undo(fz_context *ctx, pdf_document *doc);
 void pdf_redo(fz_context *ctx, pdf_document *doc);
 int pdf_toggle_widget(fz_context *ctx, pdf_annot *widget);
 int pdf_choice_widget_options(fz_context *ctx, pdf_annot *tw, int exportval, const char *opts[]);
+void pdf_set_annot_appearance_from_display_list(fz_context *ctx, pdf_annot *annot, const char *appearance, const char *state, fz_matrix ctm, fz_display_list *list);
 
 /* The expansion of MuPDF's fz_try / fz_catch macros. */
 #define TRY(ctx) if (!setjmp(*fz_push_try(ctx))) if (fz_do_try(ctx)) do
@@ -78,6 +85,14 @@ int mp_pdf_toggle_widget(fz_context *ctx, pdf_annot *widget, int *toggled, const
 int mp_pdf_choice_widget_options(fz_context *ctx, pdf_annot *widget, const char **opts, int *count, const char **err)
 {
 	TRY(ctx) { *count = pdf_choice_widget_options(ctx, widget, 0, opts); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	return 0;
+}
+
+/* Sets the normal appearance to the display list's drawing, which MuPDF fits to the Rect. */
+int mp_pdf_set_annot_appearance(fz_context *ctx, pdf_annot *annot, fz_display_list *list, const char **err)
+{
+	TRY(ctx) { pdf_set_annot_appearance_from_display_list(ctx, annot, "N", NULL, fz_identity, list); }
 	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
 	return 0;
 }

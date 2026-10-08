@@ -10,6 +10,7 @@ use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
 use crate::annots::{self, Annot, History, NewAnnot, Style};
 use crate::forms::{self, Field, FieldEdit, Xfa};
+use crate::marks::{self, Mark};
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
@@ -127,6 +128,19 @@ enum Command {
         id: i32,
         color: [f32; 3],
         reply: Reply<()>,
+    },
+    PlaceMark {
+        doc: DocId,
+        page: usize,
+        mark: Mark,
+        center: (f32, f32),
+        width: f32,
+        color: [f32; 3],
+        reply: Reply<Annot>,
+    },
+    MarkAspect {
+        mark: Mark,
+        reply: Reply<f32>,
     },
     EditField {
         doc: DocId,
@@ -314,6 +328,32 @@ impl Engine {
             color,
             reply,
         })
+    }
+
+    /// Places a signature or initials, `width` points wide and centred on `center`.
+    pub fn place_mark(
+        &self,
+        doc: DocId,
+        page: usize,
+        mark: Mark,
+        center: (f32, f32),
+        width: f32,
+        color: [f32; 3],
+    ) -> Result<Annot, Error> {
+        self.call(|reply| Command::PlaceMark {
+            doc,
+            page,
+            mark,
+            center,
+            width,
+            color,
+            reply,
+        })
+    }
+
+    /// A mark's width over its height.
+    pub fn mark_aspect(&self, mark: Mark) -> Result<f32, Error> {
+        self.call(|reply| Command::MarkAspect { mark, reply })
     }
 
     /// Draws comments and/or form fields into the page content; see [`crate::annots::flatten`].
@@ -611,6 +651,24 @@ fn run(rx: mpsc::Receiver<Command>) {
                 let result = with_doc(&docs, doc, |d| annots::set_color(d, page, id, color));
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
+            }
+            Command::PlaceMark {
+                doc,
+                page,
+                mark,
+                center,
+                width,
+                color,
+                reply,
+            } => {
+                let result = with_doc(&docs, doc, |d| {
+                    marks::place(d, page, &mark, center, width, color)
+                });
+                lists.remove_page(doc, page);
+                let _ = reply.send(result);
+            }
+            Command::MarkAspect { mark, reply } => {
+                let _ = reply.send(marks::aspect(&mark));
             }
             Command::Flatten {
                 doc,

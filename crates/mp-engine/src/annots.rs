@@ -22,6 +22,7 @@ pub enum AnnotKind {
     Square,
     Circle,
     Line,
+    Stamp,
     Other,
 }
 
@@ -90,6 +91,7 @@ fn kind_of(t: PdfAnnotationType) -> Option<AnnotKind> {
         PdfAnnotationType::Square => AnnotKind::Square,
         PdfAnnotationType::Circle => AnnotKind::Circle,
         PdfAnnotationType::Line => AnnotKind::Line,
+        PdfAnnotationType::Stamp => AnnotKind::Stamp,
         // Links, form widgets and popups have their own panels or none.
         PdfAnnotationType::Link | PdfAnnotationType::Widget | PdfAnnotationType::Popup => {
             return None;
@@ -130,7 +132,7 @@ fn rgb(color: AnnotationColor) -> [f32; 3] {
     }
 }
 
-fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
+pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
     let Some(kind) = kind_of(annot.r#type()?) else {
         return Ok(None);
     };

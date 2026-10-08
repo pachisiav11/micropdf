@@ -3728,6 +3728,7 @@ fn kind_name(kind: AnnotKind) -> &'static str {
         AnnotKind::Square => "Rectangle",
         AnnotKind::Circle => "Ellipse",
         AnnotKind::Line => "Line",
+        AnnotKind::Stamp => "Stamp",
         AnnotKind::Other => "Comment",
     }
 }

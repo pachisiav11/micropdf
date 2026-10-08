@@ -185,6 +185,11 @@ fn first_family(names: &[&str]) -> Option<usize> {
         .find_map(|n| family_face(index, &key(n), false, false))
 }
 
+/// An installed family's regular face, such as "Segoe Script".
+pub(crate) fn family(name: &str) -> Option<Font> {
+    family_face(index(), &key(name), false, false).and_then(load)
+}
+
 fn load(id: usize) -> Option<Font> {
     let mut loaded = LOADED.lock().ok()?;
     if let Some((_, font)) = loaded.iter().find(|(i, _)| *i == id) {

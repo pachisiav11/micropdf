@@ -20,6 +20,8 @@ Changes:
   `build.rs` with `cc`) provides them, declaring the few MuPDF 1.27 functions it calls.
 - `PdfWidget::toggle` and `choice_options` — wrap `pdf_toggle_widget` and
   `pdf_choice_widget_options` through the same shim.
+- `PdfAnnotation::set_appearance` — wraps `pdf_set_annot_appearance_from_display_list` through
+  the same shim; micropdf draws signatures into stamps with it.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 

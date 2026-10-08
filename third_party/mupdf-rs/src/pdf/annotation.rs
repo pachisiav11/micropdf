@@ -1110,6 +1110,17 @@ impl PdfAnnotation {
         }
     }
 
+    /// Replaces the normal appearance with `list`'s drawing, which viewers fit to the Rect.
+    /// MuPDF keeps such an appearance on a Stamp whose icon name is not a standard stamp name.
+    pub fn set_appearance(&mut self, list: &crate::DisplayList) -> Result<(), Error> {
+        self.ensure_attached()?;
+        let annot = self.inner.as_ptr();
+        let list = list.inner.as_ptr();
+        crate::pdf::document::journal_call(|err| unsafe {
+            shim::mp_pdf_set_annot_appearance(context(), annot, list, err)
+        })
+    }
+
     pub fn is_open(&self) -> Result<bool, Error> {
         self.ensure_attached()?;
         unsafe { ffi_try!(mupdf_pdf_annot_is_open(context(), self.inner.as_ptr())) }
@@ -1294,6 +1305,21 @@ bitflags::bitflags! {
         const IS_LOCKED = PDF_ANNOT_IS_LOCKED as _;
         const IS_TOGGLE_NO_VIEW = PDF_ANNOT_IS_TOGGLE_NO_VIEW as _;
         const IS_LOCKED_CONTENTS = PDF_ANNOT_IS_LOCKED_CONTENTS as _;
+    }
+}
+
+mod shim {
+    use std::os::raw::{c_char, c_int};
+
+    use mupdf_sys::{fz_context, fz_display_list, pdf_annot};
+
+    unsafe extern "C" {
+        pub fn mp_pdf_set_annot_appearance(
+            ctx: *mut fz_context,
+            annot: *mut pdf_annot,
+            list: *mut fz_display_list,
+            err: *mut *const c_char,
+        ) -> c_int;
     }
 }
 
