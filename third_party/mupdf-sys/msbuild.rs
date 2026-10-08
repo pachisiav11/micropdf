@@ -50,17 +50,43 @@ impl Msbuild {
         Ok(())
     }
 
+    /// micropdf: the solution always builds Tesseract, Leptonica and zxing-cpp into libmupdf and
+    /// turns OCR and barcodes on. Leave them out unless their features ask for them.
+    fn drop_optional_libraries(&mut self, build_dir: &str) -> Result<()> {
+        let file_path = Path::new(build_dir).join("platform/win32/libmupdf.vcxproj");
+        let mut content = fs::read_to_string(&file_path)
+            .map_err(|e| format!("Failed to read libmupdf.vcxproj: {e}"))?;
+
+        if !cfg!(feature = "tesseract") {
+            content = content
+                .replace("HAVE_TESSERACT;", "")
+                .replace("HAVE_LEPTONICA;", "");
+            content = drop_reference(&content, "libtesseract.vcxproj")?;
+            self.define("FZ_ENABLE_OCR_OUTPUT", "0");
+        }
+        if !cfg!(feature = "zxingcpp") {
+            content = drop_reference(&content, "libmubarcode.vcxproj")?;
+            self.define("FZ_ENABLE_BARCODE", "0");
+        }
+
+        fs::write(&file_path, content)
+            .map_err(|e| format!("Failed to write patched libmupdf.vcxproj: {e}"))?;
+
+        Ok(())
+    }
+
     pub fn build(mut self, target: &Target, build_dir: &str) -> Result<()> {
         self.cl.push("/MP".to_owned());
 
         self.patch_nan(build_dir)?;
         self.remove_libresources_fonts(build_dir)?;
+        self.drop_optional_libraries(build_dir)?;
 
-        let configuration = if target.debug_profile() {
-            "Debug"
-        } else {
-            "Release"
-        };
+        // micropdf: always the Release configuration. The Debug one links the debug C runtime,
+        // which clashes with the release runtime Rust links (LNK4098). Debug builds skip
+        // whole-program optimization so each test binary links quickly.
+        let configuration = "Release";
+        let whole_program = !target.debug_profile();
 
         let platform = match &*target.arch {
             "i386" | "i586" | "i686" => "Win32",
@@ -90,6 +116,7 @@ impl Msbuild {
                 &format!("/p:Configuration={configuration}"),
                 &format!("/p:Platform={platform}"),
                 &format!("/p:PlatformToolset={platform_toolset}"),
+                &format!("/p:WholeProgramOptimization={whole_program}"),
             ])
             .current_dir(build_dir)
             .env("CL", self.cl.join(" "))
@@ -110,15 +137,26 @@ impl Msbuild {
             println!("cargo:rustc-link-search=native={build_dir}/platform/win32/{configuration}");
         }
 
-        if configuration == "Debug" {
-            println!("cargo:rustc-link-lib=dylib=ucrtd");
-            println!("cargo:rustc-link-lib=dylib=vcruntimed");
-            println!("cargo:rustc-link-lib=dylib=msvcrtd");
-        }
-
         println!("cargo:rustc-link-lib=dylib=libmupdf");
         println!("cargo:rustc-link-lib=dylib=libthirdparty");
 
         Ok(())
     }
+}
+
+/// Removes the `<ProjectReference>` element for `project`.
+fn drop_reference(content: &str, project: &str) -> Result<String> {
+    let open = format!("<ProjectReference Include=\"{project}\">");
+    let start = content
+        .find(&open)
+        .ok_or_else(|| format!("libmupdf.vcxproj has no reference to {project}"))?;
+    let close = "</ProjectReference>";
+    let end = start
+        + content[start..]
+            .find(close)
+            .ok_or("unclosed ProjectReference")?
+        + close.len();
+    let start = content[..start].rfind('\n').map_or(start, |i| i + 1);
+    let end = content[end..].find('\n').map_or(end, |i| end + i + 1);
+    Ok(format!("{}{}", &content[..start], &content[end..]))
 }

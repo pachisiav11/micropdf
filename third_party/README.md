@@ -37,4 +37,9 @@ Changes:
   `NULL` that ends `pdf_dict_getl`'s key list in the JavaScript `getField` and `resetForm`
   (`source/pdf/pdf-js.c`), so `getField` returns `null` and form calculate scripts fail. MuPDF
   fixed this after 1.27.2; drop the patch when the bundled MuPDF has the fix.
+- `msbuild.rs` — leaves Tesseract, Leptonica and zxing-cpp out of `libmupdf` (and turns OCR
+  output and barcodes off) unless the `tesseract` or `zxingcpp` feature is on; the stock
+  solution always builds them in. MuPDF always builds in its Release configuration, without
+  whole-program optimization in debug builds: the Debug configuration links the debug C runtime,
+  which clashes with the release runtime Rust links (LNK4098).
 - `Cargo.toml` — `flate2`, `sha2` and `tar` build dependencies; no `include` list.

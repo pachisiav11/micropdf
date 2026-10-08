@@ -1,4 +1,3 @@
-- 2026-10-07 00:48: M0 — slim the MuPDF build: libmupdf.vcxproj still compiles tesseract/leptonica/zxing with those features off; fix LNK4098 msvcrt conflict warning in debug builds
 - 2026-10-07 03:27: M1 — GUI check of clipboard copy and print (selection, password, restore and presentation are covered by app/tests/ui.rs)
 - 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
 - 2026-10-07 10:24: M1 — GUI check: "Add micropdf to Windows PDF apps" lists it in Default apps; touchpad pinch zooms (Windows sends it as Ctrl+wheel)
@@ -17,3 +16,4 @@
 - 2026-10-07 00:18: M8 — conversion + LibreOffice add-on (v0.8)
 - 2026-10-07 00:18: M9 — library + batch (v0.9)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
+- 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away

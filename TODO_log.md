@@ -33,3 +33,4 @@
 - Added: 2026-10-07 11:20 | Completed: 2026-10-07 11:22 | M2 — hand cursor over comments and form fields; form widgets cached per page
 - Added: 2026-10-07 11:01 | Completed: 2026-10-08 15:41 | M2 — forms: JavaScript calculate, format and validate (MuPDF getField fixed in a vendored mupdf-sys)
 - Added: 2026-10-08 15:15 | Completed: 2026-10-08 15:41 | M2 — XFA forms: detect them; a notice for dynamic XFA; filling a static XFA form drops the XFA copy
+- Added: 2026-10-07 00:48 | Completed: 2026-10-08 16:08 | M0 — slim the MuPDF build: no Tesseract, Leptonica or zxing-cpp unless their features are on; MuPDF always builds in its Release configuration (no LNK4098 debug-CRT clash)
