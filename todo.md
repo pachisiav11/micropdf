@@ -1,7 +1,6 @@
 - 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
-- 2026-10-09 02:34: M4.2 — desktop assistant panel: Ctrl+Shift+A, provider/model/key setup (Credential Manager), per-document chat, page citations that jump and flash, quick actions, usage and daily total
 - 2026-10-09 02:34: M4.3 — assistant in the extension, proxied through micropdf-bridge (keys stay in Credential Manager)
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)

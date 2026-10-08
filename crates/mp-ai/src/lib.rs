@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 pub use context::{Context, link_citations, ranges};
 pub use http::WinHttp;
-pub use store::{Config, DailyUsage, content_hash, key, load_chat, save_chat, set_key};
+pub use store::{Config, DailyUsage, content_hash, key, load_chat, save_chat, set_key, tokens};
 
 /// Guard against oversized-request errors: roughly 75k tokens, which leaves room for the
 /// conversation and the answer in the smaller context windows. Longer documents go through
@@ -168,6 +168,98 @@ pub trait Transport {
         headers: &[(&str, &str)],
         body: &Value,
     ) -> Result<(u16, Value), String>;
+}
+
+/// Who answers: the provider chosen in ai.json, its model, and its key from Credential Manager.
+#[derive(Debug, Clone, Default)]
+pub struct Setup {
+    pub provider: Provider,
+    pub model: String,
+    pub key: String,
+}
+
+impl Setup {
+    pub fn load() -> Setup {
+        let config = Config::load();
+        let provider = config.provider;
+        Setup {
+            provider,
+            model: config.model(provider).to_string(),
+            key: key(provider).unwrap_or_default(),
+        }
+    }
+
+    /// "Anthropic · claude-haiku-4-5", or the provider alone before a model is named.
+    pub fn label(&self) -> String {
+        match self.model.trim() {
+            "" => self.provider.label().to_string(),
+            model => format!("{} · {model}", self.provider.label()),
+        }
+    }
+
+    /// What is missing before the assistant can answer; empty when nothing is.
+    pub fn notice(&self) -> String {
+        let label = self.provider.label();
+        match (self.key.trim().is_empty(), self.model.trim().is_empty()) {
+            (false, false) => String::new(),
+            (true, true) => format!("The assistant needs an API key and a model name for {label}."),
+            (true, false) => format!("The assistant needs an API key for {label}."),
+            (false, true) => format!("Name the {label} model the assistant should use."),
+        }
+    }
+}
+
+/// A question about a document, as the reader asked it.
+pub struct Question<'a> {
+    pub prompt: &'a str,
+    /// Each page's text.
+    pub pages: &'a [String],
+    /// The page being read (0-based), kept first when only some pages fit.
+    pub focus: Option<usize>,
+    /// The question is about the focus page alone, so it fails at once when that page has no
+    /// text.
+    pub page_only: bool,
+}
+
+/// Answers a question about a document as the next turn of `history`: the answer, with a note
+/// of the pages it read (when not all of them) and what it cost, and the usage to record.
+pub fn answer(
+    transport: &dyn Transport,
+    setup: &Setup,
+    q: &Question,
+    history: &[Turn],
+) -> Result<(Turn, Usage), String> {
+    if let Some(page) = q
+        .focus
+        .filter(|&p| q.page_only && q.pages.get(p).is_some_and(|t| t.trim().is_empty()))
+    {
+        return Err(format!(
+            "Page {} has no text layer: it is a picture of text. Text recognition (OCR) is not \
+             available yet.",
+            page + 1
+        ));
+    }
+    let context = Context::new(q.pages, q.prompt, q.focus)?;
+    let reply = ask(
+        transport,
+        &Ask {
+            provider: setup.provider,
+            key: &setup.key,
+            model: &setup.model,
+            prompt: q.prompt,
+            context: &context,
+            history,
+        },
+    )?;
+    let mut note = reply.usage.summary();
+    if context.partial() {
+        note = format!(
+            "Read pages {} of {} · {note}",
+            ranges(&context.pages),
+            context.page_count
+        );
+    }
+    Ok((Turn::assistant(&reply.text, note), reply.usage))
 }
 
 /// One question to the assistant.
@@ -1035,6 +1127,66 @@ mod tests {
         let history = [turn("user", &"a".repeat(budget + 1))];
         let messages = build_messages(trim_history(&history), "and now?", &doc("Title"));
         assert!(messages[0].content.contains("Title"));
+    }
+
+    #[test]
+    fn answers_carry_a_note_of_pages_read_and_cost() {
+        let mock = Mock::new(vec![(
+            200,
+            json!({"content": [{"type": "text", "text": "Yes [p. 2]"}], "usage": {"input_tokens": 1_200, "output_tokens": 30}}),
+        )]);
+        let setup = Setup {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            key: "k".into(),
+        };
+        let pages = vec!["one".to_string(), "two".to_string()];
+        let q = Question {
+            prompt: "Is it?",
+            pages: &pages,
+            focus: None,
+            page_only: false,
+        };
+        let (turn, usage) = answer(&mock, &setup, &q, &[]).unwrap();
+        assert_eq!(
+            turn,
+            Turn::assistant("Yes [p. 2]", "1.2k in · 30 out".into())
+        );
+        assert_eq!(
+            usage,
+            Usage {
+                input: 1_200,
+                output: 30
+            }
+        );
+
+        let pages = vec!["one".to_string(), " ".to_string()];
+        let q = Question {
+            prompt: "Summarize page 2.",
+            pages: &pages,
+            focus: Some(1),
+            page_only: true,
+        };
+        assert!(
+            answer(&mock, &setup, &q, &[])
+                .unwrap_err()
+                .starts_with("Page 2 has no text layer")
+        );
+    }
+
+    #[test]
+    fn the_setup_says_what_is_missing() {
+        let mut setup = Setup {
+            provider: Provider::OpenAi,
+            ..Setup::default()
+        };
+        assert_eq!(setup.label(), "OpenAI");
+        assert!(setup.notice().contains("API key and a model name"));
+        setup.model = "gpt-5.6-luna".into();
+        assert_eq!(setup.label(), "OpenAI · gpt-5.6-luna");
+        assert_eq!(setup.notice(), "The assistant needs an API key for OpenAI.");
+        setup.key = "k".into();
+        assert_eq!(setup.notice(), "");
     }
 
     #[test]

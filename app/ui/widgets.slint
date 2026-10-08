@@ -1,0 +1,155 @@
+import { Theme } from "tokens.slint";
+
+// Segoe MDL2 Assets ships with Windows 10 and 11.
+export component Icon inherits Text {
+    font-family: "Segoe MDL2 Assets";
+    font-size: 14px;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+}
+
+export component ToolButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> tip;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: root.label != "" ? max(32px, label-text.preferred-width + 18px) : 32px;
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: !root.enabled ? transparent
+        : touch.pressed ? Theme.bg-active
+        : touch.has-hover ? Theme.bg-hover
+        : root.active ? Theme.bg-active
+        : transparent;
+    accessible-role: button;
+    accessible-label: root.tip != "" ? root.tip : root.label;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    if root.icon != "": Icon {
+        text: root.icon;
+        color: !root.enabled ? Theme.text-subtle : root.active ? Theme.accent : Theme.text-muted;
+    }
+    label-text := Text {
+        visible: root.icon == "";
+        text: root.label;
+        font-size: 12px;
+        color: !root.enabled ? Theme.text-subtle : root.active ? Theme.accent : Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component DialogButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    callback clicked();
+
+    height: 32px;
+    width: max(84px, t.preferred-width + 28px);
+    border-radius: Theme.radius;
+    background: root.primary
+        ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : (touch.has-hover ? Theme.bg-hover : Theme.bg-active);
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    t := Text {
+        text: root.text;
+        color: root.primary ? Theme.on-accent : Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component MenuEntry inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback clicked();
+
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: touch.has-hover ? Theme.bg-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 12px;
+        spacing: 8px;
+        Icon {
+            width: 16px;
+            text: root.checked ? "\u{E73E}" : "";
+            color: Theme.accent;
+            font-size: 12px;
+        }
+        Text {
+            text: root.text;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SidebarTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    background: root.active ? Theme.bg-active : touch.has-hover ? Theme.bg-hover : transparent;
+    accessible-role: tab;
+    accessible-label: root.text;
+
+    Text {
+        text: root.text;
+        font-size: 12px;
+        color: root.active ? Theme.text : Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component Menu inherits Rectangle {
+    background: Theme.bg-tertiary;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: Theme.shadow-lg;
+    VerticalLayout {
+        padding: 4px;
+        @children
+    }
+}

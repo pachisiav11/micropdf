@@ -1,6 +1,7 @@
 //! The micropdf desktop app as a library, so `main.rs` stays thin and UI tests can drive the
 //! real window on Slint's testing backend.
 
+pub mod assistant;
 pub mod assoc;
 pub mod bench;
 pub mod commands;
@@ -158,4 +159,5 @@ pub fn wire(window: &MainWindow) {
     window.on_sign_pad_move(|x, y| {
         viewer::with(|app| app.pad_move(x, y));
     });
+    assistant::wire(window);
 }

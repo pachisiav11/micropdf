@@ -38,6 +38,18 @@ Visual Studio 2019/2022 toolsets; with newer Build Tools set the toolset yoursel
 Design tokens live in `design/tokens.json`; after editing, run `node scripts/gen-tokens.mjs` to
 regenerate `app/ui/tokens.slint` and `extension/src/tokens.css` (CI fails if they are stale).
 
+## Assistant
+
+Ctrl+Shift+A opens the assistant, which answers questions about the open document with a model
+from Anthropic, OpenAI or Google AI Studio, using your own API key. Set the provider, the exact
+model name and the key under its gear button; the key is kept in Windows Credential Manager. The
+document goes as the text of its pages, whole when it fits (about 300,000 characters) and otherwise
+as the pages that best match the question; answers cite pages as `[p. 12]`, and a click on a
+citation goes to that page. Each document keeps its own chat, found again by the file's content
+even after a rename. Summaries of the document or the page and "Explain the selection" (also on the
+right-click menu of selected text) are one click away; tokens used today show under the question
+box. Nothing is sent until you ask.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

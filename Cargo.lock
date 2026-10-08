@@ -2622,6 +2622,7 @@ version = "0.0.0"
 dependencies = [
  "arboard",
  "i-slint-backend-testing",
+ "mp-ai",
  "mp-engine",
  "notify",
  "rfd",

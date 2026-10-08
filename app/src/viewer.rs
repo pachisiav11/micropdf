@@ -358,6 +358,9 @@ pub struct App {
     /// Text the comment list is filtered by.
     comment_filter: String,
     renders: u64,
+    /// The page an assistant citation just went to, outlined for a moment.
+    flash: Option<usize>,
+    flash_timer: Timer,
 }
 
 impl App {
@@ -454,6 +457,8 @@ impl App {
             vim_pending: None,
             comment_filter: String::new(),
             renders: 0,
+            flash: None,
+            flash_timer: Timer::default(),
         };
         app.refresh_recent();
         app.refresh_sign_menu();
@@ -716,6 +721,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.models.tiles.set_vec(Vec::new());
         self.models.marks.set_vec(Vec::new());
         self.refresh_recent();
+        crate::assistant::follow(self);
     }
 
     pub fn select(&mut self, index: usize) {
@@ -758,6 +764,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.set_scroll(x, y);
             self.update_view();
         }
+        crate::assistant::follow(self);
     }
 
     fn refresh_tabs(&self) {
@@ -2120,6 +2127,13 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
                 self.refresh_marks();
             }
+            1 if self.tab().is_some_and(|t| t.selection.is_some()) => {
+                if let Some(window) = self.window() {
+                    window.set_menu_x(x);
+                    window.set_menu_y(y);
+                    window.invoke_show_text_menu();
+                }
+            }
             _ => {}
         }
     }
@@ -2316,7 +2330,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.refresh_marks();
     }
 
-    fn confirm_uri(&mut self, uri: String) {
+    pub fn confirm_uri(&mut self, uri: String) {
         let lower = uri.to_ascii_lowercase();
         if !(lower.starts_with("http://")
             || lower.starts_with("https://")
@@ -2420,6 +2434,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
             if let Some(f) = tab.layout.to_view(selection_rects.0, rect) {
                 marks.push(mark_item(f, 2));
             }
+        }
+        if let Some(f) = self.flash.and_then(|page| tab.layout.frame(page)) {
+            marks.push(mark_item(f, 6));
         }
         if let Some((page, id)) = tab.picked
             && let Some((_, a)) = tab.comments.iter().find(|(p, a)| *p == page && a.id == id)
@@ -5166,6 +5183,29 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn active_path(&self) -> Option<PathBuf> {
         self.tab().map(|t| t.path.clone())
+    }
+
+    /// What the assistant reads: the document, its file, the page being read and the page count.
+    pub fn reading(&self) -> Option<(DocId, PathBuf, usize, usize)> {
+        self.tab()
+            .map(|t| (t.info.id, t.path.clone(), t.current, t.page_count()))
+    }
+
+    /// Goes to a page an answer cited and outlines it for a moment, so the eye finds it.
+    pub fn flash_page(&mut self, page: usize) {
+        if page >= self.page_count() {
+            return;
+        }
+        self.go_to(page, None, true);
+        self.flash = Some(page);
+        self.refresh_marks();
+        self.flash_timer
+            .start(TimerMode::SingleShot, Duration::from_millis(900), || {
+                with(|app| {
+                    app.flash = None;
+                    app.refresh_marks();
+                });
+            });
     }
 
     pub fn active_doc(&self) -> Option<(DocId, Vec<(f32, f32)>)> {

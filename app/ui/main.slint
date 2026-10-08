@@ -1,7 +1,9 @@
 import { ScrollView, LineEdit, ListView, CheckBox } from "std-widgets.slint";
 import { Theme } from "tokens.slint";
+import { DialogButton, Icon, Menu, MenuEntry, SidebarTab, ToolButton } from "widgets.slint";
+import { Assistant, AssistantPanel, ChatItem } from "assistant.slint";
 
-export { Theme }
+export { Theme, Assistant, ChatItem }
 
 export struct TabItem {
     title: string,
@@ -94,160 +96,6 @@ export struct LayerRow {
     toggle: bool,
     visible: bool,
     locked: bool,
-}
-
-// Segoe MDL2 Assets ships with Windows 10 and 11.
-component Icon inherits Text {
-    font-family: "Segoe MDL2 Assets";
-    font-size: 14px;
-    horizontal-alignment: center;
-    vertical-alignment: center;
-}
-
-component ToolButton inherits Rectangle {
-    in property <string> icon;
-    in property <string> label;
-    in property <string> tip;
-    in property <bool> active;
-    in property <bool> enabled: true;
-    callback clicked();
-
-    width: root.label != "" ? max(32px, label-text.preferred-width + 18px) : 32px;
-    height: 30px;
-    border-radius: Theme.radius-sm;
-    background: !root.enabled ? transparent
-        : touch.pressed ? Theme.bg-active
-        : touch.has-hover ? Theme.bg-hover
-        : root.active ? Theme.bg-active
-        : transparent;
-    accessible-role: button;
-    accessible-label: root.tip != "" ? root.tip : root.label;
-    accessible-action-default => {
-        if (root.enabled) {
-            root.clicked();
-        }
-    }
-
-    if root.icon != "": Icon {
-        text: root.icon;
-        color: !root.enabled ? Theme.text-subtle : root.active ? Theme.accent : Theme.text-muted;
-    }
-    label-text := Text {
-        visible: root.icon == "";
-        text: root.label;
-        font-size: 12px;
-        color: !root.enabled ? Theme.text-subtle : root.active ? Theme.accent : Theme.text;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-component DialogButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> primary;
-    callback clicked();
-
-    height: 32px;
-    width: max(84px, t.preferred-width + 28px);
-    border-radius: Theme.radius;
-    background: root.primary
-        ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
-        : (touch.has-hover ? Theme.bg-hover : Theme.bg-active);
-    accessible-role: button;
-    accessible-label: root.text;
-    accessible-action-default => {
-        root.clicked();
-    }
-
-    t := Text {
-        text: root.text;
-        color: root.primary ? Theme.on-accent : Theme.text;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    touch := TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-component MenuEntry inherits Rectangle {
-    in property <string> text;
-    in property <bool> checked;
-    callback clicked();
-
-    height: 30px;
-    border-radius: Theme.radius-sm;
-    background: touch.has-hover ? Theme.bg-hover : transparent;
-    accessible-role: button;
-    accessible-label: root.text;
-
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 12px;
-        spacing: 8px;
-        Icon {
-            width: 16px;
-            text: root.checked ? "\u{E73E}" : "";
-            color: Theme.accent;
-            font-size: 12px;
-        }
-        Text {
-            text: root.text;
-            color: Theme.text;
-            vertical-alignment: center;
-        }
-    }
-    touch := TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-component SidebarTab inherits Rectangle {
-    in property <string> text;
-    in property <bool> active;
-    callback clicked();
-
-    height: 28px;
-    border-radius: Theme.radius-sm;
-    background: root.active ? Theme.bg-active : touch.has-hover ? Theme.bg-hover : transparent;
-    accessible-role: tab;
-    accessible-label: root.text;
-
-    Text {
-        text: root.text;
-        font-size: 12px;
-        color: root.active ? Theme.text : Theme.text-muted;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    touch := TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-component Menu inherits Rectangle {
-    background: Theme.bg-tertiary;
-    border-radius: Theme.radius;
-    border-width: 1px;
-    border-color: Theme.border;
-    drop-shadow-blur: 16px;
-    drop-shadow-color: Theme.shadow-lg;
-    VerticalLayout {
-        padding: 4px;
-        @children
-    }
 }
 
 export component MainWindow inherits Window {
@@ -483,6 +331,10 @@ export component MainWindow inherits Window {
     in property <image> ghost-image;
     callback pointer-left();
 
+    public function focus-assistant() {
+        assistant-panel.focus-input();
+    }
+
     public function show-stamp-menu() {
         stamp-menu.show();
     }
@@ -494,6 +346,14 @@ export component MainWindow inherits Window {
 
     public function show-field-menu() {
         field-menu.show();
+    }
+
+    // Where the menu for selected text opens, in document space.
+    in property <length> menu-x;
+    in property <length> menu-y;
+
+    public function show-text-menu() {
+        text-menu.show();
     }
 
     changed viewport-y => { root.view-changed(); }
@@ -781,6 +641,14 @@ export component MainWindow inherits Window {
                         enabled: root.has-document;
                         clicked => {
                             root.command("find");
+                        }
+                    }
+                    ToolButton {
+                        icon: "\u{E8BD}";
+                        tip: "Assistant (Ctrl+Shift+A)";
+                        active: Assistant.open;
+                        clicked => {
+                            root.command("assistant");
                         }
                     }
                     ToolButton {
@@ -1313,8 +1181,9 @@ export component MainWindow inherits Window {
                                 : mark.kind == 2 ? #4a7dff4d
                                 : mark.kind == 4 ? #ffffff
                                 : mark.kind == 5 ? transparent
+                                : mark.kind == 6 ? Theme.accent-glow
                                 : #8d9cff40;
-                            border-width: mark.kind == 4 ? 1px : mark.kind == 5 ? 2px : 0px;
+                            border-width: mark.kind == 4 ? 1px : mark.kind == 5 || mark.kind == 6 ? 2px : 0px;
                             border-color: Theme.accent;
                         }
                         Rectangle {
@@ -1376,6 +1245,31 @@ export component MainWindow inherits Window {
                                         if (!self.has-focus && root.field-editing) {
                                             root.field-commit(2);
                                         }
+                                    }
+                                }
+                            }
+                        }
+                        text-menu := PopupWindow {
+                            x: root.menu-x;
+                            y: root.menu-y;
+                            width: 220px;
+                            Menu {
+                                MenuEntry {
+                                    text: "Copy";
+                                    clicked => {
+                                        root.command("copy");
+                                    }
+                                }
+                                MenuEntry {
+                                    text: "Highlight";
+                                    clicked => {
+                                        root.command("highlight");
+                                    }
+                                }
+                                MenuEntry {
+                                    text: "Explain with the assistant";
+                                    clicked => {
+                                        root.command("ask-selection");
                                     }
                                 }
                             }
@@ -1768,6 +1662,11 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                }
+
+                assistant-panel := AssistantPanel {
+                    width: Assistant.open && root.chrome-visible ? Theme.assistant-width : 0px;
+                    visible: self.width > 0;
                 }
             }
 

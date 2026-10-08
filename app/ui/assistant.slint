@@ -1,0 +1,379 @@
+import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
+import { Theme } from "tokens.slint";
+import { DialogButton, ToolButton, SidebarTab } from "widgets.slint";
+
+/// One message of the assistant's chat.
+export struct ChatItem {
+    /// 0 the reader's question, 1 an answer, 2 an error.
+    kind: int,
+    text: string,
+    styled: styled-text,
+    /// Under an answer: the pages it read and what it cost.
+    note: string,
+}
+
+/// The assistant panel's state and events, handled in assistant.rs.
+export global Assistant {
+    in-out property <bool> open;
+    /// "Anthropic · claude-haiku-4-5", or what is missing.
+    in property <string> model;
+    in property <[ChatItem]> messages;
+    /// What the panel is doing while a question is out; empty when idle.
+    in property <string> busy;
+    /// Why the assistant cannot answer yet (no key, no model); empty when it can.
+    in property <string> notice;
+    /// Today's usage with the chosen provider.
+    in property <string> usage;
+    in-out property <string> draft;
+
+    in-out property <bool> setup;
+    in property <int> provider;
+    in-out property <string> setup-model;
+    in-out property <string> setup-key;
+    in property <bool> has-key;
+    in property <string> example-model;
+
+    callback send();
+    /// "document", "page" or "selection".
+    callback quick(string);
+    callback new-chat();
+    callback close();
+    callback link(string);
+    callback copy(int);
+    callback provider-picked(int);
+    callback save-setup();
+    callback remove-key();
+}
+
+component Suggestion inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: root.enabled && touch.has-hover ? Theme.bg-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.text;
+            font-size: 12px;
+            color: root.enabled ? Theme.text : Theme.text-subtle;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component AssistantPanel inherits Rectangle {
+    background: Theme.bg-secondary;
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    property <int> count: Assistant.messages.length;
+    changed count => {
+        list.content-y = min(0px, list.visible-height - list.content-height);
+    }
+
+    Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.border-muted;
+    }
+
+    VerticalLayout {
+        padding-left: 1px;
+
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 12px;
+            padding-right: 6px;
+            spacing: 2px;
+            Text {
+                text: "Assistant";
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Text {
+                text: Assistant.model;
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            ToolButton {
+                icon: "\u{E710}";
+                tip: "New chat about this document";
+                clicked => {
+                    Assistant.new-chat();
+                }
+            }
+            ToolButton {
+                icon: "\u{E713}";
+                tip: "Provider, model and key";
+                active: Assistant.setup;
+                clicked => {
+                    Assistant.setup = !Assistant.setup;
+                }
+            }
+            ToolButton {
+                icon: "\u{E711}";
+                tip: "Close (Ctrl+Shift+A)";
+                clicked => {
+                    Assistant.close();
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            list := ScrollView {
+                visible: root.count > 0;
+                content-width: self.visible-width;
+                content-height: column.preferred-height;
+                column := VerticalLayout {
+                    width: list.visible-width;
+                    padding: 12px;
+                    spacing: 12px;
+                    for m[i] in Assistant.messages: VerticalLayout {
+                        spacing: 4px;
+                        if m.kind == 0: Rectangle {
+                            border-radius: Theme.radius;
+                            background: Theme.bg-active;
+                            HorizontalLayout {
+                                padding: 8px;
+                                Text {
+                                    text: m.text;
+                                    wrap: word-wrap;
+                                    color: Theme.text;
+                                }
+                            }
+                        }
+                        if m.kind == 1: StyledText {
+                            text: m.styled;
+                            default-color: Theme.text;
+                            link-color: Theme.text-link;
+                            link-clicked(link) => {
+                                Assistant.link(link);
+                            }
+                        }
+                        if m.kind == 1: HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: m.note;
+                                font-size: 11px;
+                                color: Theme.text-subtle;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                            ToolButton {
+                                icon: "\u{E8C8}";
+                                tip: "Copy the answer";
+                                height: 24px;
+                                width: 24px;
+                                clicked => {
+                                    Assistant.copy(i);
+                                }
+                            }
+                        }
+                        if m.kind == 2: Text {
+                            text: m.text;
+                            wrap: word-wrap;
+                            color: Theme.danger;
+                        }
+                    }
+                    if Assistant.busy != "": Text {
+                        text: Assistant.busy;
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                    }
+                }
+            }
+
+            if root.count == 0: VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: Assistant.busy != "" ? Assistant.busy : "Ask about the open document. The assistant reads its text, and its answers cite pages: click a citation to go there. Each document keeps its own chat until you start a new one.";
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                }
+                Suggestion {
+                    text: "Summarize the document";
+                    enabled: Assistant.busy == "";
+                    clicked => {
+                        Assistant.quick("document");
+                    }
+                }
+                Suggestion {
+                    text: "Summarize this page";
+                    enabled: Assistant.busy == "";
+                    clicked => {
+                        Assistant.quick("page");
+                    }
+                }
+                Suggestion {
+                    text: "Explain the selection";
+                    enabled: Assistant.busy == "";
+                    clicked => {
+                        Assistant.quick("selection");
+                    }
+                }
+            }
+        }
+
+        if Assistant.notice != "": Rectangle {
+            background: Theme.bg-tertiary;
+            HorizontalLayout {
+                padding: 10px;
+                spacing: 8px;
+                Text {
+                    text: Assistant.notice;
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                DialogButton {
+                    text: "Add a key";
+                    clicked => {
+                        Assistant.setup = true;
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+            FocusScope {
+                height: 76px;
+                capture-key-pressed(e) => {
+                    if (e.modifiers.control && e.text == Key.Return) {
+                        Assistant.send();
+                        return accept;
+                    }
+                    return reject;
+                }
+                input := TextEdit {
+                    text <=> Assistant.draft;
+                    placeholder-text: "Ask about this document";
+                    accessible-label: "Question";
+                    wrap: word-wrap;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Ctrl+Enter to send";
+                    font-size: 11px;
+                    color: Theme.text-subtle;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: Assistant.usage;
+                    font-size: 11px;
+                    color: Theme.text-subtle;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                DialogButton {
+                    text: "Ask";
+                    primary: true;
+                    clicked => {
+                        Assistant.send();
+                    }
+                }
+            }
+        }
+    }
+    if Assistant.setup: Rectangle {
+        x: 1px;
+        y: 41px;
+        width: root.width - 1px;
+        height: root.height - 41px;
+        background: Theme.bg-secondary;
+        TouchArea { }
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            Text {
+                text: "Choose who answers and name the exact model. Keys are kept in Windows Credential Manager and are never shown again once saved.";
+                wrap: word-wrap;
+                font-size: 12px;
+                color: Theme.text-muted;
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                for name[i] in ["Anthropic", "OpenAI", "Google"]: SidebarTab {
+                    text: name;
+                    active: Assistant.provider == i;
+                    clicked => {
+                        Assistant.provider-picked(i);
+                    }
+                }
+            }
+            LineEdit {
+                placeholder-text: "Model, for example " + Assistant.example-model;
+                accessible-label: "Model name";
+                text <=> Assistant.setup-model;
+            }
+            LineEdit {
+                input-type: password;
+                placeholder-text: Assistant.has-key ? "Key saved; type a new one to replace it" : "API key";
+                accessible-label: "API key";
+                text <=> Assistant.setup-key;
+                accepted => {
+                    Assistant.save-setup();
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                if Assistant.has-key: DialogButton {
+                    text: "Remove key";
+                    clicked => {
+                        Assistant.remove-key();
+                    }
+                }
+                DialogButton {
+                    text: "Save";
+                    primary: true;
+                    clicked => {
+                        Assistant.save-setup();
+                    }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+            }
+        }
+    }
+}

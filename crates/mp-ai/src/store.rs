@@ -22,16 +22,56 @@ use crate::{Provider, Turn, Usage};
 pub struct Config {
     pub provider: Provider,
     pub models: HashMap<Provider, String>,
-    pub usage: DailyUsage,
+    /// Kept by provider: each meters its own free tier.
+    pub usage: HashMap<Provider, DailyUsage>,
 }
 
-/// Tokens used today (local time), as the providers counted them.
+/// One provider's use today (local time), as it counted the tokens.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DailyUsage {
     pub day: String,
+    pub requests: u64,
     pub input: u64,
     pub output: u64,
+}
+
+impl DailyUsage {
+    /// "today 12k in · 3.4k out"; empty before the first answer of the day. Input and output are
+    /// apart because providers meter and price them apart, and a long document makes the input
+    /// side climb far faster.
+    pub fn summary(&self) -> String {
+        if self.requests == 0 {
+            return String::new();
+        }
+        format!(
+            "today {} in · {} out",
+            tokens(self.input),
+            tokens(self.output)
+        )
+    }
+}
+
+impl Usage {
+    pub fn summary(&self) -> String {
+        format!("{} in · {} out", tokens(self.input), tokens(self.output))
+    }
+}
+
+/// 950, 1.2k, 34k, 1.5M.
+pub fn tokens(n: u64) -> String {
+    let short = |n: f64, unit: &str| {
+        if n >= 10.0 {
+            format!("{n:.0}{unit}")
+        } else {
+            format!("{n:.1}{unit}")
+        }
+    };
+    match n {
+        1_000_000.. => short(n as f64 / 1e6, "M"),
+        1_000.. => short(n as f64 / 1e3, "k"),
+        _ => n.to_string(),
+    }
 }
 
 fn dir() -> Option<PathBuf> {
@@ -73,37 +113,37 @@ impl Config {
         self.models.get(&provider).map_or("", String::as_str)
     }
 
-    /// Today's usage, which starts again at local midnight.
-    pub fn today(&self) -> DailyUsage {
-        self.usage_on(&today())
+    /// The provider's usage today, which starts again at local midnight.
+    pub fn today(&self, provider: Provider) -> DailyUsage {
+        self.usage_on(provider, &today())
     }
 
-    fn usage_on(&self, day: &str) -> DailyUsage {
-        if self.usage.day == day {
-            self.usage.clone()
-        } else {
-            DailyUsage {
+    fn usage_on(&self, provider: Provider, day: &str) -> DailyUsage {
+        match self.usage.get(&provider) {
+            Some(u) if u.day == day => u.clone(),
+            _ => DailyUsage {
                 day: day.into(),
-                input: 0,
-                output: 0,
-            }
+                ..DailyUsage::default()
+            },
         }
     }
 
-    /// Adds one answer's usage to today's total, stored at once so the app and the extension
-    /// count together, and returns the total.
-    pub fn record(usage: Usage) -> DailyUsage {
+    /// Adds one answer's usage to the provider's total for today, stored at once so the app and
+    /// the extension count together, and returns the total.
+    pub fn record(provider: Provider, usage: Usage) -> DailyUsage {
         let mut config = Config::load();
-        config.add(usage, &today());
+        let total = config.add(provider, usage, &today());
         config.save();
-        config.usage
+        total
     }
 
-    fn add(&mut self, usage: Usage, day: &str) {
-        let mut total = self.usage_on(day);
+    fn add(&mut self, provider: Provider, usage: Usage, day: &str) -> DailyUsage {
+        let mut total = self.usage_on(provider, day);
+        total.requests += 1;
         total.input += usage.input;
         total.output += usage.output;
-        self.usage = total;
+        self.usage.insert(provider, total.clone());
+        total
     }
 }
 
@@ -193,39 +233,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usage_adds_up_and_starts_again_each_day() {
+    fn usage_adds_up_by_provider_and_starts_again_each_day() {
         let mut config = Config::default();
+        let google = Provider::Google;
         config.add(
+            google,
             Usage {
                 input: 10,
                 output: 2,
             },
             "2026-10-09",
         );
-        config.add(
+        let total = config.add(
+            google,
             Usage {
-                input: 5,
+                input: 1_500,
                 output: 1,
             },
             "2026-10-09",
         );
         assert_eq!(
-            config.usage,
+            total,
             DailyUsage {
                 day: "2026-10-09".into(),
-                input: 15,
+                requests: 2,
+                input: 1_510,
                 output: 3
             }
         );
-        assert_eq!(config.usage_on("2026-10-10").input, 0);
-        config.add(
-            Usage {
-                input: 1,
-                output: 1,
-            },
-            "2026-10-10",
+        assert_eq!(total.summary(), "today 1.5k in · 3 out");
+        assert_eq!(
+            config.usage_on(Provider::OpenAi, "2026-10-09").summary(),
+            ""
         );
-        assert_eq!(config.usage.input, 1);
+        assert_eq!(config.usage_on(google, "2026-10-10").input, 0);
+        assert_eq!(
+            config
+                .add(
+                    google,
+                    Usage {
+                        input: 1,
+                        output: 1
+                    },
+                    "2026-10-10"
+                )
+                .requests,
+            1
+        );
+    }
+
+    #[test]
+    fn token_counts_read_short() {
+        assert_eq!(tokens(950), "950");
+        assert_eq!(tokens(1_234), "1.2k");
+        assert_eq!(tokens(34_000), "34k");
+        assert_eq!(tokens(1_500_000), "1.5M");
+        assert_eq!(
+            Usage {
+                input: 12_000,
+                output: 300
+            }
+            .summary(),
+            "12k in · 300 out"
+        );
     }
 
     #[test]

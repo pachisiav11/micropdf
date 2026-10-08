@@ -139,6 +139,10 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         }
         "reload" => app.reload_active(),
         "palette" => app.open_palette(),
+        "assistant" => crate::assistant::toggle(app),
+        "ask-document" => crate::assistant::quick(app, "document"),
+        "ask-page" => crate::assistant::quick(app, "page"),
+        "ask-selection" => crate::assistant::quick(app, "selection"),
         "palette-close" => app.close_palette(),
         "open" => return Some("open"),
         "print" => return Some("print"),
@@ -366,6 +370,7 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
             "g" => "goto",
             "k" => "palette",
             "p" if shift => "palette",
+            "a" if shift => "assistant",
             "p" => "print",
             "c" => "copy",
             "z" if shift => "redo",

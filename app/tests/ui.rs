@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::{AccessibleRole, ElementQuery};
 use micropdf::settings::Settings;
-use micropdf::{MainWindow, PageItem, viewer, wire};
+use micropdf::{Assistant, MainWindow, PageItem, viewer, wire};
 use slint::platform::Key;
 use slint::{ComponentHandle, Model};
 
@@ -1227,6 +1227,37 @@ fn steps() -> Vec<Step> {
             closed
         }),
         step(
+            "the assistant opens on the active document with Ctrl+Shift+A",
+            |w| {
+                w.invoke_key_input("A".into(), true, true, false);
+            },
+            |w| {
+                let panel = w.global::<Assistant>();
+                panel.get_open() && panel.get_busy().is_empty() && !panel.get_notice().is_empty()
+            },
+        ),
+        step(
+            "a question with no model set says what is missing, and goes back in the box",
+            |w| {
+                let panel = w.global::<Assistant>();
+                panel.set_draft("What is this?".into());
+                panel.invoke_send();
+            },
+            |w| {
+                let panel = w.global::<Assistant>();
+                let messages = panel.get_messages();
+                panel.get_busy().is_empty()
+                    && messages.row_count() == 1
+                    && messages.row_data(0).is_some_and(|m| m.kind == 2)
+                    && panel.get_draft() == "What is this?"
+            },
+        ),
+        step(
+            "a citation goes to its page and outlines it",
+            |w| w.global::<Assistant>().invoke_link("page:1".into()),
+            |w| marks(w, 6) == 1 && page(w) == "1",
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {
@@ -1299,6 +1330,10 @@ fn tick() {
 #[test]
 fn golden_path() {
     i_slint_backend_testing::init_integration_test_with_system_time();
+    // The assistant keeps its setup and chats under %APPDATA%; this run uses a scratch one, so
+    // it starts unconfigured and never reaches a provider.
+    let appdata = scratch("appdata");
+    unsafe { std::env::set_var("APPDATA", &appdata) };
     let window = MainWindow::new().unwrap();
     window
         .window()
@@ -1323,6 +1358,7 @@ fn golden_path() {
     });
     slint::run_event_loop().unwrap();
     ticker.join().unwrap();
+    let _ = std::fs::remove_dir_all(appdata);
     if let Some(message) = RUNNER.with_borrow_mut(|r| r.as_mut().and_then(|r| r.failure.take())) {
         panic!("{message}");
     }
