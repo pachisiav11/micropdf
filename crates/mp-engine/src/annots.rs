@@ -4,7 +4,8 @@ use std::path::Path;
 
 use mupdf::color::AnnotationColor;
 use mupdf::pdf::{
-    AnnotationQuadPoints, PdfAnnotation, PdfAnnotationType, PdfDocument, PdfPage, PdfWriteOptions,
+    AnnotationQuadPoints, PdfAnnotation, PdfAnnotationType, PdfDocument, PdfObject, PdfPage,
+    PdfWriteOptions,
 };
 use mupdf::{Document, Point, Quad};
 
@@ -182,6 +183,21 @@ pub(crate) fn operation<T>(
     }
 }
 
+/// A random annotation name (/NM). Review tools match comments by it, so importing an exported
+/// comment back into its document does not add it twice.
+fn unique_name() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let half = || {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(nanos);
+        h.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
+}
+
 fn label(new: &NewAnnot) -> &'static str {
     match new {
         NewAnnot::TextMarkup {
@@ -232,6 +248,9 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
         NewAnnot::Line { .. } => PdfAnnotationType::Line,
     };
     let mut annot = page.create_annotation(subtype)?;
+    annot
+        .object()
+        .dict_put("NM", PdfObject::new_string(&unique_name())?)?;
     let to_rect = |r: &Rect| mupdf::Rect::new(r.x0, r.y0, r.x1, r.y1);
     match new {
         NewAnnot::TextMarkup { rects, .. } => {

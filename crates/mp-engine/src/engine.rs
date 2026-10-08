@@ -11,6 +11,7 @@ use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 use crate::annots::{self, Annot, History, NewAnnot, Style};
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
+use crate::xfdf;
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem};
 
 /// Display lists kept per engine. Re-rendering a page at a new zoom reuses its list.
@@ -141,6 +142,16 @@ enum Command {
     MarkAspect {
         mark: Mark,
         reply: Reply<f32>,
+    },
+    ExportComments {
+        doc: DocId,
+        file: String,
+        reply: Reply<(String, usize)>,
+    },
+    ImportComments {
+        doc: DocId,
+        xml: String,
+        reply: Reply<usize>,
     },
     EditField {
         doc: DocId,
@@ -349,6 +360,16 @@ impl Engine {
             color,
             reply,
         })
+    }
+
+    /// The comments as XFDF, and how many; `file` is the PDF's name, recorded in the XFDF.
+    pub fn export_comments(&self, doc: DocId, file: String) -> Result<(String, usize), Error> {
+        self.call(|reply| Command::ExportComments { doc, file, reply })
+    }
+
+    /// Adds the comments in an XFDF file. Returns how many were added.
+    pub fn import_comments(&self, doc: DocId, xml: String) -> Result<usize, Error> {
+        self.call(|reply| Command::ImportComments { doc, xml, reply })
     }
 
     /// A mark's width over its height.
@@ -669,6 +690,14 @@ fn run(rx: mpsc::Receiver<Command>) {
             }
             Command::MarkAspect { mark, reply } => {
                 let _ = reply.send(marks::aspect(&mark));
+            }
+            Command::ExportComments { doc, file, reply } => {
+                let _ = reply.send(with_doc(&docs, doc, |d| xfdf::export(d, &file)));
+            }
+            Command::ImportComments { doc, xml, reply } => {
+                let result = with_doc(&docs, doc, |d| xfdf::import(d, &xml));
+                lists.remove_doc(doc);
+                let _ = reply.send(result);
             }
             Command::Flatten {
                 doc,

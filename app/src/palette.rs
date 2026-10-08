@@ -68,6 +68,8 @@ pub const COMMANDS: &[Command] = &[
     c("import-form", "Import form data (XFDF)", ""),
     c("flatten-form", "Flatten form fields into the page", ""),
     c("flatten-comments", "Flatten comments into the page", ""),
+    c("export-comments", "Export comments (XFDF)", ""),
+    c("import-comments", "Import comments (XFDF)", ""),
     c("sign", "Add signature", ""),
     c("initials", "Add initials", ""),
     c("new-signature", "New signature", ""),

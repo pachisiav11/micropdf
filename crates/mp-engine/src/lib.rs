@@ -14,6 +14,7 @@ mod marks;
 mod render;
 mod text;
 mod types;
+mod xfdf;
 
 pub use annots::{Annot, AnnotKind, History, NewAnnot, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};

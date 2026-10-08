@@ -3697,6 +3697,56 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
     }
 
+    /// Writes the active tab's comments to `target` as XFDF.
+    pub fn export_comments(&mut self, target: PathBuf) {
+        let Some(tab) = self.tab() else { return };
+        let (doc, name) = (tab.info.id, tab.name());
+        let result = self
+            .engine
+            .export_comments(doc, name)
+            .map_err(|e| e.to_string())
+            .and_then(|(xml, n)| {
+                std::fs::write(&target, xml)
+                    .map(|()| n)
+                    .map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(n) => self.status(format!(
+                "Exported {} to {}",
+                plural(n, "comment"),
+                file_name(&target)
+            )),
+            Err(e) => self.message("Could not export comments", e),
+        }
+    }
+
+    /// Adds the comments in the XFDF file at `path` to the active tab. Comments it already
+    /// holds (by name) are skipped, so importing a file twice adds nothing.
+    pub fn import_comments(&mut self, path: PathBuf) {
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        let result = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|xml| {
+                self.engine
+                    .import_comments(doc, xml)
+                    .map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(0) => self.status(format!("{} holds no new comments", file_name(&path))),
+            Ok(n) => {
+                self.edited(None);
+                self.status(format!(
+                    "Imported {} from {}",
+                    plural(n, "comment"),
+                    file_name(&path)
+                ));
+            }
+            Err(e) => self.message("Could not import comments", e),
+        }
+    }
+
     pub fn reset_form(&mut self) {
         let Some(doc) = self.tab().map(|t| t.info.id) else {
             return;
@@ -4022,6 +4072,14 @@ pub fn file_name(path: &Path) -> String {
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
         .into_owned()
+}
+
+fn plural(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
 }
 
 /// Windows paths compare case-insensitively.

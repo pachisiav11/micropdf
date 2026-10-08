@@ -1,0 +1,391 @@
+//! Comments as XFDF, the XML format Acrobat uses to export and import review comments.
+//!
+//! Both directions work on the annotations' PDF dictionaries, in PDF page space, so the numbers
+//! pass through unchanged. Stamps (which keep their look, such as a signature, in an appearance
+//! stream), links, form widgets, popups and file attachments are not exported.
+
+use std::collections::{HashMap, HashSet};
+
+use mupdf::Document;
+use mupdf::pdf::{PdfAnnotationType, PdfDocument, PdfObject, PdfPage};
+
+use crate::Error;
+use crate::annots::operation;
+use crate::forms::escape;
+
+/// XFDF element names, the PDF subtypes they stand for, and MuPDF's annotation types.
+const KINDS: [(&str, &str, PdfAnnotationType); 12] = [
+    ("text", "Text", PdfAnnotationType::Text),
+    ("freetext", "FreeText", PdfAnnotationType::FreeText),
+    ("highlight", "Highlight", PdfAnnotationType::Highlight),
+    ("underline", "Underline", PdfAnnotationType::Underline),
+    ("strikeout", "StrikeOut", PdfAnnotationType::StrikeOut),
+    ("squiggly", "Squiggly", PdfAnnotationType::Squiggly),
+    ("ink", "Ink", PdfAnnotationType::Ink),
+    ("square", "Square", PdfAnnotationType::Square),
+    ("circle", "Circle", PdfAnnotationType::Circle),
+    ("line", "Line", PdfAnnotationType::Line),
+    ("polygon", "Polygon", PdfAnnotationType::Polygon),
+    ("polyline", "PolyLine", PdfAnnotationType::PolyLine),
+];
+
+/// The annotation flags in bit order, as XFDF names them.
+const FLAGS: [&str; 10] = [
+    "invisible",
+    "hidden",
+    "print",
+    "nozoom",
+    "norotate",
+    "noview",
+    "readonly",
+    "locked",
+    "togglenoview",
+    "lockedcontents",
+];
+
+fn get(obj: &PdfObject, key: &str) -> Result<Option<PdfObject>, Error> {
+    Ok(obj.get_dict(key)?)
+}
+
+fn numbers(obj: &PdfObject) -> Result<Vec<f32>, Error> {
+    let mut out = Vec::new();
+    if obj.is_array()? {
+        for item in obj.array_iter()? {
+            let item = item?;
+            if item.is_number()? {
+                out.push(item.as_float()?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A number without trailing zeros: 12, 12.5, 12.3456.
+fn num(n: f32) -> String {
+    let s = format!("{n:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".into() } else { s.into() }
+}
+
+fn join(values: &[f32], sep: &str) -> String {
+    values.iter().map(|&v| num(v)).collect::<Vec<_>>().join(sep)
+}
+
+/// Points as XFDF writes them in gestures and vertices: "x,y;x,y".
+fn points(values: &[f32]) -> String {
+    values
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[x, y]| format!("{},{}", num(*x), num(*y)))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn hex(color: &[f32]) -> Option<String> {
+    let [r, g, b] = match *color {
+        [g] => [g; 3],
+        [r, g, b] => [r, g, b],
+        [c, m, y, k] => [
+            (1.0 - c) * (1.0 - k),
+            (1.0 - m) * (1.0 - k),
+            (1.0 - y) * (1.0 - k),
+        ],
+        _ => return None,
+    };
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Some(format!("#{:02X}{:02X}{:02X}", byte(r), byte(g), byte(b)))
+}
+
+fn string(obj: &PdfObject, key: &str) -> Result<Option<String>, Error> {
+    match get(obj, key)? {
+        Some(v) if v.is_string()? => Ok(Some(v.as_string()?)),
+        _ => Ok(None),
+    }
+}
+
+fn name(obj: &PdfObject, key: &str) -> Result<Option<String>, Error> {
+    match get(obj, key)? {
+        Some(v) if v.is_name()? => Ok(Some(String::from_utf8_lossy(&v.as_name()?).into_owned())),
+        _ => Ok(None),
+    }
+}
+
+fn border_width(obj: &PdfObject) -> Result<Option<f32>, Error> {
+    if let Some(bs) = get(obj, "BS")?
+        && let Some(w) = get(&bs, "W")?
+        && w.is_number()?
+    {
+        return Ok(Some(w.as_float()?));
+    }
+    Ok(None)
+}
+
+/// The document's comments as XFDF, and how many there are. `file` names the PDF.
+pub fn export(doc: &Document, file: &str) -> Result<(String, usize), Error> {
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <xfdf xmlns=\"http://ns.adobe.com/xfdf/\" xml:space=\"preserve\">\n<annots>\n",
+    );
+    let mut count = 0;
+    for page_no in 0..doc.page_count()? {
+        let Ok(page) = PdfPage::try_from(doc.load_page(page_no)?) else {
+            break;
+        };
+        for annot in page.annotations() {
+            let obj = annot.object();
+            let Some(subtype) = name(&obj, "Subtype")? else {
+                continue;
+            };
+            let Some(&(tag, _, _)) = KINDS.iter().find(|k| k.1 == subtype) else {
+                continue;
+            };
+            let mut attrs = vec![("page", page_no.to_string())];
+            let mut children = String::new();
+            if let Some(r) = get(&obj, "Rect")? {
+                let r = numbers(&r)?;
+                if let [x0, y0, x1, y1] = r[..] {
+                    let rect = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+                    attrs.push(("rect", join(&rect, ",")));
+                }
+            }
+            if let Some(c) = get(&obj, "C")?
+                && let Some(c) = hex(&numbers(&c)?)
+            {
+                attrs.push(("color", c));
+            }
+            for (key, attr) in [("T", "title"), ("NM", "name"), ("M", "date")] {
+                if let Some(v) = string(&obj, key)? {
+                    attrs.push((attr, v));
+                }
+            }
+            if let Some(ca) = get(&obj, "CA")?
+                && ca.is_number()?
+            {
+                attrs.push(("opacity", num(ca.as_float()?)));
+            }
+            if let Some(f) = get(&obj, "F")?
+                && f.is_int()?
+            {
+                let bits = f.as_int()?;
+                let set: Vec<&str> = (0..FLAGS.len())
+                    .filter(|i| bits & (1 << i) != 0)
+                    .map(|i| FLAGS[i])
+                    .collect();
+                if !set.is_empty() {
+                    attrs.push(("flags", set.join(",")));
+                }
+            }
+            if let Some(icon) = name(&obj, "Name")? {
+                attrs.push(("icon", icon));
+            }
+            if let Some(w) = border_width(&obj)? {
+                attrs.push(("width", num(w)));
+            }
+            if let Some(ic) = get(&obj, "IC")?
+                && let Some(ic) = hex(&numbers(&ic)?)
+            {
+                attrs.push(("interior-color", ic));
+            }
+            if let Some(q) = get(&obj, "QuadPoints")? {
+                attrs.push(("coords", join(&numbers(&q)?, ",")));
+            }
+            if let Some(l) = get(&obj, "L")?
+                && let [x1, y1, x2, y2] = numbers(&l)?[..]
+            {
+                attrs.push(("start", format!("{},{}", num(x1), num(y1))));
+                attrs.push(("end", format!("{},{}", num(x2), num(y2))));
+            }
+            if let Some(contents) = string(&obj, "Contents")?
+                && !contents.is_empty()
+            {
+                children += &format!("<contents>{}</contents>", escape(&contents));
+            }
+            if let Some(ink) = get(&obj, "InkList")? {
+                children += "<inklist>";
+                for stroke in ink.array_iter()? {
+                    children += &format!("<gesture>{}</gesture>", points(&numbers(&stroke?)?));
+                }
+                children += "</inklist>";
+            }
+            if let Some(v) = get(&obj, "Vertices")? {
+                children += &format!("<vertices>{}</vertices>", points(&numbers(&v)?));
+            }
+            if let Some(da) = string(&obj, "DA")? {
+                children += &format!("<defaultappearance>{}</defaultappearance>", escape(&da));
+            }
+            out += &format!("<{tag}");
+            for (k, v) in attrs {
+                out += &format!(" {k}=\"{}\"", escape(&v));
+            }
+            if children.is_empty() {
+                out += "/>\n";
+            } else {
+                out += &format!(">{children}</{tag}>\n");
+            }
+            count += 1;
+        }
+    }
+    out += &format!("</annots>\n<f href=\"{}\"/>\n</xfdf>\n", escape(file));
+    Ok((out, count))
+}
+
+fn parse_numbers(text: &str) -> Option<Vec<f32>> {
+    text.split([',', ';', ' '])
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().parse().ok())
+        .collect()
+}
+
+fn parse_color(text: &str) -> Option<[f32; 3]> {
+    let hex = text.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(hex, 16).ok()?;
+    Some([
+        ((v >> 16) & 0xff) as f32 / 255.0,
+        ((v >> 8) & 0xff) as f32 / 255.0,
+        (v & 0xff) as f32 / 255.0,
+    ])
+}
+
+fn array(pdf: &PdfDocument, values: &[f32]) -> Result<PdfObject, Error> {
+    Ok(pdf.new_object_from_str(&format!("[{}]", join(values, " ")))?)
+}
+
+/// Adds the comments in `xml` as one undoable step. Comments whose name the document already
+/// has are skipped, so importing the same file twice adds nothing. Returns how many were added.
+pub fn import(doc: &Document, xml: &str) -> Result<usize, Error> {
+    let tree = roxmltree::Document::parse(xml).map_err(|_| Error::Invalid("not an XFDF file"))?;
+    let nodes: Vec<roxmltree::Node> = tree
+        .descendants()
+        .filter(|n| n.has_tag_name("annots"))
+        .flat_map(|n| n.children().filter(roxmltree::Node::is_element))
+        .collect();
+    operation(doc, "Import comments", || {
+        let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+        let page_count = doc.page_count()?;
+        let mut pages: HashMap<i32, PdfPage> = HashMap::new();
+        let mut names = HashSet::new();
+        for i in 0..page_count {
+            let page = PdfPage::try_from(doc.load_page(i)?).map_err(|_| Error::NotPdf)?;
+            for annot in page.annotations() {
+                names.extend(string(&annot.object(), "NM")?);
+            }
+            pages.insert(i, page);
+        }
+        let mut added = 0;
+        for node in nodes {
+            let Some(&(_, _, subtype)) = KINDS.iter().find(|k| k.0 == node.tag_name().name())
+            else {
+                continue;
+            };
+            let Some(page_no) = node
+                .attribute("page")
+                .and_then(|p| p.parse::<i32>().ok())
+                .filter(|p| (0..page_count).contains(p))
+            else {
+                continue;
+            };
+            let Some(rect) = node.attribute("rect").and_then(parse_numbers) else {
+                continue;
+            };
+            let [x0, y0, x1, y1] = rect[..] else { continue };
+            if let Some(n) = node.attribute("name")
+                && !names.insert(n.to_owned())
+            {
+                continue;
+            }
+            let page = pages.get_mut(&page_no).expect("every page is loaded");
+            let mut annot = page.create_annotation(subtype)?;
+            let mut obj = annot.object();
+            obj.dict_put("Rect", array(&pdf, &[x0, y0, x1, y1])?)?;
+            for (attr, key) in [("title", "T"), ("name", "NM"), ("date", "M")] {
+                if let Some(v) = node.attribute(attr) {
+                    obj.dict_put(key, PdfObject::new_string(v)?)?;
+                }
+            }
+            for (attr, key) in [("color", "C"), ("interior-color", "IC")] {
+                if let Some(c) = node.attribute(attr).and_then(parse_color) {
+                    obj.dict_put(key, array(&pdf, &c)?)?;
+                }
+            }
+            if let Some(o) = node
+                .attribute("opacity")
+                .and_then(|o| o.parse::<f32>().ok())
+            {
+                obj.dict_put("CA", PdfObject::new_real(o)?)?;
+            }
+            if let Some(f) = node.attribute("flags") {
+                let bits = f
+                    .split(',')
+                    .filter_map(|n| FLAGS.iter().position(|&f| f == n.trim()))
+                    .fold(0, |bits, i| bits | (1 << i));
+                obj.dict_put("F", PdfObject::new_int(bits)?)?;
+            }
+            if let Some(icon) = node.attribute("icon") {
+                obj.dict_put("Name", PdfObject::new_name(icon)?)?;
+            }
+            if let Some(w) = node.attribute("width").and_then(|w| w.parse::<f32>().ok()) {
+                obj.dict_put(
+                    "BS",
+                    pdf.new_object_from_str(&format!("<</W {}>>", num(w)))?,
+                )?;
+            }
+            if let Some(q) = node.attribute("coords").and_then(parse_numbers) {
+                obj.dict_put("QuadPoints", array(&pdf, &q)?)?;
+            }
+            if let (Some(s), Some(e)) = (
+                node.attribute("start").and_then(parse_numbers),
+                node.attribute("end").and_then(parse_numbers),
+            ) && let ([x1, y1], [x2, y2]) = (&s[..], &e[..])
+            {
+                obj.dict_put("L", array(&pdf, &[*x1, *y1, *x2, *y2])?)?;
+            }
+            for child in node.children().filter(roxmltree::Node::is_element) {
+                match child.tag_name().name() {
+                    "contents" => {
+                        let text: String = child
+                            .descendants()
+                            .filter(|n| n.is_text())
+                            .filter_map(|n| n.text())
+                            .collect();
+                        obj.dict_put("Contents", PdfObject::new_string(&text)?)?;
+                    }
+                    "inklist" => {
+                        let strokes: Vec<String> = child
+                            .children()
+                            .filter(|n| n.has_tag_name("gesture"))
+                            .filter_map(|g| parse_numbers(g.text().unwrap_or_default()))
+                            .map(|s| format!("[{}]", join(&s, " ")))
+                            .collect();
+                        obj.dict_put(
+                            "InkList",
+                            pdf.new_object_from_str(&format!("[{}]", strokes.join(" ")))?,
+                        )?;
+                    }
+                    "vertices" => {
+                        if let Some(v) = parse_numbers(child.text().unwrap_or_default()) {
+                            obj.dict_put("Vertices", array(&pdf, &v)?)?;
+                        }
+                    }
+                    "defaultappearance" => {
+                        let da = child.text().unwrap_or_default();
+                        obj.dict_put("DA", PdfObject::new_string(da)?)?;
+                    }
+                    _ => {}
+                }
+            }
+            // Writing the dictionary does not tell MuPDF the look changed; setting the flags
+            // (to what they are) does, so the update below redraws it.
+            let flags = annot.flags()?;
+            annot.set_flags(flags)?;
+            added += 1;
+        }
+        for page in pages.values_mut() {
+            page.update()?;
+        }
+        Ok(added)
+    })
+}

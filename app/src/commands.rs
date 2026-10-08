@@ -16,8 +16,10 @@ pub fn run(id: &str) {
     match id {
         "open" => open_dialog(),
         "save-as" => save_as_dialog(),
-        "export-form" => form_data_dialog(true),
-        "import-form" => form_data_dialog(false),
+        "export-form" => xfdf_dialog(Xfdf::Form, true),
+        "import-form" => xfdf_dialog(Xfdf::Form, false),
+        "export-comments" => xfdf_dialog(Xfdf::Comments, true),
+        "import-comments" => xfdf_dialog(Xfdf::Comments, false),
         "sign-image" => sign_image_dialog(),
         "print" => crate::print::start(),
         "register-pdf" => {
@@ -132,6 +134,8 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "save-as" => return Some("save-as"),
         "export-form" => return Some("export-form"),
         "import-form" => return Some("import-form"),
+        "export-comments" => return Some("export-comments"),
+        "import-comments" => return Some("import-comments"),
         "sign-image" => return Some("sign-image"),
         _ => {}
     }
@@ -199,37 +203,52 @@ fn save_as_dialog() {
     });
 }
 
-/// Asks for an XFDF file to export the form data to, or to import it from.
-fn form_data_dialog(export: bool) {
+#[derive(Clone, Copy)]
+enum Xfdf {
+    Form,
+    Comments,
+}
+
+/// Asks for an XFDF file to export the form data or comments to, or to import them from.
+fn xfdf_dialog(what: Xfdf, export: bool) {
     let Some(path) = viewer::with(|app| app.active_path()).flatten() else {
         return;
     };
     if SAVE_DIALOG.swap(true, Ordering::SeqCst) {
         return;
     }
+    let (filter, noun) = match what {
+        Xfdf::Form => ("XFDF form data", "form data"),
+        Xfdf::Comments => ("XFDF comments", "comments"),
+    };
     std::thread::spawn(move || {
-        let mut dialog = rfd::FileDialog::new().add_filter("XFDF form data", &["xfdf"]);
+        let mut dialog = rfd::FileDialog::new().add_filter(filter, &["xfdf"]);
         if let Some(dir) = path.parent() {
             dialog = dialog.set_directory(dir);
         }
         let target = if export {
-            let name = path.with_extension("xfdf");
+            let name = match what {
+                Xfdf::Form => path.with_extension("xfdf"),
+                Xfdf::Comments => {
+                    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                    path.with_file_name(format!("{stem} comments.xfdf"))
+                }
+            };
             dialog
-                .set_title("Export form data")
+                .set_title(format!("Export {noun}"))
                 .set_file_name(viewer::file_name(&name))
                 .save_file()
         } else {
-            dialog.set_title("Import form data").pick_file()
+            dialog.set_title(format!("Import {noun}")).pick_file()
         };
         SAVE_DIALOG.store(false, Ordering::SeqCst);
         if let Some(target) = target {
             let _ = slint::invoke_from_event_loop(move || {
-                viewer::with(|app| {
-                    if export {
-                        app.export_form(target);
-                    } else {
-                        app.import_form(target);
-                    }
+                viewer::with(|app| match (what, export) {
+                    (Xfdf::Form, true) => app.export_form(target),
+                    (Xfdf::Form, false) => app.import_form(target),
+                    (Xfdf::Comments, true) => app.export_comments(target),
+                    (Xfdf::Comments, false) => app.import_comments(target),
                 });
             });
         }

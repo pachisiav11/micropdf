@@ -251,3 +251,90 @@ fn undo_and_redo_step_through_edits() {
     engine.undo(doc).unwrap();
     assert_eq!(engine.annotations(doc, 0).unwrap().len(), 1);
 }
+
+#[test]
+fn comments_round_trip_through_xfdf() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let mut s = style();
+    let highlight = NewAnnot::TextMarkup {
+        kind: AnnotKind::Highlight,
+        rects: vec![TEXT],
+    };
+    engine.add_annotation(doc, 0, highlight, s.clone()).unwrap();
+    let note = NewAnnot::Note {
+        x: 250.0,
+        y: 20.0,
+        text: "Check <this> & that".into(),
+    };
+    engine.add_annotation(doc, 0, note, s.clone()).unwrap();
+    s.color = [0.1, 0.45, 0.9];
+    let ink = NewAnnot::Ink {
+        strokes: vec![vec![(20.0, 150.0), (60.0, 170.0), (100.0, 150.0)]],
+        width: 2.0,
+    };
+    engine.add_annotation(doc, 0, ink, s.clone()).unwrap();
+    let square = NewAnnot::Shape {
+        kind: AnnotKind::Square,
+        rect: Rect {
+            x0: 200.0,
+            y0: 140.0,
+            x1: 260.0,
+            y1: 180.0,
+        },
+        width: 1.5,
+    };
+    engine.add_annotation(doc, 0, square, s.clone()).unwrap();
+    let line = NewAnnot::Line {
+        from: (20.0, 190.0),
+        to: (120.0, 190.0),
+        width: 1.0,
+    };
+    engine.add_annotation(doc, 0, line, s).unwrap();
+    let before = engine.annotations(doc, 0).unwrap();
+
+    let (xml, count) = engine.export_comments(doc, "hello.pdf".into()).unwrap();
+    assert_eq!(count, 5, "{xml}");
+    for part in [
+        "<highlight page=\"0\"",
+        "coords=\"",
+        "title=\"Tester\"",
+        "<contents>Check &lt;this&gt; &amp; that</contents>",
+        "<inklist><gesture>",
+        "<f href=\"hello.pdf\"/>",
+    ] {
+        assert!(xml.contains(part), "{part} missing from {xml}");
+    }
+
+    // Into a fresh copy: the same comments, in the same places, drawn.
+    let copy = engine.open(fixture("hello.pdf")).unwrap().id;
+    assert_eq!(engine.import_comments(copy, xml.clone()).unwrap(), 5);
+    let after = engine.annotations(copy, 0).unwrap();
+    assert_eq!(after.len(), 5);
+    for (a, b) in before.iter().zip(&after) {
+        assert_eq!(
+            (a.kind, &a.contents, &a.author),
+            (b.kind, &b.contents, &b.author)
+        );
+        let (ca, cb) = (a.color.unwrap(), b.color.unwrap());
+        assert!(
+            ca.iter().zip(cb).all(|(x, y)| (x - y).abs() < 0.01),
+            "{ca:?} {cb:?}"
+        );
+        let (ra, rb) = (a.rect, b.rect);
+        let close = [ra.x0 - rb.x0, ra.y0 - rb.y0, ra.x1 - rb.x1, ra.y1 - rb.y1]
+            .iter()
+            .all(|d| d.abs() < 2.0);
+        assert!(close, "{:?}: {ra:?} became {rb:?}", a.kind);
+    }
+    assert!(yellow_pixels(&engine, copy) > 1000);
+    assert_eq!(
+        engine.history(copy).unwrap().undo.as_deref(),
+        Some("Import comments")
+    );
+
+    // Importing again adds nothing, in the copy or the original: the names match.
+    assert_eq!(engine.import_comments(copy, xml.clone()).unwrap(), 0);
+    assert_eq!(engine.import_comments(doc, xml).unwrap(), 0);
+    assert!(engine.import_comments(copy, "not xml".into()).is_err());
+}

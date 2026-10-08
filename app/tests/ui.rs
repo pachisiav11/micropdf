@@ -699,6 +699,47 @@ fn steps() -> Vec<Step> {
             },
             |w| comments() == 2 && w.get_has_initials(),
         ),
+        step(
+            "a note to export",
+            |w| {
+                w.invoke_command("tool-note".into());
+                drag_hello(w, &[(40.0, 40.0)]);
+                w.invoke_dialog_accept("Exported".into());
+                w.invoke_command("tool-select".into());
+            },
+            |_| comments() == 3,
+        ),
+        step(
+            "export the comments",
+            |_| viewer::with(|app| app.export_comments(scratch("comments.xfdf"))).unwrap(),
+            |w| {
+                std::fs::read_to_string(scratch("comments.xfdf"))
+                    .is_ok_and(|x| x.contains("<contents>Exported</contents>"))
+                    && w.get_status_left().starts_with("Exported 1 comment to")
+            },
+        ),
+        step("undo the note", command("undo"), |_| comments() == 2),
+        step(
+            "import brings it back",
+            |_| viewer::with(|app| app.import_comments(scratch("comments.xfdf"))).unwrap(),
+            |w| {
+                comments() == 3
+                    && w.get_undo_name() == "Import comments"
+                    && w.get_status_left().starts_with("Imported 1 comment from")
+            },
+        ),
+        step(
+            "a second import adds nothing",
+            |_| viewer::with(|app| app.import_comments(scratch("comments.xfdf"))).unwrap(),
+            |w| {
+                let done =
+                    comments() == 3 && w.get_status_left().ends_with("holds no new comments");
+                if done {
+                    let _ = std::fs::remove_file(scratch("comments.xfdf"));
+                }
+                done
+            },
+        ),
         step("Add signature reuses the saved one", command("sign"), |w| {
             w.get_tool() == 7 && w.get_sign_kind().is_empty()
         }),
