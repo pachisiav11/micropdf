@@ -17,8 +17,7 @@
 - 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
 - 2026-10-08 16:25: M2 — GUI check (user away, or on a Windows VM): the sign pad (each font sample in its own face, drawing follows the pointer, image preview) and a placed signature at a sensible size
 - 2026-10-08 21:19: M2 — exit check in Acrobat DC (user away): open target/m2-exit/*.pdf (cargo run -p mp-engine --example m2_exit); comments, replies, review state, lock, attachment, signature and form values show; Acrobat imports comments.xfdf and fields.fdf into a fresh form.pdf
-- 2026-10-08 21:19: M2 — qpdf --check of target/m2-exit/*.pdf: qpdf 12.4.2 is installed in C:/Program Files/qpdf 12.4.2/bin
-- 2026-10-08 21:19: M3.3 — extension viewer: thumbnails, outline, search, zoom, page modes, Vim layer
 - 2026-10-08 21:19: M3.4 — extension annotate + save (File System Access or download; save in place through the bridge), form fill
 - 2026-10-08 21:19: M3.5 — extension hand-off (button, toolbar action, link context menu), save page as PDF (optional debugger permission), options page, file:// handling
-- 2026-10-08 21:19: M3.6 — Playwright suite with the unpacked extension (open web PDF, annotate, save, hand-off with a mocked bridge)
+- 2026-10-08 21:19: M3.6 — Playwright suite with the unpacked extension (open web PDF, annotate, save, hand-off with a mocked bridge). The viewer suite (e2e/viewer.spec.ts) runs in the installed Chrome; loading the unpacked extension needs Playwright's Chromium (branded Chrome ignores --load-extension since 137), a ~170 MB download: ask the user first
+- 2026-10-09 01:41: M3.5 — extension print: Ctrl+P prints the PDF (a hidden frame with the bytes in the browser's own viewer), not the viewer page

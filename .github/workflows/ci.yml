@@ -44,3 +44,5 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      # Browser tests drive the runner's Chrome.
+      - run: npm run e2e

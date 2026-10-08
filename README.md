@@ -48,6 +48,7 @@ cd extension
 npm install
 npm run build   # or `npm run dev` to rebuild on every change
 npm test        # unit tests; `npm run check` type-checks
+npm run e2e     # browser tests, headless in the installed Chrome
 ```
 
 Load `extension/dist` as an unpacked extension (`chrome://extensions`, Developer mode, Load

@@ -5,6 +5,8 @@ target/
 # Node / extension
 node_modules/
 extension/dist/
+extension/test-results/
+extension/playwright-report/
 
 # Benchmarks and generated output
 bench/results/

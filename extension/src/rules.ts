@@ -41,3 +41,11 @@ export function fileName(url: string): string {
     return "document.pdf";
   }
 }
+
+/** The page (from 0) that the PDF's own fragment asks for, as in `file.pdf#page=3`, or null. */
+export function startPage(pdfUrl: string): number | null {
+  const fragment = pdfUrl.split("#")[1] ?? "";
+  const page = new URLSearchParams(fragment.replaceAll("&amp;", "&")).get("page");
+  const n = page === null ? NaN : Number.parseInt(page, 10);
+  return Number.isFinite(n) && n >= 1 ? n - 1 : null;
+}

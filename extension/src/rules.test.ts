@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileName, pdfRule, pdfSource } from "./rules";
+import { fileName, pdfRule, pdfSource, startPage } from "./rules";
 
 const VIEWER = "chrome-extension://phhaejfhblmccnkhnhjflbhckkanlnki/viewer.html";
 
@@ -32,5 +32,15 @@ describe("fileName", () => {
     expect(fileName("https://a.test/docs/Q3%20report.pdf?x=1")).toBe("Q3 report.pdf");
     expect(fileName("https://a.test/")).toBe("document.pdf");
     expect(fileName("not a url")).toBe("document.pdf");
+  });
+});
+
+describe("startPage", () => {
+  it("reads the page open parameter", () => {
+    expect(startPage("https://a.org/f.pdf#page=3")).toBe(2);
+    expect(startPage("https://a.org/f.pdf#zoom=50&page=10")).toBe(9);
+    expect(startPage("https://a.org/f.pdf")).toBeNull();
+    expect(startPage("https://a.org/f.pdf#page=0")).toBeNull();
+    expect(startPage("https://a.org/f.pdf#nameddest=intro")).toBeNull();
   });
 });
