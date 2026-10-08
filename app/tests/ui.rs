@@ -651,6 +651,82 @@ fn steps() -> Vec<Step> {
             |w| w.get_dialog_kind().is_empty() && active_title(w) == "xfa-dynamic.pdf",
         ),
         step(
+            "open a copy to sign",
+            |_| {
+                std::fs::copy(fixture("hello.pdf"), scratch("sign.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("sign.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("sign.pdf")) && comments() == 0,
+        ),
+        step(
+            "Sign without a saved signature opens the pad",
+            command("sign"),
+            |w| w.get_sign_kind() == "signature" && w.get_sign_fonts().row_count() > 0,
+        ),
+        step(
+            "a typed signature starts the Sign tool",
+            |w| {
+                w.set_sign_mode(0);
+                w.set_sign_text("Ada Lovelace".into());
+                w.invoke_command("sign-done".into());
+            },
+            |w| w.get_sign_kind().is_empty() && w.get_tool() == 7 && w.get_has_signature(),
+        ),
+        step(
+            "clicking the page signs it",
+            |w| drag_hello(w, &[(150.0, 160.0)]),
+            |w| comments() == 1 && w.get_undo_name() == "Sign" && w.get_tool() == 0,
+        ),
+        step(
+            "initials drawn on the pad",
+            |w| {
+                w.invoke_command("new-initials".into());
+                w.set_sign_mode(1);
+                w.invoke_sign_pad_down(20.0, 20.0);
+                w.invoke_sign_pad_move(60.0, 80.0);
+                w.invoke_sign_pad_move(100.0, 20.0);
+            },
+            |w| {
+                w.get_sign_kind() == "initials"
+                    && w.get_sign_path() == "M 20.0 20.0 L 60.0 80.0 L 100.0 20.0 "
+            },
+        ),
+        step(
+            "the initials are placed",
+            |w| {
+                w.invoke_command("sign-done".into());
+                drag_hello(w, &[(250.0, 160.0)]);
+            },
+            |w| comments() == 2 && w.get_has_initials(),
+        ),
+        step("Add signature reuses the saved one", command("sign"), |w| {
+            w.get_tool() == 7 && w.get_sign_kind().is_empty()
+        }),
+        step(
+            "Esc leaves the Sign tool",
+            key(char::from(Key::Escape)),
+            |w| w.get_tool() == 0,
+        ),
+        step(
+            "forget the saved signatures",
+            command("forget-signatures"),
+            |w| !w.get_has_signature() && !w.get_has_initials(),
+        ),
+        step(
+            "close the signed copy without saving",
+            |w| {
+                w.invoke_command("close-tab".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                let closed = active_title(w) == "xfa-dynamic.pdf";
+                if closed {
+                    let _ = std::fs::remove_file(scratch("sign.pdf"));
+                }
+                closed
+            },
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

@@ -18,7 +18,7 @@ mod types;
 pub use annots::{Annot, AnnotKind, History, NewAnnot, Style};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
-pub use fonts::has_cjk;
+pub use fonts::{has_cjk, has_font};
 pub use forms::{Field, FieldEdit, FieldKind, Xfa};
 pub use marks::Mark;
 pub use mupdf::CjkFontOrdering;

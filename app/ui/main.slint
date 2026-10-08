@@ -276,7 +276,7 @@ export component MainWindow inherits Window {
     in property <string> undo-name;
     in property <string> redo-name;
     in property <bool> dirty;
-    // 0 select, 1 note, 2 text box, 3 rectangle, 4 ellipse, 5 line, 6 drawing
+    // 0 select, 1 note, 2 text box, 3 rectangle, 4 ellipse, 5 line, 6 drawing, 7 sign
     in property <int> tool;
     // The shape being drawn, as SVG path commands in document space; empty when none.
     in property <string> draft-path;
@@ -310,6 +310,19 @@ export component MainWindow inherits Window {
     in-out property <string> dialog-input;
 
     in property <[PaletteItem]> recent-items;
+
+    // Signature pad: "" when closed, else "signature" or "initials".
+    in property <string> sign-kind;
+    // 0 type, 1 draw, 2 image
+    in-out property <int> sign-mode;
+    in-out property <string> sign-text;
+    in-out property <int> sign-font;
+    in property <[string]> sign-fonts;
+    // The drawn strokes as SVG path commands in pad space.
+    in property <string> sign-path;
+    in property <image> sign-image;
+    in property <bool> has-signature;
+    in property <bool> has-initials;
 
     // ---- Geometry, read from Rust ----
     in-out property <length> viewport-y <=> scroller.content-y;
@@ -352,6 +365,9 @@ export component MainWindow inherits Window {
     callback comment-clicked(int);
     callback comment-edit(int);
     callback comment-delete(int);
+    // x, y in pad space
+    callback sign-pad-down(length, length);
+    callback sign-pad-move(length, length);
 
     public function focus-view() {
         view-focus.focus();
@@ -370,6 +386,9 @@ export component MainWindow inherits Window {
     }
     public function focus-dialog() {
         dialog-edit.focus();
+    }
+    public function focus-sign() {
+        sign-focus.focus();
     }
 
     changed viewport-y => { root.view-changed(); }
@@ -640,6 +659,15 @@ export component MainWindow inherits Window {
                             root.command("strikeout");
                         }
                     }
+                    sign-button := ToolButton {
+                        label: "Sign";
+                        tip: "Sign or add initials";
+                        active: root.tool == 7;
+                        enabled: root.has-document;
+                        clicked => {
+                            sign-menu.show();
+                        }
+                    }
                     Rectangle { width: 6px; }
                     ToolButton {
                         icon: "\u{E721}";
@@ -698,6 +726,34 @@ export component MainWindow inherits Window {
                         MenuEntry { text: "Ellipse"; checked: root.tool == 4; clicked => { root.command("tool-ellipse"); } }
                         MenuEntry { text: "Line"; checked: root.tool == 5; clicked => { root.command("tool-line"); } }
                         MenuEntry { text: "Draw"; checked: root.tool == 6; clicked => { root.command("tool-ink"); } }
+                    }
+                }
+
+                sign-menu := PopupWindow {
+                    x: sign-button.x;
+                    y: parent.height - 4px;
+                    width: 210px;
+                    Menu {
+                        MenuEntry {
+                            text: root.has-signature ? "Add signature" : "Create signature";
+                            clicked => { root.command("sign"); }
+                        }
+                        MenuEntry {
+                            text: root.has-initials ? "Add initials" : "Create initials";
+                            clicked => { root.command("initials"); }
+                        }
+                        if root.has-signature: MenuEntry {
+                            text: "New signature";
+                            clicked => { root.command("new-signature"); }
+                        }
+                        if root.has-initials: MenuEntry {
+                            text: "New initials";
+                            clicked => { root.command("new-initials"); }
+                        }
+                        if root.has-signature || root.has-initials: MenuEntry {
+                            text: "Forget saved signatures";
+                            clicked => { root.command("forget-signatures"); }
+                        }
                     }
                 }
 
@@ -1350,6 +1406,188 @@ export component MainWindow inherits Window {
                                         vertical-alignment: center;
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Signature pad ----
+        Rectangle {
+            visible: root.sign-kind != "";
+            background: #00000066;
+            TouchArea { }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 3;
+                width: min(480px, parent.width - 40px);
+                height: sign-layout.preferred-height;
+                background: Theme.bg-tertiary;
+                border-radius: Theme.radius-lg;
+                border-width: 1px;
+                border-color: Theme.border;
+                drop-shadow-blur: 30px;
+                drop-shadow-color: Theme.shadow-lg;
+                accessible-role: groupbox;
+                accessible-label: sign-title.text;
+                sign-focus := FocusScope {
+                    capture-key-pressed(e) => {
+                        if (e.text == Key.Escape) {
+                            root.command("sign-cancel");
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    sign-layout := VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+                        sign-title := Text {
+                            text: root.sign-kind == "initials" ? "Create initials" : "Create signature";
+                            font-family: Theme.font-display;
+                            font-size: 16px;
+                            color: Theme.text;
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            SidebarTab {
+                                width: 64px;
+                                text: "Type";
+                                active: root.sign-mode == 0;
+                                clicked => { root.sign-mode = 0; }
+                            }
+                            SidebarTab {
+                                width: 64px;
+                                text: "Draw";
+                                active: root.sign-mode == 1;
+                                clicked => { root.sign-mode = 1; }
+                            }
+                            SidebarTab {
+                                width: 64px;
+                                text: "Image";
+                                active: root.sign-mode == 2;
+                                clicked => { root.sign-mode = 2; }
+                            }
+                        }
+                        Rectangle {
+                            height: 150px;
+                            background: #ffffff;
+                            border-radius: Theme.radius;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            clip: true;
+
+                            if root.sign-mode == 0: Text {
+                                text: root.sign-text;
+                                font-family: root.sign-fonts[root.sign-font];
+                                font-size: root.sign-kind == "initials" ? 56px : 40px;
+                                color: #1a1a1a;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            if root.sign-mode == 1 && root.sign-path != "": Path {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                viewbox-x: 0;
+                                viewbox-y: 0;
+                                viewbox-width: self.width / 1px;
+                                viewbox-height: self.height / 1px;
+                                commands: root.sign-path;
+                                stroke: #1a1a1a;
+                                stroke-width: 3px;
+                            }
+                            if root.sign-mode == 1: TouchArea {
+                                mouse-cursor: MouseCursor.crosshair;
+                                accessible-role: image;
+                                accessible-label: "Drawing pad";
+                                pointer-event(e) => {
+                                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                        root.sign-pad-down(self.mouse-x, self.mouse-y);
+                                    }
+                                }
+                                moved => {
+                                    if (self.pressed) {
+                                        root.sign-pad-move(self.mouse-x, self.mouse-y);
+                                    }
+                                }
+                            }
+                            if root.sign-mode == 1 && root.sign-path == "": Text {
+                                text: "Draw here";
+                                color: #8a8a8a;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            if root.sign-mode == 2: Image {
+                                x: 12px;
+                                y: 12px;
+                                width: parent.width - 24px;
+                                height: parent.height - 24px;
+                                source: root.sign-image;
+                                image-fit: contain;
+                            }
+                            if root.sign-mode == 2 && root.sign-image.width == 0: Text {
+                                text: "No image chosen";
+                                color: #8a8a8a;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.sign-mode == 0: LineEdit {
+                            height: 34px;
+                            text <=> root.sign-text;
+                            placeholder-text: root.sign-kind == "initials" ? "Your initials" : "Your name";
+                            accessible-label: root.sign-kind == "initials" ? "Initials" : "Name";
+                        }
+                        if root.sign-mode == 0: HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for font[i] in root.sign-fonts: Rectangle {
+                                width: 104px;
+                                height: 40px;
+                                border-radius: Theme.radius-sm;
+                                background: root.sign-font == i ? Theme.bg-active : font-touch.has-hover ? Theme.bg-hover : transparent;
+                                accessible-role: button;
+                                accessible-label: font;
+                                accessible-action-default => { root.sign-font = i; }
+                                Text {
+                                    text: root.sign-text == "" ? "Signature" : root.sign-text;
+                                    font-family: font;
+                                    font-size: 15px;
+                                    color: Theme.text;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                font-touch := TouchArea {
+                                    clicked => { root.sign-font = i; }
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            if root.sign-mode == 1: DialogButton {
+                                text: "Clear";
+                                clicked => { root.command("sign-clear"); }
+                            }
+                            if root.sign-mode == 2: DialogButton {
+                                text: "Choose image";
+                                clicked => { root.command("sign-image"); }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                            DialogButton {
+                                text: "Cancel";
+                                clicked => { root.command("sign-cancel"); }
+                            }
+                            DialogButton {
+                                text: "Done";
+                                primary: true;
+                                clicked => { root.command("sign-done"); }
                             }
                         }
                     }

@@ -12,17 +12,18 @@ use std::time::{Duration, SystemTime};
 
 use mp_engine::{
     Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
-    Layer, Link, LinkTarget, NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile, Xfa,
+    Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, Rect, RenderPool, Style, Tile,
+    Xfa,
 };
 use slint::{
-    ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
-    VecModel,
+    ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, Timer,
+    TimerMode, VecModel,
 };
 
 use crate::layout::{Frame, Layout, PageMode, Params, Zoom};
 use crate::palette;
 use crate::recolor::ReadingMode;
-use crate::settings::Settings;
+use crate::settings::{SavedMark, Settings};
 use crate::{
     AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem,
     PaletteItem, TabItem, Theme, ThumbItem, TileItem,
@@ -302,6 +303,10 @@ pub struct App {
     palette_actions: Vec<PaletteAction>,
     drag: Option<Drag>,
     tool: Tool,
+    /// The open signature pad.
+    pad: Option<Pad>,
+    /// What the Sign tool places.
+    placing: Option<Placing>,
     cursor: i32,
     status_timer: Timer,
     search_timer: Timer,
@@ -373,6 +378,8 @@ impl App {
             palette_actions: Vec::new(),
             drag: None,
             tool: Tool::Select,
+            pad: None,
+            placing: None,
             cursor: 0,
             status_timer: Timer::default(),
             search_timer: Timer::default(),
@@ -386,6 +393,7 @@ impl App {
             renders: 0,
         };
         app.refresh_recent();
+        app.refresh_sign_menu();
         app
     }
 
@@ -1920,7 +1928,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 let Some((page, px, py)) = self.hit(x, y) else {
                     return;
                 };
-                if self.tool == Tool::Note {
+                if self.tool == Tool::Sign {
+                    self.place_mark(page, px, py);
+                } else if self.tool == Tool::Note {
                     self.push_dialog(Dialog {
                         ask: Ask::Note { page, x: px, y: py },
                         kind: "input",
@@ -3122,6 +3132,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
+        if tool != Tool::Sign {
+            self.placing = None;
+        }
         if let Some(w) = self.window() {
             w.set_tool(tool as i32);
         }
@@ -3337,6 +3350,319 @@ Open it in Adobe Acrobat Reader to fill it in.",
             ok: "Save",
             cancel: "Cancel",
         });
+    }
+
+    // ---------------------------------------------------------------- signatures
+
+    fn refresh_sign_menu(&self) {
+        if let Some(w) = self.window() {
+            w.set_has_signature(self.settings.signature.is_some());
+            w.set_has_initials(self.settings.initials.is_some());
+        }
+    }
+
+    /// Starts the Sign tool with the saved signature or initials, or opens the pad to make one.
+    pub fn sign(&mut self, initials: bool) {
+        if !self.has_document() {
+            return;
+        }
+        let saved = if initials {
+            &self.settings.initials
+        } else {
+            &self.settings.signature
+        };
+        let Some(saved) = saved.clone() else {
+            self.open_pad(initials);
+            return;
+        };
+        match saved.to_mark() {
+            Ok(mark) => self.start_placing(mark, initials),
+            Err(e) => self.status(format!(
+                "Could not read the saved {}: {e}",
+                mark_name(initials)
+            )),
+        }
+    }
+
+    pub fn open_pad(&mut self, initials: bool) {
+        let Some(w) = self.window() else { return };
+        if w.get_sign_fonts().row_count() == 0 {
+            let mut fonts: Vec<SharedString> = SIGN_FONTS
+                .iter()
+                .filter(|f| mp_engine::has_font(f))
+                .take(4)
+                .map(|&f| f.into())
+                .collect();
+            if fonts.is_empty() {
+                fonts.push("Arial".into());
+            }
+            w.set_sign_fonts(ModelRc::new(VecModel::from(fonts)));
+        }
+        let saved = if initials {
+            &self.settings.initials
+        } else {
+            &self.settings.signature
+        };
+        let text = match saved {
+            Some(SavedMark::Typed { text, .. }) => text.clone(),
+            _ => String::new(),
+        };
+        w.set_sign_text(text.into());
+        w.set_sign_path("".into());
+        w.set_sign_image(Image::default());
+        w.set_sign_kind(if initials { "initials" } else { "signature" }.into());
+        w.invoke_focus_sign();
+        self.pad = Some(Pad {
+            initials,
+            strokes: Vec::new(),
+            image: None,
+        });
+    }
+
+    pub fn pad_visible(&self) -> bool {
+        self.pad.is_some()
+    }
+
+    pub fn close_pad(&mut self) {
+        self.pad = None;
+        if let Some(w) = self.window() {
+            w.set_sign_kind("".into());
+            w.invoke_focus_view();
+        }
+    }
+
+    pub fn pad_down(&mut self, x: f32, y: f32) {
+        if let Some(pad) = &mut self.pad {
+            pad.strokes.push(vec![(x, y)]);
+            self.show_pad();
+        }
+    }
+
+    pub fn pad_move(&mut self, x: f32, y: f32) {
+        let Some(stroke) = self.pad.as_mut().and_then(|p| p.strokes.last_mut()) else {
+            return;
+        };
+        if stroke
+            .last()
+            .is_some_and(|&(lx, ly)| (lx - x).hypot(ly - y) < 1.0)
+        {
+            return;
+        }
+        stroke.push((x, y));
+        self.show_pad();
+    }
+
+    pub fn pad_clear(&mut self) {
+        if let Some(pad) = &mut self.pad {
+            pad.strokes.clear();
+            self.show_pad();
+        }
+    }
+
+    fn show_pad(&self) {
+        let (Some(w), Some(pad)) = (self.window(), &self.pad) else {
+            return;
+        };
+        let mut path = String::new();
+        for stroke in &pad.strokes {
+            let Some(&(x, y)) = stroke.first() else {
+                continue;
+            };
+            path += &format!("M {x:.1} {y:.1} ");
+            // A lone point shows as a dot.
+            if stroke.len() == 1 {
+                path += &format!("L {:.1} {y:.1} ", x + 0.5);
+            }
+            for &(x, y) in &stroke[1..] {
+                path += &format!("L {x:.1} {y:.1} ");
+            }
+        }
+        w.set_sign_path(path.into());
+    }
+
+    pub fn pad_image(&mut self, path: PathBuf) {
+        let Some(w) = self.window() else { return };
+        match Image::load_from_path(&path) {
+            Ok(image) => {
+                w.set_sign_image(image);
+                if let Some(pad) = &mut self.pad {
+                    pad.image = Some(path);
+                }
+            }
+            Err(_) => self.status(format!("Could not open {}", file_name(&path))),
+        }
+    }
+
+    /// Keeps the pad's mark in the settings and starts the Sign tool with it.
+    pub fn pad_done(&mut self) {
+        let (Some(w), Some(pad)) = (self.window(), self.pad.as_ref()) else {
+            return;
+        };
+        let initials = pad.initials;
+        let (mark, saved) = match w.get_sign_mode() {
+            0 => {
+                let text = w.get_sign_text().trim().to_owned();
+                if text.is_empty() {
+                    self.status(format!("Type your {} first", mark_name(initials)));
+                    return;
+                }
+                let font = w
+                    .get_sign_fonts()
+                    .row_data(w.get_sign_font().max(0) as usize)
+                    .map_or_else(|| "Arial".to_owned(), |f| f.to_string());
+                let saved = SavedMark::Typed { text, font };
+                (saved.to_mark().expect("typed marks need no file"), saved)
+            }
+            1 => {
+                if pad.strokes.is_empty() {
+                    self.status(format!("Draw your {} first", mark_name(initials)));
+                    return;
+                }
+                let saved = SavedMark::Ink {
+                    strokes: pad.strokes.clone(),
+                    width: PEN_WIDTH,
+                };
+                (saved.to_mark().expect("drawn marks need no file"), saved)
+            }
+            _ => {
+                let Some(path) = pad.image.clone() else {
+                    self.status("Choose an image first".into());
+                    return;
+                };
+                let mark = match std::fs::read(&path) {
+                    Ok(bytes) => Mark::Image(bytes),
+                    Err(e) => {
+                        self.status(format!("Could not read {}: {e}", file_name(&path)));
+                        return;
+                    }
+                };
+                (mark, SavedMark::Image { file: path })
+            }
+        };
+        // An image MuPDF cannot read, or a font that went away, fails here, before it is kept.
+        let aspect = match self.engine.mark_aspect(mark.clone()) {
+            Ok(a) => a,
+            Err(e) => {
+                self.status(format!("Could not use that {}: {e}", mark_name(initials)));
+                return;
+            }
+        };
+        let saved = match saved {
+            SavedMark::Image { file } => match self.keep_image(&file, initials) {
+                Ok(file) => SavedMark::Image { file },
+                Err(e) => {
+                    self.status(format!("Could not keep the image: {e}"));
+                    return;
+                }
+            },
+            other => other,
+        };
+        if initials {
+            self.settings.initials = Some(saved);
+        } else {
+            self.settings.signature = Some(saved);
+        }
+        self.save_settings();
+        self.refresh_sign_menu();
+        self.close_pad();
+        self.placing = Some(Placing {
+            mark,
+            initials,
+            aspect,
+        });
+        self.set_tool(Tool::Sign);
+        self.sign_hint(initials);
+    }
+
+    /// Copies a signature image beside the settings file, so the mark outlives the original.
+    fn keep_image(&self, file: &Path, initials: bool) -> std::io::Result<PathBuf> {
+        let Some(dir) = crate::settings::dir().filter(|_| self.persist) else {
+            return Ok(file.to_path_buf());
+        };
+        std::fs::create_dir_all(&dir)?;
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("png");
+        let target = dir.join(format!("{}.{ext}", mark_name(initials)));
+        if target != file {
+            self.forget_image(initials);
+            std::fs::copy(file, &target)?;
+        }
+        Ok(target)
+    }
+
+    /// Removes a kept signature image, if the settings point at one in the settings folder.
+    fn forget_image(&self, initials: bool) {
+        let saved = if initials {
+            &self.settings.initials
+        } else {
+            &self.settings.signature
+        };
+        if let (Some(SavedMark::Image { file }), Some(dir)) = (saved, crate::settings::dir())
+            && self.persist
+            && file.parent() == Some(dir.as_path())
+        {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    pub fn forget_marks(&mut self) {
+        self.forget_image(false);
+        self.forget_image(true);
+        self.settings.signature = None;
+        self.settings.initials = None;
+        self.save_settings();
+        self.refresh_sign_menu();
+        if self.tool == Tool::Sign {
+            self.set_tool(Tool::Select);
+        }
+        self.status("Forgot the saved signature and initials".into());
+    }
+
+    fn start_placing(&mut self, mark: Mark, initials: bool) {
+        match self.engine.mark_aspect(mark.clone()) {
+            Ok(aspect) => {
+                self.placing = Some(Placing {
+                    mark,
+                    initials,
+                    aspect,
+                });
+                self.set_tool(Tool::Sign);
+                self.sign_hint(initials);
+            }
+            Err(e) => self.status(format!(
+                "Could not use the saved {}: {e}",
+                mark_name(initials)
+            )),
+        }
+    }
+
+    fn sign_hint(&mut self, initials: bool) {
+        self.status(format!(
+            "Click where your {} goes. Esc cancels.",
+            mark_name(initials)
+        ));
+    }
+
+    fn place_mark(&mut self, page: usize, x: f32, y: f32) {
+        let (Some(doc), Some(placing)) = (self.tab().map(|t| t.info.id), &self.placing) else {
+            return;
+        };
+        let height = if placing.initials {
+            INITIALS_HEIGHT
+        } else {
+            SIGNATURE_HEIGHT
+        };
+        let width = height * placing.aspect.min(MAX_ASPECT);
+        let mark = placing.mark.clone();
+        match self
+            .engine
+            .place_mark(doc, page, mark, (x, y), width, [0.0, 0.0, 0.0])
+        {
+            Ok(_) => {
+                self.set_tool(Tool::Select);
+                self.edited(Some(page));
+            }
+            Err(e) => self.status(format!("Could not sign: {e}")),
+        }
     }
 
     /// Writes the active tab's form values to `target` as XFDF.
@@ -3714,6 +4040,42 @@ pub enum Tool {
     Ellipse,
     Line,
     Ink,
+    Sign,
+}
+
+/// The signature pad's state that the window does not hold.
+struct Pad {
+    initials: bool,
+    strokes: Vec<Vec<(f32, f32)>>,
+    image: Option<PathBuf>,
+}
+
+struct Placing {
+    mark: Mark,
+    initials: bool,
+    /// Width over height.
+    aspect: f32,
+}
+
+/// Handwriting fonts offered for a typed signature, in order, when installed. The first four
+/// ship with Windows; Lucida Handwriting comes with Office.
+const SIGN_FONTS: [&str; 5] = [
+    "Segoe Script",
+    "Ink Free",
+    "Segoe Print",
+    "Lucida Handwriting",
+    "Gabriola",
+];
+/// Pen width on the drawing pad, in pad pixels.
+const PEN_WIDTH: f32 = 3.0;
+/// Placed heights in points; the width follows from the mark's shape.
+const SIGNATURE_HEIGHT: f32 = 36.0;
+const INITIALS_HEIGHT: f32 = 28.0;
+/// Placed marks are at most this many times as wide as they are tall.
+const MAX_ASPECT: f32 = 7.0;
+
+fn mark_name(initials: bool) -> &'static str {
+    if initials { "initials" } else { "signature" }
 }
 
 fn kind_name(kind: AnnotKind) -> &'static str {

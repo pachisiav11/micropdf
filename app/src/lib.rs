@@ -104,4 +104,10 @@ pub fn wire(window: &MainWindow) {
     window.on_comment_delete(|i| {
         viewer::with(|app| app.comment_delete(i as usize));
     });
+    window.on_sign_pad_down(|x, y| {
+        viewer::with(|app| app.pad_down(x, y));
+    });
+    window.on_sign_pad_move(|x, y| {
+        viewer::with(|app| app.pad_move(x, y));
+    });
 }

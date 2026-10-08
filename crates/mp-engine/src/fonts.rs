@@ -185,6 +185,11 @@ fn first_family(names: &[&str]) -> Option<usize> {
         .find_map(|n| family_face(index, &key(n), false, false))
 }
 
+/// Whether a font family is installed, such as "Segoe Script".
+pub fn has_font(family: &str) -> bool {
+    family_face(index(), &key(family), false, false).is_some()
+}
+
 /// An installed family's regular face, such as "Segoe Script".
 pub(crate) fn family(name: &str) -> Option<Font> {
     family_face(index(), &key(name), false, false).and_then(load)

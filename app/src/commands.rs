@@ -18,6 +18,7 @@ pub fn run(id: &str) {
         "save-as" => save_as_dialog(),
         "export-form" => form_data_dialog(true),
         "import-form" => form_data_dialog(false),
+        "sign-image" => sign_image_dialog(),
         "print" => crate::print::start(),
         "register-pdf" => {
             let message = match crate::assoc::register() {
@@ -108,6 +109,14 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "highlight" => app.markup(AnnotKind::Highlight),
         "underline" => app.markup(AnnotKind::Underline),
         "strikeout" => app.markup(AnnotKind::StrikeOut),
+        "sign" => app.sign(false),
+        "initials" => app.sign(true),
+        "new-signature" => app.open_pad(false),
+        "new-initials" => app.open_pad(true),
+        "forget-signatures" => app.forget_marks(),
+        "sign-clear" => app.pad_clear(),
+        "sign-cancel" => app.close_pad(),
+        "sign-done" => app.pad_done(),
         "select-all" => app.select_all(),
         "fullscreen" => app.toggle_fullscreen(),
         "present" => {
@@ -123,6 +132,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "save-as" => return Some("save-as"),
         "export-form" => return Some("export-form"),
         "import-form" => return Some("import-form"),
+        "sign-image" => return Some("sign-image"),
         _ => {}
     }
     None
@@ -221,6 +231,24 @@ fn form_data_dialog(export: bool) {
                         app.import_form(target);
                     }
                 });
+            });
+        }
+    });
+}
+
+fn sign_image_dialog() {
+    if SAVE_DIALOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let file = rfd::FileDialog::new()
+            .set_title("Choose a signature image")
+            .add_filter("Images", &["png", "jpg", "jpeg"])
+            .pick_file();
+        SAVE_DIALOG.store(false, Ordering::SeqCst);
+        if let Some(file) = file {
+            let _ = slint::invoke_from_event_loop(move || {
+                viewer::with(|app| app.pad_image(file));
             });
         }
     });

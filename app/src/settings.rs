@@ -23,6 +23,43 @@ pub struct Settings {
     /// Last page per file, so reopening a file returns to where the reader was.
     pub positions: HashMap<PathBuf, usize>,
     pub session: Session,
+    /// The reader's signature and initials, kept for the Sign tool.
+    pub signature: Option<SavedMark>,
+    pub initials: Option<SavedMark>,
+}
+
+/// A signature or initials as kept in the settings file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum SavedMark {
+    Ink {
+        strokes: Vec<Vec<(f32, f32)>>,
+        width: f32,
+    },
+    Typed {
+        text: String,
+        font: String,
+    },
+    /// A copy of the chosen image, kept beside the settings file.
+    Image {
+        file: PathBuf,
+    },
+}
+
+impl SavedMark {
+    pub fn to_mark(&self) -> std::io::Result<mp_engine::Mark> {
+        Ok(match self {
+            SavedMark::Ink { strokes, width } => mp_engine::Mark::Ink {
+                strokes: strokes.clone(),
+                width: *width,
+            },
+            SavedMark::Typed { text, font } => mp_engine::Mark::Typed {
+                text: text.clone(),
+                font: font.clone(),
+            },
+            SavedMark::Image { file } => mp_engine::Mark::Image(std::fs::read(file)?),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -49,6 +86,8 @@ impl Default for Settings {
                 clean_exit: true,
                 ..Session::default()
             },
+            signature: None,
+            initials: None,
         }
     }
 }
@@ -91,6 +130,11 @@ impl Settings {
     }
 }
 
+/// %APPDATA%\micropdf, which holds the settings file and saved signature images.
+pub fn dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("micropdf"))
+}
+
 fn file() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("micropdf").join("settings.json"))
+    dir().map(|d| d.join("settings.json"))
 }
