@@ -26,6 +26,9 @@ pub struct Settings {
     /// The reader's signature and initials, kept for the Sign tool.
     pub signature: Option<SavedMark>,
     pub initials: Option<SavedMark>,
+    /// The colour each comment tool draws with, by tool ("note", "rect", "highlight", ...),
+    /// when the reader picked one.
+    pub comment_colors: HashMap<String, [f32; 3]>,
 }
 
 /// A signature or initials as kept in the settings file.
@@ -88,6 +91,7 @@ impl Default for Settings {
             },
             signature: None,
             initials: None,
+            comment_colors: HashMap::new(),
         }
     }
 }

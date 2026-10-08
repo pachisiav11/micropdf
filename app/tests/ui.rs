@@ -156,6 +156,15 @@ fn drag_hello(w: &MainWindow, points: &[(f32, f32)]) {
     w.invoke_pointer_up(x, y);
 }
 
+/// The colour of the last comment on page 1 of the active tab.
+fn last_color() -> Option<[f32; 3]> {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        app.engine().annotations(doc, 0).ok()?.last()?.color
+    })
+    .flatten()
+}
+
 /// The comment list's last row, as "kind: text".
 fn last_comment(w: &MainWindow) -> String {
     let rows = w.get_comments();
@@ -899,6 +908,59 @@ fn steps() -> Vec<Step> {
         step("undo takes it out again", command("undo"), |w| {
             w.get_attachments().row_count() == 0 && w.get_sidebar_tab() != 3
         }),
+        step(
+            "a comment tool shows its colour in the style bar",
+            command("tool-rect"),
+            |w| w.get_style_visible() && w.get_style_color() == -1 && w.get_style_opacity() == -1,
+        ),
+        step(
+            "a swatch gives the tool its colour",
+            |w| w.invoke_style_color_picked(5),
+            |w| w.get_style_color() == 5,
+        ),
+        step(
+            "new rectangles take it",
+            |w| drag_hello(w, &[(150.0, 100.0), (200.0, 140.0)]),
+            |w| {
+                comments() == 8
+                    && last_color() == Some([0.1, 0.45, 0.9])
+                    && last_comment(w).starts_with("Rectangle")
+            },
+        ),
+        step(
+            "the style bar shows the picked rectangle's look",
+            |w| {
+                w.invoke_command("tool-select".into());
+                let last = w.get_comments().row_count() - 1;
+                w.invoke_comment_clicked(w.get_comments().row_data(last).unwrap().index);
+            },
+            |w| {
+                w.get_style_visible()
+                    && w.get_style_color() == 5
+                    && w.get_style_fill() == 0
+                    && w.get_style_width() == 1.5
+                    && w.get_style_opacity() == 100
+            },
+        ),
+        step(
+            "fill, line width and opacity change it",
+            |w| {
+                w.invoke_style_fill_toggled();
+                w.invoke_style_width_picked(3.0);
+                w.invoke_style_opacity_picked(50);
+            },
+            |w| {
+                w.get_undo_name() == "Change opacity"
+                    && w.get_style_fill() == 1
+                    && w.get_style_width() == 3.0
+                    && w.get_style_opacity() == 50
+            },
+        ),
+        step(
+            "nothing picked, no style bar",
+            key(char::from(Key::Escape)),
+            |w| !w.get_style_visible(),
+        ),
         step("Add signature reuses the saved one", command("sign"), |w| {
             w.get_tool() == 7 && w.get_sign_kind().is_empty()
         }),

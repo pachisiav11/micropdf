@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mp_engine::{AnnotKind, Engine, NewAnnot, Rect, Style};
+use mp_engine::{AnnotKind, Engine, NewAnnot, Rect, Restyle, Style};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -98,7 +98,9 @@ fn highlight_round_trips_through_full_and_incremental_saves() {
         engine.close(copy);
     }
 
-    engine.set_color(doc, 0, added.id, [0.2, 0.5, 1.0]).unwrap();
+    engine
+        .restyle(doc, 0, added.id, Restyle::Color([0.2, 0.5, 1.0]))
+        .unwrap();
     assert_eq!(
         engine.annotations(doc, 0).unwrap()[0].color,
         Some([0.2, 0.5, 1.0])
@@ -796,4 +798,63 @@ fn files_attach_to_the_document_and_to_pages() {
     engine.undo(doc).unwrap();
     engine.undo(doc).unwrap();
     assert_eq!(engine.attachments(doc).unwrap().len(), 3);
+}
+
+#[test]
+fn restyle_changes_fill_opacity_and_width() {
+    let engine = Engine::start();
+    let doc = engine.open(fixture("hello.pdf")).unwrap().id;
+    let style = Style {
+        color: [0.85, 0.15, 0.15],
+        author: "Tester".into(),
+    };
+    let rect = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Shape {
+                kind: AnnotKind::Square,
+                rect: Rect {
+                    x0: 40.0,
+                    y0: 40.0,
+                    x1: 120.0,
+                    y1: 100.0,
+                },
+                width: 1.5,
+            },
+            style.clone(),
+        )
+        .unwrap();
+    assert_eq!((rect.fill, rect.width), (None, Some(1.5)));
+    assert!((rect.opacity - 1.0).abs() < 1e-6);
+
+    let change = |c| engine.restyle(doc, 0, rect.id, c).unwrap();
+    change(Restyle::Fill(Some([0.1, 0.45, 0.9])));
+    change(Restyle::Width(4.0));
+    change(Restyle::Opacity(0.5));
+    let now = engine.annotations(doc, 0).unwrap()[0].clone();
+    assert_eq!(now.fill, Some([0.1, 0.45, 0.9]));
+    assert_eq!(now.width, Some(4.0));
+    assert!((now.opacity - 0.5).abs() < 0.01, "{}", now.opacity);
+    assert_eq!(
+        engine.history(doc).unwrap().undo.as_deref(),
+        Some("Change opacity")
+    );
+    change(Restyle::Fill(None));
+    assert_eq!(engine.annotations(doc, 0).unwrap()[0].fill, None);
+
+    // A note has no line or fill to set.
+    let note = engine
+        .add_annotation(
+            doc,
+            0,
+            NewAnnot::Note {
+                x: 200.0,
+                y: 20.0,
+                text: "n".into(),
+            },
+            style,
+        )
+        .unwrap();
+    assert_eq!((note.width, note.fill), (None, None));
 }

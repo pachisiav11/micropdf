@@ -67,6 +67,11 @@ export struct AttachmentRow {
     detail: string,
 }
 
+export struct Swatch {
+    name: string,
+    color: color,
+}
+
 export struct StampItem {
     name: string,
     label: string,
@@ -407,6 +412,22 @@ export component MainWindow inherits Window {
     }
 
     in property <[StampItem]> stamps;
+
+    // The style bar: the picked comment's look, or the colour of the active comment tool.
+    in property <[Swatch]> swatches;
+    in property <bool> style-visible;
+    /// Index into swatches of the current colour, or -1.
+    in property <int> style-color: -1;
+    /// -1 when there is no fill to set, else 0 clear or 1 filled.
+    in property <int> style-fill: -1;
+    /// Line width in points; 0 when there is none to set.
+    in property <float> style-width;
+    /// Opacity in percent; -1 when it does not apply.
+    in property <int> style-opacity: -1;
+    callback style-color-picked(int);
+    callback style-fill-toggled();
+    callback style-width-picked(float);
+    callback style-opacity-picked(int);
 
     public function show-stamp-menu() {
         stamp-menu.show();
@@ -1338,6 +1359,98 @@ export component MainWindow inherits Window {
                                         font-size: 11px;
                                         color: Theme.text-subtle;
                                         overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Style bar
+                    if root.style-visible: Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: parent.height - self.height - 16px;
+                        width: style-row.preferred-width;
+                        height: 44px;
+                        background: Theme.bg-tertiary;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        drop-shadow-blur: 16px;
+                        drop-shadow-color: Theme.shadow-lg;
+                        TouchArea { }
+                        style-row := HorizontalLayout {
+                            padding: 7px;
+                            spacing: 4px;
+                            for swatch[i] in root.swatches: Rectangle {
+                                width: 30px;
+                                border-radius: Theme.radius-sm;
+                                background: swatch-touch.has-hover ? Theme.bg-hover : transparent;
+                                accessible-role: button;
+                                accessible-label: swatch.name;
+                                accessible-action-default => {
+                                    root.style-color-picked(i);
+                                }
+                                Rectangle {
+                                    width: 20px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: swatch.color;
+                                    border-width: root.style-color == i ? 2px : 1px;
+                                    border-color: root.style-color == i ? Theme.text : Theme.border;
+                                }
+                                swatch-touch := TouchArea {
+                                    clicked => {
+                                        root.style-color-picked(i);
+                                    }
+                                }
+                            }
+                            if root.style-fill >= 0: ToolButton {
+                                label: "Fill";
+                                tip: root.style-fill == 1 ? "Remove the fill" : "Fill with the line colour";
+                                active: root.style-fill == 1;
+                                clicked => {
+                                    root.style-fill-toggled();
+                                }
+                            }
+                            if root.style-width > 0: ToolButton {
+                                label: root.style-width + " pt";
+                                tip: "Line width";
+                                clicked => {
+                                    width-menu.show();
+                                }
+                            }
+                            if root.style-opacity >= 0: ToolButton {
+                                label: root.style-opacity + "%";
+                                tip: "Opacity";
+                                clicked => {
+                                    opacity-menu.show();
+                                }
+                            }
+                        }
+                        width-menu := PopupWindow {
+                            x: parent.width - 120px;
+                            y: -140px;
+                            width: 120px;
+                            Menu {
+                                for w in [1, 2, 3, 5]: MenuEntry {
+                                    text: w + " pt";
+                                    checked: abs(root.style-width - w) < 0.1;
+                                    clicked => {
+                                        root.style-width-picked(w);
+                                    }
+                                }
+                            }
+                        }
+                        opacity-menu := PopupWindow {
+                            x: parent.width - 120px;
+                            y: -140px;
+                            width: 120px;
+                            Menu {
+                                for o in [100, 75, 50, 25]: MenuEntry {
+                                    text: o + "%";
+                                    checked: root.style-opacity == o;
+                                    clicked => {
+                                        root.style-opacity-picked(o);
                                     }
                                 }
                             }

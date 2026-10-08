@@ -95,6 +95,18 @@ pub fn wire(window: &MainWindow) {
     window.on_attachment_delete(|i| {
         viewer::with(|app| app.attachment_delete(i as usize));
     });
+    window.on_style_color_picked(|i| {
+        viewer::with(|app| app.style_color(i as usize));
+    });
+    window.on_style_fill_toggled(|| {
+        viewer::with(|app| app.style_fill());
+    });
+    window.on_style_width_picked(|w| {
+        viewer::with(|app| app.style_width(w));
+    });
+    window.on_style_opacity_picked(|o| {
+        viewer::with(|app| app.style_opacity(o));
+    });
     window.on_layer_toggle(|i| {
         viewer::with(|app| app.layer_toggle(i as usize));
     });

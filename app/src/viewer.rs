@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use mp_engine::{
     Annot, AnnotKind, Attachment, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind, History,
     Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, REVIEW_STATES, Rect,
-    RenderPool, STAMPS, Style, Tile, Xfa,
+    RenderPool, Restyle, STAMPS, Style, Tile, Xfa,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -26,7 +26,7 @@ use crate::recolor::ReadingMode;
 use crate::settings::{SavedMark, Settings};
 use crate::{
     AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, OutlineRow, PageItem,
-    PaletteItem, StampItem, TabItem, Theme, ThumbItem, TileItem,
+    PaletteItem, StampItem, Swatch, TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -385,6 +385,14 @@ impl App {
             })
             .collect();
         window.set_stamps(ModelRc::new(VecModel::from(stamps)));
+        let swatches: Vec<Swatch> = SWATCHES
+            .iter()
+            .map(|(name, [r, g, b])| Swatch {
+                name: (*name).into(),
+                color: slint::Color::from_rgb_f32(*r, *g, *b),
+            })
+            .collect();
+        window.set_swatches(ModelRc::new(VecModel::from(swatches)));
 
         window.global::<Theme>().set_dark(settings.dark_theme);
         window.set_vim_enabled(settings.vim);
@@ -2399,6 +2407,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if marks != self.shown_marks {
             self.models.marks.set_vec(marks.clone());
             self.shown_marks = marks;
+            self.refresh_style_bar();
         }
     }
 
@@ -3446,6 +3455,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if window.get_sidebar_tab() == 5 && tab.comments.is_empty() {
             window.set_sidebar_tab(0);
         }
+        self.refresh_style_bar();
     }
 
     pub fn set_tool(&mut self, tool: Tool) {
@@ -3462,6 +3472,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if tool != Tool::Select {
             self.clear_selection();
         }
+        self.refresh_style_bar();
     }
 
     pub fn tool(&self) -> Tool {
@@ -3472,6 +3483,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let Some(doc) = self.tab().map(|t| t.info.id) else {
             return;
         };
+        let color = self.chosen_color(new_key(&new)).unwrap_or(color);
         let style = Style {
             color,
             author: user_name(),
@@ -4347,8 +4359,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.status(message);
     }
 
-    /// Gives the picked comment a new colour.
-    pub fn recolor_picked(&mut self, color: [f32; 3]) {
+    /// Changes the picked comment's colour, fill, line width or opacity.
+    fn restyle_picked(&mut self, change: Restyle) {
         let Some((doc, page, id)) = self
             .tab()
             .and_then(|t| t.picked.map(|(page, id)| (t.info.id, page, id)))
@@ -4356,10 +4368,95 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.status("Select a comment first".into());
             return;
         };
-        match self.engine.set_color(doc, page, id, color) {
+        match self.engine.restyle(doc, page, id, change) {
             Ok(()) => self.edited(Some(page)),
-            Err(e) => self.status(format!("Could not change the colour: {e}")),
+            Err(e) => self.status(format!("Could not change the comment: {e}")),
         }
+    }
+
+    /// The colour the reader chose for new comments of `key`, if any.
+    fn chosen_color(&self, key: Option<&str>) -> Option<[f32; 3]> {
+        self.settings.comment_colors.get(key?).copied()
+    }
+
+    /// The picked comment, unless a comment tool is active: then the style bar is the tool's.
+    fn styled_comment(&self) -> Option<&Annot> {
+        if tool_key(self.tool).is_some() {
+            return None;
+        }
+        let (_, a) = self.tab()?.comments.get(self.picked_index()?)?;
+        (a.reply_to.is_none() && kind_key(a.kind).is_some()).then_some(a)
+    }
+
+    /// Shows the style bar for the active comment tool or the picked comment, else hides it.
+    fn refresh_style_bar(&self) {
+        let Some(w) = self.window() else { return };
+        let swatch = |c: Option<[f32; 3]>| {
+            c.and_then(|c| {
+                SWATCHES
+                    .iter()
+                    .position(|(_, s)| s.iter().zip(c).all(|(a, b)| (a - b).abs() < 0.02))
+            })
+            .map_or(-1, |i| i as i32)
+        };
+        let (visible, color, fill, width, opacity) = if let Some(key) = tool_key(self.tool) {
+            (true, swatch(self.chosen_color(Some(key))), -1, 0.0, -1)
+        } else if let Some(a) = self.styled_comment() {
+            let shape = matches!(a.kind, AnnotKind::Square | AnnotKind::Circle);
+            (
+                true,
+                swatch(a.color),
+                if shape {
+                    i32::from(a.fill.is_some())
+                } else {
+                    -1
+                },
+                a.width.unwrap_or(0.0),
+                (a.opacity * 100.0).round() as i32,
+            )
+        } else {
+            (false, -1, -1, 0.0, -1)
+        };
+        w.set_style_visible(visible);
+        w.set_style_color(color);
+        w.set_style_fill(fill);
+        w.set_style_width(width);
+        w.set_style_opacity(opacity);
+    }
+
+    /// Swatch `index` was picked: the active comment tool draws with it from now on, or the
+    /// picked comment takes it.
+    pub fn style_color(&mut self, index: usize) {
+        let Some(&(_, color)) = SWATCHES.get(index) else {
+            return;
+        };
+        if let Some(key) = tool_key(self.tool) {
+            self.settings.comment_colors.insert(key.to_owned(), color);
+            self.save_settings();
+            self.refresh_style_bar();
+        } else {
+            self.restyle_picked(Restyle::Color(color));
+        }
+    }
+
+    /// Fills the picked rectangle or ellipse with its line colour, or clears its fill.
+    pub fn style_fill(&mut self) {
+        let Some(a) = self.styled_comment() else {
+            return;
+        };
+        let fill = match a.fill {
+            Some(_) => None,
+            None => Some(a.color.unwrap_or([0.0; 3])),
+        };
+        self.restyle_picked(Restyle::Fill(fill));
+    }
+
+    pub fn style_width(&mut self, width: f32) {
+        self.restyle_picked(Restyle::Width(width));
+    }
+
+    pub fn style_opacity(&mut self, percent: i32) {
+        self.restyle_picked(Restyle::Opacity(percent as f32 / 100.0));
     }
 
     /// Deletes the picked comment. Returns false if none is picked.
@@ -4405,7 +4502,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
             return;
         };
         let style = Style {
-            color: markup_color(kind),
+            color: self
+                .chosen_color(kind_key(kind))
+                .unwrap_or(markup_color(kind)),
             author: user_name(),
         };
         let new = NewAnnot::TextMarkup { kind, rects };
@@ -4805,6 +4904,63 @@ fn kind_name(kind: AnnotKind) -> &'static str {
         AnnotKind::Callout => "Callout",
         AnnotKind::File => "Attachment",
         AnnotKind::Other => "Comment",
+    }
+}
+
+/// The colours the style bar offers.
+const SWATCHES: [(&str, [f32; 3]); 8] = [
+    ("Yellow", [1.0, 0.85, 0.0]),
+    ("Orange", [1.0, 0.55, 0.1]),
+    ("Red", [0.85, 0.15, 0.15]),
+    ("Pink", [0.95, 0.4, 0.7]),
+    ("Purple", [0.55, 0.3, 0.85]),
+    ("Blue", [0.1, 0.45, 0.9]),
+    ("Green", [0.2, 0.7, 0.3]),
+    ("Black", [0.0, 0.0, 0.0]),
+];
+
+/// The settings key of the colour a comment tool draws with.
+fn tool_key(tool: Tool) -> Option<&'static str> {
+    Some(match tool {
+        Tool::Note => "note",
+        Tool::TextBox => "text",
+        Tool::Rect => "rect",
+        Tool::Ellipse => "ellipse",
+        Tool::Line => "line",
+        Tool::Ink => "ink",
+        Tool::Callout => "callout",
+        _ => return None,
+    })
+}
+
+/// The settings key of the colour for comments of `kind`; None for kinds the style bar
+/// leaves alone (stamps, signatures and attached files keep their own look).
+fn kind_key(kind: AnnotKind) -> Option<&'static str> {
+    Some(match kind {
+        AnnotKind::Note => "note",
+        AnnotKind::FreeText => "text",
+        AnnotKind::Square => "rect",
+        AnnotKind::Circle => "ellipse",
+        AnnotKind::Line => "line",
+        AnnotKind::Ink => "ink",
+        AnnotKind::Callout => "callout",
+        AnnotKind::Highlight => "highlight",
+        AnnotKind::Underline => "underline",
+        AnnotKind::StrikeOut => "strikeout",
+        AnnotKind::Squiggly => "squiggly",
+        _ => return None,
+    })
+}
+
+fn new_key(new: &NewAnnot) -> Option<&'static str> {
+    match new {
+        NewAnnot::Note { .. } => Some("note"),
+        NewAnnot::FreeText { .. } => Some("text"),
+        NewAnnot::Shape { kind, .. } | NewAnnot::TextMarkup { kind, .. } => kind_key(*kind),
+        NewAnnot::Line { .. } => Some("line"),
+        NewAnnot::Ink { .. } => Some("ink"),
+        NewAnnot::Callout { .. } => Some("callout"),
+        _ => None,
     }
 }
 

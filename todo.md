@@ -4,7 +4,7 @@
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M1 — viewer (v0.1)
 - 2026-10-07 00:18: M2 — comment, forms, visual signatures (v0.2)
-- 2026-10-07 10:30: M2 — comments: a colour picker in the toolbar; GUI check of the tool outline, the resize handles and the move/resize cursors
+- 2026-10-07 10:30: M2 — GUI check of the tool outline, the resize handles, the move/resize cursors and the style bar
 - 2026-10-07 11:25: M2 — GUI check (user away): toolbar fits at narrow window widths with the new buttons; sidebar tabs fit with Comments + Layers + Files; the Segoe icons for strike-out (EDE0) and comment tools render
 - 2026-10-07 11:01: M2 — forms: edit fields in place on the page (not a dialog), Tab between fields, list boxes, FDF import/export
 - 2026-10-07 00:18: M3 — Chrome extension + bridge (v0.3)

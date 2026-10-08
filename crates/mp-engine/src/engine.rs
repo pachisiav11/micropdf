@@ -8,7 +8,7 @@ use mupdf::link::LinkDestination;
 use mupdf::pdf::PdfDocument;
 use mupdf::{DestinationKind, DisplayList, Document, MetadataName, Outline};
 
-use crate::annots::{self, Annot, History, NewAnnot, Style};
+use crate::annots::{self, Annot, History, NewAnnot, Restyle, Style};
 use crate::attachments;
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
@@ -135,11 +135,11 @@ enum Command {
         fields: bool,
         reply: Reply<()>,
     },
-    SetColor {
+    Restyle {
         doc: DocId,
         page: usize,
         id: i32,
-        color: [f32; 3],
+        change: Restyle,
         reply: Reply<()>,
     },
     Reply {
@@ -426,18 +426,13 @@ impl Engine {
         })
     }
 
-    pub fn set_color(
-        &self,
-        doc: DocId,
-        page: usize,
-        id: i32,
-        color: [f32; 3],
-    ) -> Result<(), Error> {
-        self.call(|reply| Command::SetColor {
+    /// Changes the colour, fill, opacity or line width of comment `id`.
+    pub fn restyle(&self, doc: DocId, page: usize, id: i32, change: Restyle) -> Result<(), Error> {
+        self.call(|reply| Command::Restyle {
             doc,
             page,
             id,
-            color,
+            change,
             reply,
         })
     }
@@ -820,14 +815,14 @@ fn run(rx: mpsc::Receiver<Command>) {
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
             }
-            Command::SetColor {
+            Command::Restyle {
                 doc,
                 page,
                 id,
-                color,
+                change,
                 reply,
             } => {
-                let result = with_doc(&docs, doc, |d| annots::set_color(d, page, id, color));
+                let result = with_doc(&docs, doc, |d| annots::restyle(d, page, id, change));
                 lists.remove_page(doc, page);
                 let _ = reply.send(result);
             }

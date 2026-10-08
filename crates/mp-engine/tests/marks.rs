@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mp_engine::{AnnotKind, DocId, Engine, Mark, Rect};
+use mp_engine::{AnnotKind, DocId, Engine, Mark, Rect, Restyle};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -78,7 +78,7 @@ fn a_drawn_signature_is_a_stamp_at_the_placed_width() {
 
     // A new colour keeps the mark: MuPDF does not redraw it as a standard stamp.
     engine
-        .set_color(doc, 0, placed.id, [1.0, 0.0, 0.0])
+        .restyle(doc, 0, placed.id, Restyle::Color([1.0, 0.0, 0.0]))
         .unwrap();
     assert!(pixels(&engine, doc, r, dark) > ink / 2);
 

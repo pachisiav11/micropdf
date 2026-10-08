@@ -40,6 +40,12 @@ pub struct Annot {
     pub kind: AnnotKind,
     pub rect: Rect,
     pub color: Option<[f32; 3]>,
+    /// The inside of a rectangle or ellipse, when filled.
+    pub fill: Option<[f32; 3]>,
+    /// 1.0 is opaque.
+    pub opacity: f32,
+    /// Line width in points, for the kinds drawn with a line: shapes, lines and ink.
+    pub width: Option<f32>,
     pub contents: String,
     pub author: String,
     /// The comment this one answers, by id: set for replies and for review states. Readers
@@ -199,11 +205,24 @@ pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
         kind = AnnotKind::Callout;
     }
     let state = name(&obj, "State")?;
+    let shape = matches!(kind, AnnotKind::Square | AnnotKind::Circle);
+    let lined = shape || matches!(kind, AnnotKind::Line | AnnotKind::Ink);
     Ok(Some(Annot {
         id: annot.xref()?,
         kind,
         rect: annot.bounds()?.into(),
         color: annot.color()?.map(rgb),
+        fill: if shape {
+            annot.interior_color()?.map(rgb)
+        } else {
+            None
+        },
+        opacity: annot.opacity()?,
+        width: if lined {
+            Some(annot.border_width()?)
+        } else {
+            None
+        },
         contents: annot.contents()?.unwrap_or_default().to_owned(),
         author: annot.author()?.unwrap_or_default().to_owned(),
         reply_to: reply_to(&obj)?,
@@ -569,15 +588,45 @@ pub fn set_contents(doc: &Document, page: usize, id: i32, text: &str) -> Result<
     })
 }
 
-pub fn set_color(doc: &Document, page: usize, id: i32, color: [f32; 3]) -> Result<(), Error> {
-    operation(doc, "Change colour", || {
+/// One change to a comment's look.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Restyle {
+    Color([f32; 3]),
+    /// The inside of a rectangle or ellipse; None leaves it clear.
+    Fill(Option<[f32; 3]>),
+    /// 1.0 is opaque.
+    Opacity(f32),
+    /// Line width in points, for shapes, lines and ink.
+    Width(f32),
+}
+
+/// Changes one property of a comment's look, as one undoable step.
+pub fn restyle(doc: &Document, page: usize, id: i32, change: Restyle) -> Result<(), Error> {
+    let name = match change {
+        Restyle::Color(_) => "Change colour",
+        Restyle::Fill(_) => "Change fill",
+        Restyle::Opacity(_) => "Change opacity",
+        Restyle::Width(_) => "Change line width",
+    };
+    operation(doc, name, || {
         let mut page = pdf_page(doc, page)?;
         let mut annot = page
             .annotations()
             .find(|a| a.xref().ok() == Some(id))
             .ok_or(Error::NotFound)?;
-        let [red, green, blue] = color;
-        annot.set_color(AnnotationColor::Rgb { red, green, blue })?;
+        let color = |[red, green, blue]: [f32; 3]| AnnotationColor::Rgb { red, green, blue };
+        match change {
+            Restyle::Color(c) => annot.set_color(color(c))?,
+            Restyle::Fill(Some(c)) => annot.set_interior_color(color(c))?,
+            Restyle::Fill(None) => {
+                annot.object().dict_delete("IC")?;
+                // Setting the flags to what they are marks the annotation changed.
+                let flags = annot.flags()?;
+                annot.set_flags(flags)?;
+            }
+            Restyle::Opacity(o) => annot.set_opacity(o.clamp(0.0, 1.0))?,
+            Restyle::Width(w) => annot.set_border_width(w.max(0.0))?,
+        }
         page.update()?;
         Ok(())
     })
