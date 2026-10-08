@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["app", "crates/mp-bridge", "crates/mp-engine"]
+members = ["app", "crates/mp-ai", "crates/mp-bridge", "crates/mp-engine"]
 exclude = ["third_party"]
 
 [workspace.package]

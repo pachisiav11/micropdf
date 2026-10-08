@@ -1,10 +1,12 @@
 - 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
 - 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
+- 2026-10-09 02:34: M4.2 — desktop assistant panel: Ctrl+Shift+A, provider/model/key setup (Credential Manager), per-document chat, page citations that jump and flash, quick actions, usage and daily total
+- 2026-10-09 02:34: M4.3 — assistant in the extension, proxied through micropdf-bridge (keys stay in Credential Manager)
+- 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)
 - 2026-10-07 00:18: M6 — OCR, digital signatures, compare, measure (v0.6)
 - 2026-10-07 00:18: M7 — edit content, prepare form (v0.7)
 - 2026-10-07 00:18: M8 — conversion + LibreOffice add-on (v0.8)
 - 2026-10-07 00:18: M9 — library + batch (v0.9)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
-- 2026-10-08 16:08: M0 — measure the release binary after the slim MuPDF build (23.7 MB on 2026-10-07); a release build, so run it while the user is away
