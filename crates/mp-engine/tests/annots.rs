@@ -437,3 +437,75 @@ fn comments_move_and_resize() {
     assert!(yellow_in(&engine, doc, below) > 50);
     assert_eq!(yellow_in(&engine, doc, above), 0);
 }
+
+#[test]
+fn saving_a_repaired_file_over_itself_rewrites_it_whole() {
+    let engine = Engine::start();
+    let copy = Scratch::new("repaired.pdf");
+    std::fs::copy(fixture("truncated.pdf"), &copy.0).unwrap();
+    let doc = engine.open(&copy.0).unwrap().id;
+    let note = |text: &str| NewAnnot::Note {
+        x: 20.0,
+        y: 20.0,
+        text: text.into(),
+    };
+    engine
+        .add_annotation(doc, 0, note("Kept"), style())
+        .unwrap();
+
+    // MuPDF repaired the file on open, so it cannot append; the save swaps in a rewrite.
+    assert!(engine.save(doc, &copy.0, true).unwrap());
+    let temp = copy.0.with_file_name(format!(
+        "{}.micropdf-save.tmp",
+        copy.0.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(!temp.exists());
+    assert_eq!(engine.history(doc).unwrap().position, 0);
+    let listed = engine.annotations(doc, 0).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].contents, "Kept");
+
+    // The rewritten file is sound, so the next save appends and keeps the document open.
+    engine
+        .add_annotation(doc, 0, note("Also kept"), style())
+        .unwrap();
+    assert!(!engine.save(doc, &copy.0, true).unwrap());
+    assert_eq!(engine.history(doc).unwrap().position, 1);
+    let fresh = engine.open(&copy.0).unwrap().id;
+    let texts: Vec<String> = engine
+        .annotations(fresh, 0)
+        .unwrap()
+        .into_iter()
+        .map(|a| a.contents)
+        .collect();
+    assert_eq!(texts, ["Kept", "Also kept"]);
+}
+
+#[test]
+fn a_full_save_over_the_open_file_keeps_it_readable() {
+    let engine = Engine::start();
+    let copy = Scratch::new("full-in-place.pdf");
+    std::fs::copy(fixture("outline-links.pdf"), &copy.0).unwrap();
+    let doc = engine.open(&copy.0).unwrap().id;
+    let pages = engine.page_sizes(doc).unwrap().len();
+    engine
+        .add_annotation(
+            doc,
+            1,
+            NewAnnot::TextMarkup {
+                kind: AnnotKind::Highlight,
+                rects: vec![TEXT],
+            },
+            style(),
+        )
+        .unwrap();
+    assert!(engine.save(doc, &copy.0, false).unwrap());
+    // Every page still renders from the reopened document, and from a fresh open.
+    for d in [doc, engine.open(&copy.0).unwrap().id] {
+        assert_eq!(engine.page_sizes(d).unwrap().len(), pages);
+        for page in 0..pages {
+            engine.display_list(d, page).unwrap();
+        }
+        assert_eq!(engine.annotations(d, 1).unwrap().len(), 1);
+    }
+}

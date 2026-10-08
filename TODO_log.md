@@ -37,3 +37,4 @@
 - Added: 2026-10-07 00:18 | Completed: 2026-10-08 16:27 | M2 — visual signatures and initials: typed (handwriting fonts), drawn on a pad or an image; saved for reuse; placed with the Sign tool as a stamp
 - Added: 2026-10-07 11:01 | Completed: 2026-10-08 16:32 | M2 — comments in XFDF: export and import (12 markup kinds; repeat imports skip comments the file already has, by /NM)
 - Added: 2026-10-07 10:30 | Completed: 2026-10-08 16:44 | M2 — move and resize comments and signatures: drag to move, corner handles to resize (stamps keep their shape), arrow keys nudge; ink and line bounds land where they are dropped
+- Added: 2026-10-07 10:30 | Completed: 2026-10-08 16:55 | M2 — atomic save over the open file: appends when it can; otherwise (repaired or redacted files) a full rewrite to a sibling, ReplaceFileW, and the document opens again (with its password)

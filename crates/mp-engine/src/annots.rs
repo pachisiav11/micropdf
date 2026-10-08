@@ -512,6 +512,59 @@ pub fn redo(doc: &Document) -> Result<(), Error> {
     Ok(pdf.redo()?)
 }
 
+/// Whether a save can append to the file instead of rewriting it. MuPDF rewrites files it
+/// had to repair on open, and redacted ones.
+pub(crate) fn can_append(doc: &Document) -> bool {
+    PdfDocument::try_from(doc.clone()).is_ok_and(|pdf| pdf.can_be_saved_incrementally())
+}
+
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Where a full save of `path` is written before it replaces the file.
+pub(crate) fn sibling(path: &Path) -> std::path::PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{name}.micropdf-save.tmp"))
+}
+
+/// Puts `replacement` in place of `original` in one step, keeping the original's attributes,
+/// permissions and creation time. On failure both files stay as they were.
+pub(crate) fn replace(original: &Path, replacement: &Path) -> Result<(), Error> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        REPLACEFILE_IGNORE_ACL_ERRORS, REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW,
+    };
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() };
+    let (to, from) = (wide(original), wide(replacement));
+    let flags = REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS;
+    // SAFETY: both names are NUL-terminated and outlive the call; the rest are optional.
+    let ok = unsafe {
+        ReplaceFileW(
+            to.as_ptr(),
+            from.as_ptr(),
+            std::ptr::null(),
+            flags,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok == 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(Error::Io(std::io::Error::new(
+            e.kind(),
+            format!(
+                "could not replace the file ({e}); the changes are saved in {}",
+                replacement.display()
+            ),
+        )));
+    }
+    Ok(())
+}
+
 /// Writes the document to `target`. Incremental saves append the changes to a copy of
 /// `original`, which keeps existing signatures valid; full saves rewrite and compact it.
 pub fn save(

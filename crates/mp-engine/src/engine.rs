@@ -189,7 +189,7 @@ enum Command {
         doc: DocId,
         target: PathBuf,
         incremental: bool,
-        reply: Reply<()>,
+        reply: Reply<bool>,
     },
     History {
         doc: DocId,
@@ -448,7 +448,11 @@ impl Engine {
     }
 
     /// Writes the document to `target`; see [`crate::annots::save`] for `incremental`.
-    pub fn save(&self, doc: DocId, target: &Path, incremental: bool) -> Result<(), Error> {
+    ///
+    /// Saving over the open file appends to it when it can. Otherwise the whole file is
+    /// rewritten beside it and swapped in, and the document opens again: it returns true, the
+    /// edit history is gone and comment ids may differ.
+    pub fn save(&self, doc: DocId, target: &Path, incremental: bool) -> Result<bool, Error> {
         let target = target.to_path_buf();
         self.call(|reply| Command::Save {
             doc,
@@ -512,6 +516,8 @@ impl Drop for Engine {
 fn run(rx: mpsc::Receiver<Command>) {
     let mut docs: HashMap<DocId, Document> = HashMap::new();
     let mut paths: HashMap<DocId, PathBuf> = HashMap::new();
+    // Kept to open an encrypted document again after a save rewrites it.
+    let mut passwords: HashMap<DocId, String> = HashMap::new();
     let mut lists = ListCache::default();
     let mut next_id = 0;
 
@@ -555,6 +561,9 @@ fn run(rx: mpsc::Receiver<Command>) {
                         Ok(Some(d.page_count()? as usize))
                     })(),
                 };
+                if let Ok(Some(_)) = result {
+                    passwords.insert(doc, password);
+                }
                 let _ = reply.send(result);
             }
             Command::PageSizes { doc, reply } => {
@@ -798,10 +807,38 @@ fn run(rx: mpsc::Receiver<Command>) {
                 incremental,
                 reply,
             } => {
-                let result = with_doc(&docs, doc, |d| {
-                    let original = paths.get(&doc).ok_or(Error::UnknownDocument)?;
-                    annots::save(d, original, &target, incremental)
-                });
+                let result = (|| {
+                    let original = paths.get(&doc).ok_or(Error::UnknownDocument)?.clone();
+                    let d = docs.get(&doc).ok_or(Error::UnknownDocument)?;
+                    if !annots::same_file(&original, &target)
+                        || (incremental && annots::can_append(d))
+                    {
+                        annots::save(d, &original, &target, incremental)?;
+                        return Ok(false);
+                    }
+                    // MuPDF reads the open file as it goes, so a full rewrite cannot go over
+                    // it. Write a sibling, close the document, swap the files, open again.
+                    let temp = annots::sibling(&original);
+                    if let Err(e) = annots::save(d, &original, &temp, false) {
+                        let _ = std::fs::remove_file(&temp);
+                        return Err(e);
+                    }
+                    docs.remove(&doc);
+                    lists.remove_doc(doc);
+                    let replaced = annots::replace(&original, &temp);
+                    match reopen(&original, passwords.get(&doc)) {
+                        Ok(d) => {
+                            docs.insert(doc, d);
+                        }
+                        Err(e) => {
+                            paths.remove(&doc);
+                            passwords.remove(&doc);
+                            return Err(e);
+                        }
+                    }
+                    replaced?;
+                    Ok(true)
+                })();
                 let _ = reply.send(result);
             }
             Command::History { doc, reply } => {
@@ -821,11 +858,27 @@ fn run(rx: mpsc::Receiver<Command>) {
             }
             Command::Close { doc } => {
                 paths.remove(&doc);
+                passwords.remove(&doc);
                 docs.remove(&doc);
                 lists.remove_doc(doc);
             }
         }
     }
+}
+
+/// Opens `path` again after a save rewrote it, unlocked with the password it had.
+fn reopen(path: &Path, password: Option<&String>) -> Result<Document, Error> {
+    let path = path.to_str().ok_or(mupdf::Error::InvalidUtf8)?;
+    let mut doc = Document::open(path)?;
+    annots::enable_journal(&doc)?;
+    if let Some(password) = password
+        && !doc.authenticate(password)?
+    {
+        return Err(Error::Invalid(
+            "the saved file no longer takes the password",
+        ));
+    }
+    Ok(doc)
 }
 
 /// (file name, file specification) for each embedded file. Empty for non-PDF documents.

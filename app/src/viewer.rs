@@ -895,13 +895,22 @@ Open it in Adobe Acrobat Reader to fill it in.",
             }
             Err(_) => return, // mid-write; the next change event retries
         };
-        let Ok(sizes) = self.engine.page_sizes(info.id) else {
+        if self.adopt(index, info) {
+            self.status(format!("Reloaded {}", file_name(&path)));
+        } else {
             self.engine.close(info.id);
-            return;
+        }
+    }
+
+    /// Shows document `info` in tab `index` from scratch: sizes, outline, caches and comments
+    /// are read again, and the edit history starts over. The tab's old document closes unless
+    /// it is the same one. False if `info` has no pages to show.
+    fn adopt(&mut self, index: usize, info: DocInfo) -> bool {
+        let Ok(sizes) = self.engine.page_sizes(info.id) else {
+            return false;
         };
         if sizes.is_empty() {
-            self.engine.close(info.id);
-            return;
+            return false;
         }
         let outline = self.engine.outline(info.id).unwrap_or_default();
         let metadata = self.engine.metadata(info.id).unwrap_or_default();
@@ -912,7 +921,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let active = self.active == Some(index);
         let spot = if active { self.spot() } else { None };
         let tab = &mut self.tabs[index];
-        self.engine.close(tab.info.id);
+        if tab.info.id != info.id {
+            self.engine.close(tab.info.id);
+        }
         tab.info = info;
         tab.sizes = sizes
             .iter()
@@ -958,7 +969,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.start_search(query);
             self.update_view();
         }
-        self.status(format!("Reloaded {}", file_name(&path)));
+        true
     }
 
     // ---------------------------------------------------------------- dialogs
@@ -4095,9 +4106,13 @@ Open it in Adobe Acrobat Reader to fill it in.",
             self.status("No changes to save".into());
             return;
         }
-        let (doc, path) = (tab.info.id, tab.path.clone());
-        match self.engine.save(doc, &path, true) {
-            Ok(()) => {
+        let (info, path) = (tab.info, tab.path.clone());
+        match self.engine.save(info.id, &path, true) {
+            Ok(reopened) => {
+                if reopened && let Some(index) = self.active {
+                    // The file was rewritten whole and opened again; start the tab afresh.
+                    self.adopt(index, info);
+                }
                 if let Some(tab) = self.tab_mut() {
                     tab.dirty = false;
                     tab.saved = file_stamp(&path);

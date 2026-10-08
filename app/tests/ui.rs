@@ -826,6 +826,42 @@ fn steps() -> Vec<Step> {
             },
         ),
         step(
+            "open a copy of a file MuPDF repairs",
+            |_| {
+                std::fs::copy(fixture("truncated.pdf"), scratch("repaired.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("repaired.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("repaired.pdf")),
+        ),
+        step(
+            "a note on the repaired file",
+            |w| {
+                w.invoke_command("tool-note".into());
+                drag_hello(w, &[(40.0, 40.0)]);
+                w.invoke_dialog_accept("Repaired".into());
+                w.invoke_command("tool-select".into());
+            },
+            |w| comments() == 1 && w.get_dirty(),
+        ),
+        step(
+            "save rewrites it whole and the tab carries on",
+            command("save"),
+            |w| {
+                !w.get_dirty()
+                    && w.get_status_left().starts_with("Saved")
+                    && w.get_undo_name().is_empty()
+                    && comments() == 1
+                    && comments_in(&scratch("repaired.pdf")) == 1
+            },
+        ),
+        step("close the repaired copy", command("close-tab"), |w| {
+            let closed = active_title(w) == "xfa-dynamic.pdf";
+            if closed {
+                let _ = std::fs::remove_file(scratch("repaired.pdf"));
+            }
+            closed
+        }),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {
