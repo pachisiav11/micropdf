@@ -864,7 +864,7 @@ fn save_dialog(
     });
 }
 
-const PDFS: (&str, &[&str]) = ("PDF documents", &["pdf"]);
+pub(crate) const PDFS: (&str, &[&str]) = ("PDF documents", &["pdf"]);
 
 /// Asks for files of `kind` (a name and extensions) on a thread, next to `path` when given.
 pub(crate) fn pick_files(

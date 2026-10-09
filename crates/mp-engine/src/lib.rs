@@ -7,6 +7,7 @@
 
 mod annots;
 mod attachments;
+mod compare;
 mod engine;
 mod error;
 mod fonts;
@@ -28,6 +29,7 @@ pub use annots::{
     Annot, AnnotKind, Border, History, LINE_ENDS, NewAnnot, Properties, REVIEW_STATES, Restyle,
     STAMPS, Style, readable_date,
 };
+pub use compare::{Change, Comparison, Word, compare_words};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::{has_cjk, has_font};

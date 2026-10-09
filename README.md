@@ -92,6 +92,16 @@ date, reason and location.
 `scripts/make_test_signer.py` makes `fixtures/signer.pfx` (password `test`), the self-signed test
 ID behind `fixtures/signed.pdf` and its tampered copy.
 
+## Compare and split view
+
+View → Show this document twice, or Show a file beside it, opens a second pane next to the
+document; Together makes the two scroll as one. Compare with a file (in View or Tools) opens the
+other version in that pane and diffs the two texts word by word: words taken out or replaced are
+marked red in the document, words put in or replaced green in the pane, and the arrows above the
+pane step through the changes in both at once. Overlay draws both versions on each page of the
+pane, with the ink that was taken out in red and the ink that was put in in green, for changes the
+text does not show, such as a moved picture.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

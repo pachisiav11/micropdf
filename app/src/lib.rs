@@ -12,6 +12,7 @@ pub mod print;
 pub mod recolor;
 pub mod settings;
 pub mod signing;
+pub mod split;
 pub mod tools;
 pub mod viewer;
 
@@ -115,6 +116,9 @@ pub fn wire(window: &MainWindow) {
     });
     window.on_signature_go(|i| {
         viewer::with(|app| app.signature_go(i as usize));
+    });
+    window.on_split_scrolled(|| {
+        viewer::with(split::scrolled);
     });
     window.on_attachment_delete(|i| {
         viewer::with(|app| app.attachment_delete(i as usize));

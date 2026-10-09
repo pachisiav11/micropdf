@@ -2,8 +2,9 @@ import { ScrollView, LineEdit, ListView, CheckBox, ComboBox } from "std-widgets.
 import { Theme } from "tokens.slint";
 import { DialogButton, Icon, Menu, MenuEntry, SidebarTab, ToolButton } from "widgets.slint";
 import { Assistant, AssistantPanel, ChatItem } from "assistant.slint";
+import { SplitMark, SplitPage, SplitPane } from "split.slint";
 
-export { Theme, Assistant, ChatItem }
+export { Theme, Assistant, ChatItem, SplitMark, SplitPage }
 
 export struct TabItem {
     title: string,
@@ -27,7 +28,8 @@ export struct TileItem {
     image: image,
 }
 
-// kind: 0 search hit, 1 current search hit, 2 selection, 3 link flash
+// kind: 0 search hit, 1 current search hit, 2 selection, 3 picked comment, 4 handle,
+// 5 focused field, 6 flashed page, 7 words Compare found changed, 8 the change shown now
 export struct MarkItem {
     x: length,
     y: length,
@@ -175,6 +177,20 @@ export component MainWindow inherits Window {
     in property <[SignatureRow]> signatures;
     in property <[CommentRow]> comments;
     in property <[LayerRow]> layers;
+
+    // The second pane, beside the document.
+    in property <bool> split-open;
+    in property <string> split-title;
+    in property <bool> split-synced;
+    in property <bool> split-comparing;
+    in property <bool> split-overlay;
+    in property <[SplitPage]> split-pages;
+    in property <[SplitMark]> split-marks;
+    in property <length> split-content-height;
+    in-out property <length> split-viewport-y <=> split-pane.viewport-y;
+    out property <length> split-view-width: split-pane.view-width;
+    out property <length> split-view-height: split-pane.view-height;
+    callback split-scrolled();
 
     in-out property <bool> find-visible;
     in-out property <string> find-query;
@@ -760,6 +776,7 @@ export component MainWindow inherits Window {
                             MenuEntry { text: "Watermark\u{2026}"; clicked => { root.command("watermark"); } }
                             MenuEntry { text: "Bates numbering\u{2026}"; clicked => { root.command("bates"); } }
                             MenuEntry { text: "Recognize text (OCR)\u{2026}"; clicked => { root.command("ocr"); } }
+                            MenuEntry { text: "Compare with a file\u{2026}"; clicked => { root.command("compare"); } }
                         }
                         Menu {
                             MenuEntry { text: "Protect with password\u{2026}"; clicked => { root.command("protect"); } }
@@ -823,7 +840,7 @@ export component MainWindow inherits Window {
                 view-menu := PopupWindow {
                     x: view-button.x;
                     y: parent.height - 4px;
-                    width: 200px;
+                    width: 240px;
                     Menu {
                         MenuEntry { text: "Normal pages"; checked: root.reading-mode == 0; clicked => { root.command("read-normal"); } }
                         MenuEntry { text: "Dark pages"; checked: root.reading-mode == 1; clicked => { root.command("read-dark"); } }
@@ -831,6 +848,10 @@ export component MainWindow inherits Window {
                         MenuEntry { text: "Inverted pages"; checked: root.reading-mode == 3; clicked => { root.command("read-invert"); } }
                         MenuEntry { text: "Vim keys"; checked: root.vim-enabled; clicked => { root.command("toggle-vim"); } }
                         MenuEntry { text: "Light or dark theme"; clicked => { root.command("toggle-theme"); } }
+                        MenuEntry { text: "Show this document twice"; clicked => { root.command("split-same"); } }
+                        MenuEntry { text: "Show a file beside it\u{2026}"; clicked => { root.command("split-file"); } }
+                        MenuEntry { text: "Compare with a file\u{2026}"; clicked => { root.command("compare"); } }
+                        if root.split-open: MenuEntry { text: "Close the second pane"; clicked => { root.command("split-close"); } }
                     }
                 }
 
@@ -1333,8 +1354,9 @@ export component MainWindow inherits Window {
                                 : mark.kind == 4 ? #ffffff
                                 : mark.kind == 5 ? transparent
                                 : mark.kind == 6 ? Theme.accent-glow
+                                : mark.kind >= 7 ? #e5484d47
                                 : #8d9cff40;
-                            border-width: mark.kind == 4 ? 1px : mark.kind == 5 || mark.kind == 6 ? 2px : 0px;
+                            border-width: mark.kind == 4 ? 1px : mark.kind == 5 || mark.kind == 6 || mark.kind == 8 ? 2px : 0px;
                             border-color: Theme.accent;
                         }
                         Rectangle {
@@ -1813,6 +1835,27 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                }
+
+                Rectangle {
+                    width: root.split-open && !root.presenting ? 1px : 0px;
+                    background: Theme.border-muted;
+                }
+
+                split-pane := SplitPane {
+                    horizontal-stretch: 1;
+                    max-width: root.split-open && !root.presenting ? 100000px : 0px;
+                    visible: root.split-open && !root.presenting;
+                    clip: true;
+                    title: root.split-title;
+                    synced: root.split-synced;
+                    comparing: root.split-comparing;
+                    overlay: root.split-overlay;
+                    pages: root.split-pages;
+                    marks: root.split-marks;
+                    content-height: root.split-content-height;
+                    command(id) => { root.command(id); }
+                    scrolled => { root.split-scrolled(); }
                 }
 
                 assistant-panel := AssistantPanel {

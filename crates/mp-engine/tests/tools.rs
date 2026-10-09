@@ -704,3 +704,31 @@ fn ink_height(engine: &Engine, doc: DocId, page: usize) -> f32 {
         .collect();
     (rows.last().unwrap() - rows[0]) as f32 / 2.0
 }
+
+#[test]
+fn compare_finds_the_words_added() {
+    let engine = Engine::start();
+    let scratch = Scratch::new("compare");
+    let path = scratch.file("draft.pdf");
+    std::fs::copy(fixture("hello.pdf"), &path).unwrap();
+    let new = open(&engine, &path);
+    let header = Overlay {
+        texts: vec![(Place::TopLeft, "Second draft".into())],
+        ..Overlay::default()
+    };
+    engine
+        .stamp_pages(new, vec![0], header, "Add header")
+        .unwrap();
+    let old = open(&engine, &fixture("hello.pdf"));
+    let c = engine.compare(old, new).unwrap();
+    assert_eq!(c.changes.len(), 1, "{:?}", c.changes);
+    let change = &c.changes[0];
+    assert!(change.old.is_empty());
+    let added: Vec<&str> = c.new[change.new.clone()]
+        .iter()
+        .map(|w| w.text.as_str())
+        .collect();
+    assert_eq!(added, ["Second", "draft"]);
+    assert!(c.new[change.new.start].rect.y1 < 50.0);
+    assert!(engine.compare(old, old).unwrap().changes.is_empty());
+}

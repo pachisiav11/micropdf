@@ -378,6 +378,7 @@ pub struct App {
     /// The page an assistant citation just went to, outlined for a moment.
     flash: Option<usize>,
     flash_timer: Timer,
+    pub(crate) split: Option<crate::split::Split>,
 }
 
 impl App {
@@ -480,13 +481,14 @@ impl App {
             renders: 0,
             flash: None,
             flash_timer: Timer::default(),
+            split: None,
         };
         app.refresh_recent();
         app.refresh_sign_menu();
         app
     }
 
-    fn window(&self) -> Option<MainWindow> {
+    pub(crate) fn window(&self) -> Option<MainWindow> {
         self.window.upgrade()
     }
 
@@ -674,7 +676,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
     }
 
-    fn bump(&mut self) -> u64 {
+    pub(crate) fn bump(&mut self) -> u64 {
         self.next_generation += 1;
         self.next_generation
     }
@@ -701,6 +703,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
     fn discard_tab(&mut self, index: usize) {
         let tab = self.tabs.remove(index);
         self.settings.remember_page(&tab.path, tab.current);
+        crate::split::closing(self, tab.info.id);
         self.engine.close(tab.info.id);
         self.closed.push(tab.path.clone());
         self.unwatch(&tab.path);
@@ -1006,6 +1009,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let thumb_generation = self.bump();
         let active = self.active == Some(index);
         let spot = if active { self.spot() } else { None };
+        let old = self.tabs[index].info.id;
+        if old != info.id {
+            crate::split::closing(self, old);
+        }
         let tab = &mut self.tabs[index];
         if tab.info.id != info.id {
             self.engine.close(tab.info.id);
@@ -1566,6 +1573,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
         self.refresh_marks();
         self.update_thumbs();
+        crate::split::follow(self);
     }
 
     fn tile_done(&mut self, doc: DocId, key: TileKey, frac: [f32; 4], result: Rendered) {
@@ -2443,7 +2451,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         had
     }
 
-    fn refresh_marks(&mut self) {
+    pub(crate) fn refresh_marks(&mut self) {
         let selection = self.tab().and_then(|t| t.selection);
         let selection_rects = match selection {
             Some(s) => self
@@ -2476,6 +2484,19 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
         if let Some(f) = self.flash.and_then(|page| tab.layout.frame(page)) {
             marks.push(mark_item(f, 6));
+        }
+        if let Some(c) = self.split.as_ref().and_then(|s| s.compare.as_ref())
+            && c.old == tab.info.id
+        {
+            for (i, change) in c.result.changes.iter().enumerate() {
+                for w in &c.result.old[change.old.clone()] {
+                    if band.contains(&w.page)
+                        && let Some(f) = tab.layout.to_view(w.page, &w.rect)
+                    {
+                        marks.push(mark_item(f, if c.current == Some(i) { 8 } else { 7 }));
+                    }
+                }
+            }
         }
         if let Some((page, id)) = tab.picked
             && let Some((_, a)) = tab.comments.iter().find(|(p, a)| *p == page && a.id == id)
@@ -3453,6 +3474,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.fill_files();
         self.rebuild_info();
         self.refresh_comments(page);
+        if let Some(doc) = self.tab().map(|t| t.info.id) {
+            crate::split::edited(self, doc);
+        }
     }
 
     /// Reads the active tab's pages again after an edit that added, removed, moved, turned or
@@ -5429,6 +5453,20 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn engine(&self) -> Arc<Engine> {
         Arc::clone(&self.engine)
+    }
+
+    pub(crate) fn pool(&self) -> &RenderPool {
+        &self.pool
+    }
+
+    /// The page at the top of the view and how far down it the view starts.
+    pub(crate) fn reading_fraction(&self) -> Option<(usize, f32)> {
+        self.spot().map(|s| (s.page, s.frac))
+    }
+
+    pub(crate) fn go_to_fraction(&mut self, page: usize, frac: f32) {
+        let x_frac = self.spot().map_or(0.5, |s| s.x_frac);
+        self.go_spot(Spot { page, frac, x_frac });
     }
 
     /// The pages picked in the thumbnails, or the current page; in order.

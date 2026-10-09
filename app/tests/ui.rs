@@ -1466,6 +1466,64 @@ fn steps() -> Vec<Step> {
             closed
         }),
         step(
+            "open a file to compare",
+            |_| {
+                std::fs::copy(fixture("hello.pdf"), scratch("first.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("first.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("first.pdf")),
+        ),
+        step(
+            "the second pane shows it again",
+            command("split-same"),
+            |w| {
+                w.get_split_open()
+                    && w.get_split_title() == viewer::file_name(&scratch("first.pdf"))
+                    && w.get_split_pages().iter().any(|p| p.image.size().width > 0)
+            },
+        ),
+        step("the second pane closes", command("split-close"), |w| {
+            !w.get_split_open() && w.get_split_pages().row_count() == 0
+        }),
+        step(
+            "compare marks the words added to a draft",
+            |_| {
+                let engine = viewer::with(|app| app.engine()).unwrap();
+                let info = engine.open(fixture("hello.pdf")).unwrap();
+                let header = mp_engine::Overlay {
+                    texts: vec![(mp_engine::Place::TopLeft, "Second draft".into())],
+                    ..mp_engine::Overlay::default()
+                };
+                engine
+                    .stamp_pages(info.id, vec![0], header, "Add header")
+                    .unwrap();
+                engine.save(info.id, &scratch("draft.pdf"), false).unwrap();
+                engine.close(info.id);
+                viewer::with(|app| {
+                    let old = app.reading().unwrap().0;
+                    micropdf::split::open_file(app, scratch("draft.pdf"), Some(old));
+                });
+            },
+            |w| {
+                w.get_split_comparing()
+                    && w.get_status_left()
+                        .starts_with("1 change: 0 replaced, 1 added")
+                    && w.get_split_marks().iter().filter(|m| m.kind == 1).count() == 2
+            },
+        ),
+        step(
+            "closing the tab closes the comparison",
+            command("close-tab"),
+            |w| {
+                let closed = active_title(w) == "xfa-dynamic.pdf" && !w.get_split_open();
+                if closed {
+                    let _ = std::fs::remove_file(scratch("first.pdf"));
+                    let _ = std::fs::remove_file(scratch("draft.pdf"));
+                }
+                closed
+            },
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

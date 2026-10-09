@@ -1,0 +1,125 @@
+// The second pane beside the document: another document or the same one, with Compare's
+// marks and controls.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "tokens.slint";
+import { ToolButton } from "widgets.slint";
+
+export struct SplitPage {
+    y: length,
+    width: length,
+    height: length,
+    image: image,
+}
+
+// kind: 0 words added or changed, 1 the change shown now.
+export struct SplitMark {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    kind: int,
+}
+
+export component SplitPane inherits Rectangle {
+    in property <string> title;
+    in property <bool> synced;
+    in property <bool> comparing;
+    in property <bool> overlay;
+    in property <[SplitPage]> pages;
+    in property <[SplitMark]> marks;
+    in property <length> content-height;
+    in-out property <length> viewport-y <=> scroller.content-y;
+    out property <length> view-width: scroller.visible-width;
+    out property <length> view-height: scroller.visible-height;
+    callback command(string);
+    callback scrolled();
+
+    changed viewport-y => { root.scrolled(); }
+    changed view-width => { root.scrolled(); }
+    changed view-height => { root.scrolled(); }
+
+    background: Theme.bg;
+
+    VerticalLayout {
+        Rectangle {
+            height: 38px;
+            background: Theme.bg-secondary;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 4px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                spacing: 2px;
+                Text {
+                    text: root.title;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    color: Theme.text;
+                }
+                if root.comparing: ToolButton {
+                    icon: "\u{E70E}";
+                    tip: "Previous change";
+                    clicked => { root.command("compare-prev"); }
+                }
+                if root.comparing: ToolButton {
+                    icon: "\u{E70D}";
+                    tip: "Next change";
+                    clicked => { root.command("compare-next"); }
+                }
+                if root.comparing: ToolButton {
+                    label: "Overlay";
+                    tip: "Show both versions on one page: red was taken out, green put in";
+                    active: root.overlay;
+                    clicked => { root.command("compare-overlay"); }
+                }
+                ToolButton {
+                    label: "Together";
+                    tip: "Scroll both panes together";
+                    active: root.synced;
+                    clicked => { root.command("split-sync"); }
+                }
+                ToolButton {
+                    icon: "\u{E711}";
+                    tip: "Close the second pane";
+                    clicked => { root.command("split-close"); }
+                }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.border-muted;
+        }
+        scroller := ScrollView {
+            content-width: self.visible-width;
+            content-height: max(self.visible-height, root.content-height);
+            for page in root.pages: Rectangle {
+                x: 8px;
+                y: page.y;
+                width: page.width;
+                height: page.height;
+                background: #ffffff;
+                drop-shadow-blur: Theme.sheet-shadow-blur;
+                drop-shadow-offset-y: Theme.sheet-shadow-offset;
+                drop-shadow-color: Theme.shadow-sheet;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: page.image;
+                    image-fit: fill;
+                }
+            }
+            for mark in root.marks: Rectangle {
+                x: mark.x;
+                y: mark.y;
+                width: mark.width;
+                height: mark.height;
+                border-radius: 2px;
+                background: mark.kind == 0 ? #2fbf5f47 : transparent;
+                border-width: mark.kind == 1 ? 2px : 0px;
+                border-color: Theme.accent;
+            }
+        }
+    }
+}

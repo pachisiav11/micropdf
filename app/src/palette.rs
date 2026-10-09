@@ -106,6 +106,10 @@ pub const COMMANDS: &[Command] = &[
     c("tool-redact", "Tool: redact an area", ""),
     c("tool-certify", "Tool: sign with a certificate", ""),
     c("ocr", "Recognize text (OCR)", ""),
+    c("compare", "Compare with a file", ""),
+    c("split-same", "View: show this document twice", ""),
+    c("split-file", "View: show a file beside this one", ""),
+    c("split-close", "View: close the second pane", ""),
     c("pages-rotate", "Pages: rotate", ""),
     c(
         "pages-rotate-cw",
