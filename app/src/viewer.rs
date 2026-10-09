@@ -379,6 +379,7 @@ pub struct App {
     flash: Option<usize>,
     flash_timer: Timer,
     pub(crate) split: Option<crate::split::Split>,
+    pub(crate) measuring: crate::measure::Measuring,
 }
 
 impl App {
@@ -482,6 +483,7 @@ impl App {
             flash: None,
             flash_timer: Timer::default(),
             split: None,
+            measuring: Default::default(),
         };
         app.refresh_recent();
         app.refresh_sign_menu();
@@ -2036,7 +2038,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// The page-space point under a document-space point, clamped to `page`, so a drag that
     /// leaves the page stays on its edge.
-    fn page_point(&self, page: usize, x: f32, y: f32) -> Option<(f32, f32)> {
+    /// Document-space point `x`, `y` in page `page`'s space, held to the page's edges.
+    pub(crate) fn page_point(&self, page: usize, x: f32, y: f32) -> Option<(f32, f32)> {
         let f = self.tab()?.layout.frame(page)?;
         let cx = x.clamp(f.x, f.x + f.width - 0.01);
         let cy = y.clamp(f.y, f.bottom() - 0.01);
@@ -2069,6 +2072,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
     pub fn hover(&mut self, x: f32, y: f32) {
         if self.drag.is_some() || self.presenting() {
             return;
+        }
+        if self.measuring.outline.is_some() {
+            crate::measure::hover(self, x, y);
         }
         self.move_ghost(self.hit(x, y));
         let cursor = if let Some(corner) = self.handle_at(x, y) {
@@ -2130,6 +2136,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
                         ok: "Add",
                         cancel: "Cancel",
                     });
+                } else if self.tool == Tool::Measure
+                    && self.measuring.kind != mp_engine::Measure::Distance
+                {
+                    crate::measure::click(self, page, (px, py));
                 } else {
                     self.drag = Some(Drag::Draw {
                         page,
@@ -2205,6 +2215,12 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
             }
             self.show_draft();
+            if self.tool == Tool::Measure
+                && let Some(Drag::Draw { points, .. }) = &self.drag
+            {
+                let points = points.clone();
+                crate::measure::live(self, page, &points);
+            }
             return;
         }
         match self.drag {
@@ -2341,6 +2357,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     pub fn pointer_double(&mut self, x: f32, y: f32) {
+        if self.tool == Tool::Measure && crate::measure::finish_outline(self) {
+            return;
+        }
         if let Some(index) = self.comment_at(x, y) {
             self.comment_edit(index);
             return;
@@ -3709,6 +3728,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         }
         self.ghost = None;
         self.place_ghost();
+        crate::measure::cancel(self);
         if let Some(w) = self.window() {
             w.set_tool(tool as i32);
         }
@@ -3722,9 +3742,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.tool
     }
 
-    fn add_comment(&mut self, page: usize, new: NewAnnot, color: [f32; 3]) {
+    /// Adds `new` to `page`; false, with the reason in the status line, if it could not.
+    pub(crate) fn add_comment(&mut self, page: usize, new: NewAnnot, color: [f32; 3]) -> bool {
         let Some(doc) = self.tab().map(|t| t.info.id) else {
-            return;
+            return false;
         };
         let color = self.chosen_color(new_key(&new)).unwrap_or(color);
         let style = Style {
@@ -3732,8 +3753,14 @@ Open it in Adobe Acrobat Reader to fill it in.",
             author: user_name(),
         };
         match self.engine.add_annotation(doc, page, new, style) {
-            Ok(_) => self.edited(Some(page)),
-            Err(e) => self.status(format!("Could not add the comment: {e}")),
+            Ok(_) => {
+                self.edited(Some(page));
+                true
+            }
+            Err(e) => {
+                self.status(format!("Could not add the comment: {e}"));
+                false
+            }
         }
     }
 
@@ -3759,7 +3786,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             return;
         };
         let path = match self.tool {
-            Tool::Ink | Tool::Line => {
+            Tool::Ink | Tool::Line | Tool::Measure => {
                 let mut path = format!("M {ax} {ay}");
                 for (x, y) in &points[1..] {
                     path += &format!(" L {x} {y}");
@@ -3828,6 +3855,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 });
             }
             _ if small => self.status("Drag to draw the shape".into()),
+            Tool::Measure => crate::measure::finish(self, page, vec![a, b]),
             Tool::Line => {
                 let new = NewAnnot::Line {
                     from: a,
@@ -5455,6 +5483,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
         Arc::clone(&self.engine)
     }
 
+    /// Page-space point `(x, y)` of `page` in document space.
+    pub(crate) fn view_point(&self, page: usize, (x, y): (f32, f32)) -> Option<(f32, f32)> {
+        let r = Rect {
+            x0: x,
+            y0: y,
+            x1: x,
+            y1: y,
+        };
+        self.tab()?.layout.to_view(page, &r).map(|f| (f.x, f.y))
+    }
+
     pub(crate) fn pool(&self) -> &RenderPool {
         &self.pool
     }
@@ -5724,7 +5763,12 @@ fn takes_input(f: &Field) -> bool {
 
 /// Notes and attached files keep their icon size.
 fn resizable(a: &Annot) -> bool {
-    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::File)
+    // A measurement resized would no longer say its own length.
+    movable(a)
+        && !matches!(
+            a.kind,
+            AnnotKind::Note | AnnotKind::File | AnnotKind::Measure
+        )
 }
 
 /// A frame's corners: top left, then clockwise.
@@ -5827,6 +5871,8 @@ pub enum Tool {
     Redact,
     /// Signs with a certificate: in a box dragged out, or in an empty signature field.
     Certify,
+    /// Measures a distance, perimeter or area, as `measuring.kind` says.
+    Measure,
 }
 
 /// The signature pad's state that the window does not hold.

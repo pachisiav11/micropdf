@@ -162,6 +162,8 @@ export component MainWindow inherits Window {
     in property <bool> dirty;
     // 0 select, 1 note, 2 text box, 3 rectangle, 4 ellipse, 5 line, 6 drawing, 7 sign
     in property <int> tool;
+    // What the Measure tool (13) measures: 0 distance, 1 perimeter, 2 area.
+    in property <int> measure-kind;
     // The shape being drawn, as SVG path commands in document space; empty when none.
     in property <string> draft-path;
     in property <string> status-left;
@@ -788,6 +790,10 @@ export component MainWindow inherits Window {
                             MenuEntry { text: "Redact selected text"; clicked => { root.command("redact-selection"); } }
                             MenuEntry { text: "Search and redact\u{2026}"; clicked => { root.command("redact-search"); } }
                             MenuEntry { text: "Apply redactions\u{2026}"; clicked => { root.command("redact-apply"); } }
+                            MenuEntry { text: "Measure distance"; checked: root.tool == 13 && root.measure-kind == 0; clicked => { root.command("measure-distance"); } }
+                            MenuEntry { text: "Measure perimeter"; checked: root.tool == 13 && root.measure-kind == 1; clicked => { root.command("measure-perimeter"); } }
+                            MenuEntry { text: "Measure area"; checked: root.tool == 13 && root.measure-kind == 2; clicked => { root.command("measure-area"); } }
+                            MenuEntry { text: "Set the measuring scale\u{2026}"; clicked => { root.command("measure-scale"); } }
                         }
                     }
                 }

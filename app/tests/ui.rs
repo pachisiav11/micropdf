@@ -1524,6 +1524,66 @@ fn steps() -> Vec<Step> {
             },
         ),
         step(
+            "open a page to measure",
+            |_| {
+                std::fs::copy(fixture("hello.pdf"), scratch("measure.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("measure.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("measure.pdf")),
+        ),
+        step(
+            "set the scale to 1 in = 10 ft",
+            |w| {
+                w.invoke_command("measure-scale".into());
+                w.invoke_form_edited(2, "10".into());
+                w.invoke_form_chosen(3, 1);
+                w.invoke_dialog_accept("".into());
+            },
+            |w| w.get_status_left() == "Measuring at 1 in = 10 ft",
+        ),
+        step(
+            "an inch dragged out measures 10 ft",
+            |w| {
+                w.invoke_command("measure-distance".into());
+                drag_hello(w, &[(20.0, 40.0), (56.0, 40.0), (92.0, 40.0)]);
+            },
+            |w| w.get_status_left() == "Distance: 10 ft" && comments() == 1,
+        ),
+        step(
+            "a square inch clicked out measures 100 sq ft",
+            |w| {
+                w.invoke_command("measure-area".into());
+                let p = hello_page(w);
+                for (x, y) in [(20.0, 60.0), (92.0, 60.0), (92.0, 132.0), (20.0, 132.0)] {
+                    let (x, y) = (p.x + x / 300.0 * p.width, p.y + y / 200.0 * p.height);
+                    w.invoke_pointer_down(x, y, 0, false);
+                    w.invoke_pointer_up(x, y);
+                }
+                w.invoke_key_input("\n".into(), false, false, false);
+            },
+            |w| {
+                w.get_status_left() == "Area: 100 sq ft"
+                    && comments() == 2
+                    && w.get_draft_path().is_empty()
+                    && w.get_tool() == 13
+            },
+        ),
+        step(
+            "close the measured page",
+            |w| {
+                w.invoke_command("tool-select".into());
+                w.invoke_command("close-tab".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                let closed = active_title(w) == "xfa-dynamic.pdf";
+                if closed {
+                    let _ = std::fs::remove_file(scratch("measure.pdf"));
+                }
+                closed
+            },
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

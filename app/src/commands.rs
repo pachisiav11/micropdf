@@ -154,7 +154,10 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "import-comments" => return Some("import-comments"),
         "sign-image" => return Some("sign-image"),
         _ => {
-            if crate::tools::command(app, id) || crate::split::command(app, id) {
+            if crate::tools::command(app, id)
+                || crate::split::command(app, id)
+                || crate::measure::command(app, id)
+            {
                 return None;
             }
             if let Some(name) = id.strip_prefix("stamp-") {
@@ -419,7 +422,9 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
     if is(Key::Escape) {
         app.vim_count.clear();
         app.vim_pending = None;
-        if app.tool() != Tool::Select {
+        if crate::measure::cancel(app) {
+            app.status("Measuring stopped".into());
+        } else if app.tool() != Tool::Select {
             app.set_tool(Tool::Select);
         } else if app.presenting() {
             app.toggle_present();
@@ -432,6 +437,9 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
     }
     if !ctrl && !alt && (is(Key::Tab) || is(Key::Backtab)) && app.field_tab(!shift && is(Key::Tab))
     {
+        return Handled;
+    }
+    if !ctrl && !alt && is(Key::Return) && crate::measure::finish_outline(app) {
         return Handled;
     }
     if !ctrl && !alt && (text == " " || is(Key::Return)) && app.use_focused_field() {

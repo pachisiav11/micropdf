@@ -732,3 +732,83 @@ fn compare_finds_the_words_added() {
     assert!(c.new[change.new.start].rect.y1 < 50.0);
     assert!(engine.compare(old, old).unwrap().changes.is_empty());
 }
+
+#[test]
+fn measurements_take_the_page_scale_and_keep_it() {
+    use mp_engine::{AnnotKind, Measure, NewAnnot, Style};
+    use mupdf::pdf::{PdfDocument, PdfObject, PdfWriteOptions};
+    let engine = Engine::start();
+    let scratch = Scratch::new("measure");
+    let path = scratch.file("plan.pdf");
+    // hello.pdf, drawn at 1 in = 10 ft as its page's viewport says.
+    {
+        let pdf = PdfDocument::open(fixture("hello.pdf").to_str().unwrap()).unwrap();
+        let dict = || pdf.new_dict().unwrap();
+        let list = |item| {
+            let mut a = pdf.new_array().unwrap();
+            a.array_push(item).unwrap();
+            a
+        };
+        let mut x = dict();
+        x.dict_put("U", PdfObject::new_string("ft").unwrap())
+            .unwrap();
+        x.dict_put("C", PdfObject::new_real(10.0 / 72.0).unwrap())
+            .unwrap();
+        let mut m = dict();
+        m.dict_put("Subtype", PdfObject::new_name("RL").unwrap())
+            .unwrap();
+        m.dict_put("R", PdfObject::new_string("1 in = 10 ft").unwrap())
+            .unwrap();
+        m.dict_put("X", list(x)).unwrap();
+        let mut view = dict();
+        view.dict_put("Measure", m).unwrap();
+        pdf.find_page(0)
+            .unwrap()
+            .dict_put("VP", list(view))
+            .unwrap();
+        pdf.save_with_options(path.to_str().unwrap(), PdfWriteOptions::default())
+            .unwrap();
+    }
+    let doc = open(&engine, &path);
+    let scale = engine.page_scale(doc, 0).unwrap().unwrap();
+    assert_eq!(
+        (scale.ratio.as_str(), scale.unit.as_str()),
+        ("1 in = 10 ft", "ft")
+    );
+    let square = [(20.0, 20.0), (92.0, 20.0), (92.0, 164.0), (20.0, 164.0)];
+    let style = Style {
+        color: [0.85, 0.15, 0.15],
+        author: String::new(),
+    };
+    for (kind, points, label) in [
+        (Measure::Distance, &square[..2], "10 ft"),
+        (Measure::Perimeter, &square[..], "40 ft"),
+        (Measure::Area, &square[..], "200 sq ft"),
+    ] {
+        let new = NewAnnot::Measure {
+            kind,
+            points: points.to_vec(),
+            scale: scale.clone(),
+        };
+        let a = engine.add_annotation(doc, 0, new, style.clone()).unwrap();
+        assert_eq!((a.kind, a.contents.as_str()), (AnnotKind::Measure, label));
+    }
+    let saved = scratch.file("measured.pdf");
+    engine.save(doc, &saved, false).unwrap();
+    for needle in [
+        "/LineDimension",
+        "/PolyLineDimension",
+        "/PolygonDimension",
+        "sq ft",
+    ] {
+        assert!(anywhere(&saved, needle), "{needle} is not in the file");
+    }
+    let again = open(&engine, &saved);
+    let kinds: Vec<AnnotKind> = engine
+        .annotations(again, 0)
+        .unwrap()
+        .iter()
+        .map(|a| a.kind)
+        .collect();
+    assert_eq!(kinds, [AnnotKind::Measure; 3]);
+}

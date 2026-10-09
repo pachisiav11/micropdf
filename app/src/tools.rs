@@ -39,6 +39,7 @@ pub enum Form {
     ApplyRedactions,
     Sign(SignField),
     Ocr,
+    Scale,
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -409,6 +410,7 @@ fn open(app: &mut App, form: Form) {
             )
         }
         Form::Sign(field) => return crate::signing::open(app, field),
+        Form::Scale => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -446,7 +448,7 @@ pub fn accept(app: &mut App, form: Form, fields: Vec<FormField>) {
     }
 }
 
-fn number<T: std::str::FromStr>(field: &FormField) -> Result<T, Box<dyn Error>> {
+pub(crate) fn number<T: std::str::FromStr>(field: &FormField) -> Result<T, Box<dyn Error>> {
     field
         .text
         .trim()
@@ -702,6 +704,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             ));
         }
         Form::Sign(field) => crate::signing::run(app, field, f)?,
+        Form::Scale => crate::measure::set_scale(app, f)?,
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()

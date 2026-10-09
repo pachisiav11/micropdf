@@ -102,6 +102,15 @@ pane step through the changes in both at once. Overlay draws both versions on ea
 pane, with the ink that was taken out in red and the ink that was put in in green, for changes the
 text does not show, such as a moved picture.
 
+## Measure
+
+Tools → Measure distance, perimeter or area. Drag out a distance; click out the points of a
+perimeter or the corners of an area, then double-click the last one or press Enter (Esc drops it).
+Measurements use the scale set in Tools → Set the measuring scale, such as 1 in = 10 ft; until one
+is set, the scale a drawing's page states, or else 1 in = 1 in. Each is kept in the file as the
+Line, PolyLine or Polygon measurement annotation other readers show, with its value in the
+comment and, for a distance, written on the line.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

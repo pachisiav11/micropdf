@@ -7,6 +7,7 @@ pub mod bench;
 pub mod commands;
 pub mod instance;
 pub mod layout;
+pub mod measure;
 pub mod palette;
 pub mod print;
 pub mod recolor;

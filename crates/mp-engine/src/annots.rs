@@ -10,6 +10,7 @@ use mupdf::pdf::{
 };
 use mupdf::{Document, Point, Quad};
 
+use crate::measure::{Measure, Scale};
 use crate::render::{self, Preview};
 use crate::{Error, Rect};
 
@@ -33,6 +34,8 @@ pub enum AnnotKind {
     File,
     /// Marked for redaction (a Redact annotation), until redactions are applied.
     Redact,
+    /// A distance, perimeter or area: a Line, PolyLine or Polygon with a Measure dictionary.
+    Measure,
     Other,
 }
 
@@ -54,6 +57,7 @@ impl AnnotKind {
             AnnotKind::Callout => "Callout",
             AnnotKind::File => "Attachment",
             AnnotKind::Redact => "Redaction",
+            AnnotKind::Measure => "Measurement",
             AnnotKind::Other => "Comment",
         }
     }
@@ -215,6 +219,13 @@ pub enum NewAnnot {
         name: String,
         data: Vec<u8>,
     },
+    /// The distance between two points, the length of a path or the area inside an outline,
+    /// at `scale`; its text says how much.
+    Measure {
+        kind: Measure,
+        points: Vec<(f32, f32)>,
+        scale: Scale,
+    },
 }
 
 /// The standard stamps every PDF reader knows, by PDF name and the words they show.
@@ -312,12 +323,20 @@ fn set_text_color(annot: &mut PdfAnnotation, color: AnnotationColor) -> Result<(
 }
 
 pub(crate) fn describe(annot: &PdfAnnotation) -> Result<Option<Annot>, Error> {
-    let Some(mut kind) = kind_of(annot.r#type()?) else {
+    let subtype = annot.r#type()?;
+    let Some(mut kind) = kind_of(subtype) else {
         return Ok(None);
     };
     let obj = annot.object();
     if kind == AnnotKind::FreeText && name(&obj, "IT")?.as_deref() == Some("FreeTextCallout") {
         kind = AnnotKind::Callout;
+    }
+    let measured = matches!(
+        subtype,
+        PdfAnnotationType::Line | PdfAnnotationType::PolyLine | PdfAnnotationType::Polygon
+    );
+    if measured && obj.get_dict("Measure")?.is_some() {
+        kind = AnnotKind::Measure;
     }
     let state = name(&obj, "State")?;
     let shape = matches!(kind, AnnotKind::Square | AnnotKind::Circle);
@@ -601,6 +620,7 @@ fn label(new: &NewAnnot) -> &'static str {
         NewAnnot::Stamp { .. } => "Add stamp",
         NewAnnot::Callout { .. } => "Add callout",
         NewAnnot::File { .. } => "Attach file",
+        NewAnnot::Measure { .. } => "Measure",
     }
 }
 
@@ -650,6 +670,15 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
             PdfAnnotationType::Stamp
         }
         NewAnnot::File { .. } => PdfAnnotationType::FileAttachment,
+        NewAnnot::Measure { kind, points, .. } => match kind {
+            _ if points.len() < 2 => return Err(Error::Invalid("too few points to measure")),
+            Measure::Distance => PdfAnnotationType::Line,
+            Measure::Perimeter => PdfAnnotationType::PolyLine,
+            Measure::Area if points.len() < 3 => {
+                return Err(Error::Invalid("too few points to measure"));
+            }
+            Measure::Area => PdfAnnotationType::Polygon,
+        },
     };
     let mut annot = page.create_annotation(subtype)?;
     annot
@@ -730,6 +759,35 @@ fn add_now(doc: &Document, page: usize, new: &NewAnnot, style: &Style) -> Result
             annot.set_icon_name("Paperclip")?;
             annot.set_rect(mupdf::Rect::new(*x, *y, x + 20.0, y + 20.0))?;
             annot.set_contents(name)?;
+        }
+        NewAnnot::Measure {
+            kind,
+            points,
+            scale,
+        } => {
+            let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
+            let (intent, subject) = match kind {
+                Measure::Distance => ("LineDimension", "Length Measurement"),
+                Measure::Perimeter => ("PolyLineDimension", "Perimeter Measurement"),
+                Measure::Area => ("PolygonDimension", "Area Measurement"),
+            };
+            if *kind == Measure::Distance {
+                annot.set_line(point(points[0]), point(points[points.len() - 1]))?;
+                annot.set_line_ending_styles(
+                    LineEndingStyle::OpenArrow,
+                    LineEndingStyle::OpenArrow,
+                )?;
+                // Readers write the measure on the line.
+                annot.object().dict_put("Cap", PdfObject::new_bool(true))?;
+            } else {
+                annot.set_vertices(points.iter().copied().map(point))?;
+            }
+            annot.set_border_width(1.0)?;
+            annot.set_contents(&scale.label(*kind, points))?;
+            let mut obj = annot.object();
+            obj.dict_put("IT", PdfObject::new_name(intent)?)?;
+            obj.dict_put("Subj", PdfObject::new_string(subject)?)?;
+            obj.dict_put("Measure", scale.dictionary(&pdf)?)?;
         }
     }
     let [red, green, blue] = style.color;
