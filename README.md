@@ -4,8 +4,9 @@ A lightweight PDF reader and editor for Windows that aims for Acrobat Pro's feat
 fraction of its memory. Native Rust UI (Slint) over the MuPDF engine, in a single process, plus a
 Chromium extension that shares the same engine (mupdf.js) and design.
 
-**Status: pre-alpha.** Nothing usable yet — see [PLAN.md](PLAN.md) for the build plan and
-[todo.md](todo.md) for what is in progress.
+**Status: 1.0 release candidate.** Every milestone in [PLAN.md](PLAN.md) is built and tested; a
+release still needs a code-signing certificate, the store submissions and the steps in
+[RELEASING.md](RELEASING.md). [todo.md](todo.md) has what is left.
 
 ## Goals
 

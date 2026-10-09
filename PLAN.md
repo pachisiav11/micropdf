@@ -488,3 +488,19 @@ proposed edits / form fill / agent commands (not selected).
 3. The extension's assistant needs the desktop app (keys never live in the browser).
 4. Chromium browsers only; Firefox is not planned.
 5. "micropdf" is a working name.
+
+---
+
+## 15. Changes during the build
+
+- **Library (M9):** search runs over a text store on disk (`library.tsv` and `library.txt`) read
+  one document at a time, not tantivy, which was not in the offline crate cache. It met the exit
+  test (1000 PDFs, search well under 100 ms). Search lives in the palette (Ctrl+Shift+F) rather
+  than a grid view.
+- **LibreOffice add-on (M8):** offered under Convert rather than Settings → Add-ons.
+- **Installer (M10):** the exe installs itself (`--install`, `--uninstall`) instead of a separate
+  installer tool, so a release is one zip.
+- **Updates (M10):** the manifest is signed with ECDSA P-256 and checked by Windows CNG instead
+  of minisign's Ed25519, which Windows does not offer; no crypto crate is needed.
+- **Fuzzing (M10):** a mutation fuzz test in the normal test suite instead of cargo-fuzz, which
+  needs nightly Rust and libFuzzer; it runs in CI on every push and longer on demand.
