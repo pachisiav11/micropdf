@@ -160,6 +160,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
                 || crate::content::command(app, id)
                 || crate::prepare::command(app, id)
                 || crate::convert::command(app, id)
+                || crate::library::command(app, id)
             {
                 return None;
             }
@@ -375,6 +376,7 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
             "o" => "open",
             "w" | "\u{4}" => "close-tab",
             "t" if shift => "reopen-tab",
+            "f" if shift => "library-search",
             "f" => "find",
             "g" => "goto",
             "b" => "bookmark-add",

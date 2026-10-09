@@ -280,6 +280,8 @@ enum PaletteAction {
     Page(usize),
     Recent(PathBuf),
     Outline(usize),
+    /// A library search hit: the file, the page and what was searched for.
+    Hit(PathBuf, usize, String),
 }
 
 pub(crate) enum Drag {
@@ -382,6 +384,7 @@ pub struct App {
     pub(crate) measuring: crate::measure::Measuring,
     pub(crate) content: crate::content::Content,
     pub(crate) prepare: crate::prepare::Prepare,
+    pub(crate) shelf: crate::library::Shelf,
 }
 
 impl App {
@@ -446,7 +449,7 @@ impl App {
         window.set_sidebar_visible(settings.sidebar);
         window.set_page_mode(mode_index(settings.page_mode));
 
-        let app = App {
+        let mut app = App {
             window: window.as_weak(),
             engine: Arc::new(Engine::start()),
             pool: RenderPool::new(workers),
@@ -488,9 +491,11 @@ impl App {
             measuring: Default::default(),
             content: Default::default(),
             prepare: Default::default(),
+            shelf: Default::default(),
         };
         app.refresh_recent();
         app.refresh_sign_menu();
+        crate::library::start(&mut app);
         app
     }
 
@@ -518,7 +523,7 @@ impl App {
         self.tab().map_or(0, DocTab::page_count)
     }
 
-    fn save_settings(&self) {
+    pub(crate) fn save_settings(&self) {
         if self.persist {
             self.settings.save();
         }
@@ -3293,12 +3298,21 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn open_palette(&mut self) {
         let Some(window) = self.window() else { return };
+        window.set_palette_hint(
+            if self.shelf.searching {
+                "Search the text of the PDFs in your library"
+            } else {
+                "Type a command, a page number, or a file name"
+            }
+            .into(),
+        );
         window.set_palette_visible(true);
         window.invoke_focus_palette();
         self.palette_edited("");
     }
 
     pub fn close_palette(&mut self) {
+        self.shelf.searching = false;
         let Some(window) = self.window() else { return };
         window.set_palette_visible(false);
         window.invoke_focus_view();
@@ -3306,6 +3320,26 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn palette_edited(&mut self, query: &str) {
         let query = query.trim();
+        if self.shelf.searching {
+            let hits = crate::library::search(self, query);
+            let items: Vec<PaletteItem> = hits
+                .iter()
+                .map(|h| PaletteItem {
+                    title: crate::library::title(h).into(),
+                    detail: h.snippet.clone().into(),
+                    shortcut: "".into(),
+                })
+                .collect();
+            self.models.palette.set_vec(items);
+            self.palette_actions = hits
+                .into_iter()
+                .map(|h| PaletteAction::Hit(h.path, h.page, query.to_owned()))
+                .collect();
+            if let Some(w) = self.window() {
+                w.set_palette_selected(0);
+            }
+            return;
+        }
         let mut scored: Vec<(i32, PaletteItem, PaletteAction)> = Vec::new();
         let count = self.page_count();
         if let Ok(n) = query.parse::<usize>()
@@ -3346,6 +3380,21 @@ Open it in Adobe Acrobat Reader to fill it in.",
                             shortcut: "".into(),
                         },
                         PaletteAction::Recent(p.clone()),
+                    ));
+                }
+            }
+            for p in self.shelf.library.paths() {
+                if !self.settings.recent.iter().any(|r| r == p)
+                    && let Some(s) = palette::score(query, &file_name(p))
+                {
+                    scored.push((
+                        s - 1,
+                        PaletteItem {
+                            title: file_name(p).into(),
+                            detail: "Library".into(),
+                            shortcut: "".into(),
+                        },
+                        PaletteAction::Recent(p.to_path_buf()),
                     ));
                 }
             }
@@ -3391,13 +3440,26 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let mut page = None;
         let mut recent = None;
         let mut outline = None;
+        let mut hit = None;
         match action {
             PaletteAction::Command(id) => command = Some(*id),
             PaletteAction::Page(p) => page = Some(*p),
             PaletteAction::Recent(p) => recent = Some(p.clone()),
             PaletteAction::Outline(i) => outline = Some(*i),
+            PaletteAction::Hit(p, page, query) => hit = Some((p.clone(), *page, query.clone())),
         }
         self.close_palette();
+        if let Some((path, page, query)) = hit {
+            self.open(path.clone());
+            if self.tab().is_some_and(|t| same_path(&t.path, &path)) {
+                self.go_to(page, None, true);
+                if let Some(w) = self.window() {
+                    w.set_find_query(query.clone().into());
+                }
+                self.open_find();
+                self.start_search(query);
+            }
+        }
         if let Some(p) = page {
             self.go_to(p, None, true);
         }

@@ -63,6 +63,8 @@ pub enum Form {
     },
     /// Installs the LibreOffice add-on, or removes it.
     Addon(bool),
+    /// Takes a folder out of the library.
+    LibraryRemove,
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -440,7 +442,8 @@ fn open(app: &mut App, form: Form) {
         | Form::Bookmark(_)
         | Form::NewBookmark { .. }
         | Form::FieldProps { .. }
-        | Form::Addon(_) => return,
+        | Form::Addon(_)
+        | Form::LibraryRemove => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -488,8 +491,12 @@ pub(crate) fn number<T: std::str::FromStr>(field: &FormField) -> Result<T, Box<d
 }
 
 fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
-    if let Form::Addon(install) = form {
-        return crate::convert::run_addon(app, install);
+    match form {
+        Form::Addon(install) => return crate::convert::run_addon(app, install),
+        Form::LibraryRemove => {
+            return crate::library::remove_folder(app, f[0].index.max(0) as usize);
+        }
+        _ => {}
     }
     let Some((doc, path, _, count)) = app.reading() else {
         return Ok(());
@@ -744,7 +751,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             crate::content::bookmark_named(app, form, f)?
         }
         Form::FieldProps { page, id } => crate::prepare::set_props(app, page, id, f)?,
-        Form::Addon(_) => {}
+        Form::Addon(_) | Form::LibraryRemove => {}
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()

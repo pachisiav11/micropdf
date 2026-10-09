@@ -9,6 +9,7 @@ pub mod content;
 pub mod convert;
 pub mod instance;
 pub mod layout;
+pub mod library;
 pub mod measure;
 pub mod palette;
 pub mod prepare;

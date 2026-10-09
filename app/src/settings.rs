@@ -29,6 +29,8 @@ pub struct Settings {
     /// The colour each comment tool draws with, by tool ("note", "rect", "highlight", ...),
     /// when the reader picked one.
     pub comment_colors: HashMap<String, [f32; 3]>,
+    /// The library's folders, searched with their subfolders.
+    pub library: Vec<PathBuf>,
 }
 
 /// A signature or initials as kept in the settings file.
@@ -92,6 +94,7 @@ impl Default for Settings {
             signature: None,
             initials: None,
             comment_colors: HashMap::new(),
+            library: Vec::new(),
         }
     }
 }

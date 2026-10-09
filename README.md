@@ -167,6 +167,18 @@ SHA-256 published beside it, and unpacks it with an administrative install into
 `%LOCALAPPDATA%\micropdf\addons`, which needs no admin rights and registers nothing. The same
 entry removes that folder and everything in it.
 
+## Library
+
+Add folders to the library from the start page or the palette (Library: add a folder). micropdf
+reads the text of every PDF in them and their subfolders on a thread, keeps it in
+`%LOCALAPPDATA%\micropdf\library`, and watches the folders, so new, changed and removed files are
+caught a few seconds later; unchanged files are never read twice. Ctrl+Shift+F searches it from
+the palette: every word must be on the page, a phrase in quotes counts whole, case does not
+matter, and pages with the most matches come first, each with the text around the first match.
+Enter opens the file at that page with the words marked. Library files also come up by name in
+the ordinary palette. The text is kept on disk, not in memory: a search reads one document at a
+time, and 1000 PDFs are searched in a few milliseconds.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

@@ -199,6 +199,8 @@ export component MainWindow inherits Window {
     in property <string> find-status;
 
     in-out property <bool> palette-visible;
+    in property <string> palette-hint: "Type a command, a page number, or a file name";
+    in property <bool> has-library;
     in property <[PaletteItem]> palette-items;
     in-out property <int> palette-selected;
 
@@ -1616,11 +1618,18 @@ export component MainWindow inherits Window {
                         }
                         HorizontalLayout {
                             alignment: center;
+                            spacing: 8px;
                             DialogButton {
                                 text: "Open a PDF";
                                 primary: true;
                                 clicked => {
                                     root.command("open");
+                                }
+                            }
+                            DialogButton {
+                                text: root.has-library ? "Search the library" : "Add a library folder";
+                                clicked => {
+                                    root.command(root.has-library ? "library-search" : "library-add");
                                 }
                             }
                         }
@@ -2009,7 +2018,7 @@ export component MainWindow inherits Window {
                         padding: 8px;
                         spacing: 6px;
                         palette-edit := LineEdit {
-                            placeholder-text: "Type a command, a page number, or a file name";
+                            placeholder-text: root.palette-hint;
                             accessible-label: "Command";
                             edited(t) => {
                                 root.palette-edited(t);

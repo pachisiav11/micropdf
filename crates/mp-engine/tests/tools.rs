@@ -1,11 +1,12 @@
 //! Organize, stamps, protection, Optimize, Sanitize, redaction and digital signatures.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use mp_engine::{
-    Bates, DocId, Engine, Export, Find, ImageSource, LabelStyle, LinkTarget, Optimize, OutlineItem,
-    Overlay, PATTERNS, Place, Protection, Recognize, Rect, Sanitize, Security, SignField, SignWith,
-    Signing, Trust,
+    Bates, DocId, Engine, Export, Find, ImageSource, LabelStyle, Library, LinkTarget, Optimize,
+    OutlineItem, Overlay, PATTERNS, Place, Protection, Recognize, Rect, Sanitize, Security,
+    SignField, SignWith, Signing, Trust,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -201,6 +202,85 @@ fn documents_export_to_other_formats_and_other_files_combine_as_pdf() {
     let lines = first_lines(&engine, made);
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[1..], ["Note", "Hello micropdf"]);
+}
+
+/// A one-page PDF reading `text`.
+fn tiny_pdf(text: &str) -> Vec<u8> {
+    let content = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+         /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+    ];
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+    }
+    let xref = pdf.len();
+    let n = objects.len() + 1;
+    pdf.extend(format!("xref\n0 {n}\n0000000000 65535 f \n").bytes());
+    for o in offsets {
+        pdf.extend(format!("{o:010} 00000 n \n").bytes());
+    }
+    pdf.extend(format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").bytes());
+    pdf
+}
+
+#[test]
+fn a_library_of_a_thousand_pdfs_is_searched_quickly() {
+    let scratch = Scratch::new("library");
+    let docs = scratch.file("docs");
+    for i in 0..1000 {
+        let dir = docs.join(format!("box{}", i % 10));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = format!("Invoice {i} for Acme Widgets, reference W{i}X");
+        std::fs::write(dir.join(format!("doc{i}.pdf")), tiny_pdf(&text)).unwrap();
+    }
+    let folders = [docs.clone()];
+    let mut library = Library::open(&scratch.file("index"));
+    assert_eq!(library.update(&folders, |_, _| {}).unwrap(), 1000);
+    assert_eq!(library.len(), 1000);
+    assert_eq!(
+        library.update(&folders, |_, _| {}).unwrap(),
+        0,
+        "nothing changed"
+    );
+
+    let start = Instant::now();
+    let hits = library.search("acme w417x", 10).unwrap();
+    let took = start.elapsed();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].path.ends_with("doc417.pdf"));
+    assert_eq!(hits[0].page, 0);
+    assert!(
+        hits[0].snippet.contains("reference W417X"),
+        "{}",
+        hits[0].snippet
+    );
+    assert!(took.as_millis() < 100, "the search took {took:?}");
+    let phrase = library.search("\"widgets, reference\"", 2000).unwrap();
+    assert_eq!(phrase.len(), 1000);
+
+    // One file changes and one goes: only the changed one is read again.
+    let changed = docs.join("box3").join("doc3.pdf");
+    std::fs::write(&changed, tiny_pdf("Receipt from Zenith Supplies")).unwrap();
+    std::fs::remove_file(docs.join("box4").join("doc4.pdf")).unwrap();
+    let mut again = Library::open(&scratch.file("index"));
+    assert_eq!(again.len(), 1000);
+    assert_eq!(again.update(&folders, |_, _| {}).unwrap(), 1);
+    assert_eq!(again.len(), 999);
+    assert_eq!(again.search("ZENITH", 5).unwrap()[0].path, changed);
+    assert!(again.search("w3x", 5).unwrap().is_empty());
+    assert_eq!(again.search("w5x", 5).unwrap().len(), 1);
 }
 
 /// Drives Microsoft Office, or LibreOffice, so it runs only on request:
