@@ -282,7 +282,7 @@ enum PaletteAction {
     Outline(usize),
 }
 
-enum Drag {
+pub(crate) enum Drag {
     Select {
         moved: bool,
         start: (f32, f32),
@@ -380,7 +380,7 @@ pub struct App {
     flash_timer: Timer,
     pub(crate) split: Option<crate::split::Split>,
     pub(crate) measuring: crate::measure::Measuring,
-    pub(crate) text_edit: Option<crate::content::TextEdit>,
+    pub(crate) content: crate::content::Content,
 }
 
 impl App {
@@ -485,7 +485,7 @@ impl App {
             flash_timer: Timer::default(),
             split: None,
             measuring: Default::default(),
-            text_edit: None,
+            content: Default::default(),
         };
         app.refresh_recent();
         app.refresh_sign_menu();
@@ -2138,8 +2138,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
                         ok: "Add",
                         cancel: "Cancel",
                     });
-                } else if self.tool == Tool::EditText {
+                } else if self.tool == Tool::EditText || self.tool == Tool::AddText {
                     crate::content::click(self, page, (px, py));
+                } else if self.tool == Tool::EditImage {
+                    self.drag = crate::content::image_down(self, page, (px, py), (x, y));
                 } else if self.tool == Tool::Measure
                     && self.measuring.kind != mp_engine::Measure::Distance
                 {
@@ -2533,18 +2535,22 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 _ => a.rect,
             };
             if let Some(f) = tab.layout.to_view(page, &rect) {
-                marks.push(mark_item(f, 3));
-                if resizable(a) {
-                    for (x, y) in corners(f) {
-                        marks.push(MarkItem {
-                            x: x - HANDLE,
-                            y: y - HANDLE,
-                            width: HANDLE * 2.0,
-                            height: HANDLE * 2.0,
-                            kind: 4,
-                        });
-                    }
-                }
+                picked_marks(f, resizable(a), &mut marks);
+            }
+        }
+        if let Some((doc, page, rect)) = self.content.image
+            && doc == tab.info.id
+        {
+            let rect = match self.drag {
+                Some(Drag::Shape {
+                    id: crate::content::IMAGE,
+                    current,
+                    ..
+                }) => current,
+                _ => rect,
+            };
+            if let Some(f) = tab.layout.to_view(page, &rect) {
+                picked_marks(f, true, &mut marks);
             }
         }
         if let Some(f) = &self.field_focus
@@ -3441,7 +3447,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     /// Redraws the active tab after an edit changed `page`, or any page when None.
-    pub(crate) fn edited(&mut self, page: Option<usize>) {
+    pub fn edited(&mut self, page: Option<usize>) {
         self.changed(page, false);
     }
 
@@ -3464,9 +3470,19 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let edits = self.engine.history(tab.info.id).unwrap_or_default();
         let attachments = self.engine.attachments(tab.info.id).unwrap_or_default();
         let metadata = self.engine.metadata(tab.info.id).unwrap_or_default();
+        // Bookmarks change only in edits and undo steps of the whole document.
+        let outline = match page {
+            None => self.engine.outline(tab.info.id).ok(),
+            Some(_) => None,
+        };
         let Some(tab) = self.tab_mut() else { return };
         tab.attachments = attachments;
         tab.metadata = metadata;
+        let outline = outline.filter(|o| *o != tab.outline);
+        if let Some(outline) = &outline {
+            tab.expanded = (0..outline.len()).collect();
+            tab.outline = outline.clone();
+        }
         if !undo && edits.position <= tab.saved_position {
             // The new step replaced the saved state's steps; no undo reaches it again.
             tab.saved_position = usize::MAX;
@@ -3489,6 +3505,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 tab.links.clear();
                 tab.selection = None;
             }
+        }
+        if outline.is_some() {
+            self.rebuild_outline();
         }
         self.refresh_names();
         self.rebuild_thumbs();
@@ -3859,6 +3878,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     cancel: "Cancel",
                 });
             }
+            Tool::EditImage => crate::content::image_drawn(self, page, rect, small),
+            Tool::Link => crate::content::link_drawn(self, page, rect, small),
             _ if small => self.status("Drag to draw the shape".into()),
             Tool::Measure => crate::measure::finish(self, page, vec![a, b]),
             Tool::Line => {
@@ -4025,7 +4046,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Lays the field editor over the focused text field, or hides it.
     fn place_field_editor(&self) {
-        if self.text_edit.is_some() {
+        if self.content.text.is_some() {
             return crate::content::place(self);
         }
         let Some(w) = self.window() else { return };
@@ -4059,7 +4080,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
     /// Ends typing in the focused field and keeps the text. `step` 1 or -1 moves on to the
     /// next or previous field; 0 and 2 (the editor lost the keyboard) leave the form.
     pub fn field_commit(&mut self, step: i32) {
-        if self.text_edit.is_some() {
+        if self.content.text.is_some() {
             return crate::content::commit(self);
         }
         let Some(f) = self.field_focus.as_mut().filter(|f| f.editing) else {
@@ -4998,6 +5019,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     fn reshape(&mut self, page: usize, id: i32, rect: Rect) {
+        if id == crate::content::IMAGE {
+            return crate::content::image_moved(self, page, rect);
+        }
         let Some(doc) = self.tab().map(|t| t.info.id) else {
             return;
         };
@@ -5221,6 +5245,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Deletes the picked comment. Returns false if none is picked.
     pub fn delete_picked(&mut self) -> bool {
+        if crate::content::delete_image(self) {
+            return true;
+        }
         let Some(index) = self.picked_index() else {
             return false;
         };
@@ -5515,6 +5542,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.tab()?.layout.to_view(page, &r).map(|f| (f.x, f.y))
     }
 
+    /// The active document's bookmarks, and the one the reader is in.
+    pub(crate) fn bookmarks(&self) -> Option<(Vec<OutlineItem>, Option<usize>)> {
+        let tab = self.tab()?;
+        Some((tab.outline.clone(), tab.outline_current))
+    }
+
+    /// The bookmark in outline row `row`.
+    pub(crate) fn bookmark_at_row(&self, row: usize) -> Option<usize> {
+        self.tab()?.outline_rows.get(row).copied()
+    }
+
     pub(crate) fn pool(&self) -> &RenderPool {
         &self.pool
     }
@@ -5757,7 +5795,7 @@ fn tile_item(f: Frame, t: &TileImage, dpr: f32) -> TileItem {
 }
 
 /// Half the side of a resize handle, in document space.
-const HANDLE: f32 = 4.0;
+pub(crate) const HANDLE: f32 = 4.0;
 /// The smallest side a resize leaves, in points.
 const MIN_SIDE: f32 = 6.0;
 
@@ -5830,6 +5868,22 @@ fn resized(rect: Rect, start: (f32, f32), to: (f32, f32), keep_aspect: bool) -> 
     Rect { x0, y0, x1, y1 }
 }
 
+/// The box around a picked comment or image, with its corner handles if it can be resized.
+fn picked_marks(f: Frame, handles: bool, marks: &mut Vec<MarkItem>) {
+    marks.push(mark_item(f, 3));
+    if handles {
+        for (x, y) in corners(f) {
+            marks.push(MarkItem {
+                x: x - HANDLE,
+                y: y - HANDLE,
+                width: HANDLE * 2.0,
+                height: HANDLE * 2.0,
+                kind: 4,
+            });
+        }
+    }
+}
+
 fn mark_item(f: Frame, kind: i32) -> MarkItem {
     MarkItem {
         x: f.x - 1.0,
@@ -5896,6 +5950,12 @@ pub enum Tool {
     Measure,
     /// Opens a block of text to type over.
     EditText,
+    /// Opens an empty editor for new text.
+    AddText,
+    /// Picks an image to move, resize, replace or delete, or places a new one.
+    EditImage,
+    /// Draws a link, or deletes the one clicked.
+    Link,
 }
 
 /// The signature pad's state that the window does not hold.

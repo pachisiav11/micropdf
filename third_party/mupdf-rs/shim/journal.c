@@ -127,3 +127,64 @@ int mp_pdf_rewrite_images(fz_context *ctx, pdf_document *doc, pdf_image_rewriter
 	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
 	return 0;
 }
+
+/* Removing one image from a page: MuPDF's sanitize filter (mupdf/pdf/interpret.h) asks its
+ * culler about each image it meets, with the image's box in the page's user space. */
+typedef struct { float x0, y0, x1, y1; } fz_rect;
+typedef struct pdf_page pdf_page;
+typedef struct pdf_processor pdf_processor;
+typedef struct pdf_filter_options pdf_filter_options;
+typedef pdf_processor *(pdf_filter_factory_fn)(fz_context *ctx, pdf_document *doc, pdf_processor *chain, int struct_parents, fz_matrix transform, pdf_filter_options *options, void *factory_options);
+typedef struct { pdf_filter_factory_fn *filter; void *options; } pdf_filter_factory;
+struct pdf_filter_options {
+	int recurse;
+	int instance_forms;
+	int ascii;
+	int no_update;
+	void *opaque;
+	void (*complete)(fz_context *ctx, void *buffer, void *opaque);
+	pdf_filter_factory *filters;
+	int newlines;
+};
+typedef struct {
+	void *opaque;
+	void *image_filter;
+	void *text_filter;
+	void *after_text_object;
+	int (*culler)(fz_context *ctx, void *opaque, fz_rect bbox, int type);
+} pdf_sanitize_filter_options;
+pdf_processor *pdf_new_sanitize_filter(fz_context *ctx, pdf_document *doc, pdf_processor *chain, int struct_parents, fz_matrix transform, pdf_filter_options *options, void *sopts);
+void pdf_filter_page_contents(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf_filter_options *options);
+
+/* fz_cull_type's FZ_CULL_IMAGE. */
+#define CULL_IMAGE 9
+
+typedef struct { fz_rect target; float slack; int removed; } image_cull;
+
+static int cull_image(fz_context *ctx, void *opaque, fz_rect r, int type)
+{
+	image_cull *c = opaque;
+	float s = c->slack;
+	(void)ctx;
+	if (type != CULL_IMAGE)
+		return 0;
+	if (r.x0 < c->target.x0 - s || r.x0 > c->target.x0 + s || r.x1 < c->target.x1 - s || r.x1 > c->target.x1 + s ||
+		r.y0 < c->target.y0 - s || r.y0 > c->target.y0 + s || r.y1 < c->target.y1 - s || r.y1 > c->target.y1 + s)
+		return 0;
+	c->removed++;
+	return 1;
+}
+
+/* Removes the images drawn over `target` (within `slack` on each side) from the page's
+ * contents and the forms they draw, which are copied for this page first. */
+int mp_pdf_remove_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect target, float slack, int *removed, const char **err)
+{
+	image_cull cull = { target, slack, 0 };
+	pdf_sanitize_filter_options sopts = { &cull, NULL, NULL, NULL, cull_image };
+	pdf_filter_factory filters[2] = { { pdf_new_sanitize_filter, &sopts }, { NULL, NULL } };
+	struct pdf_filter_options opts = { 1, 1, 0, 0, NULL, NULL, filters, 0 };
+	TRY(ctx) { pdf_filter_page_contents(ctx, doc, page, &opts); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	*removed = cull.removed;
+	return 0;
+}

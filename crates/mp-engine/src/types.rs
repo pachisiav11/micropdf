@@ -74,6 +74,8 @@ pub struct OutlineItem {
     pub title: String,
     pub depth: usize,
     pub target: Option<LinkTarget>,
+    /// The item's place in the outline as read; None for one not written yet.
+    pub source: Option<usize>,
 }
 
 /// A file embedded in the document.

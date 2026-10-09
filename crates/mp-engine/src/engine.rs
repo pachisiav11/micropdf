@@ -1319,6 +1319,7 @@ fn flatten_outline(items: &[Outline], depth: usize, out: &mut Vec<OutlineItem>) 
             title: item.title.trim().to_owned(),
             depth,
             target: link_target(item.dest, item.uri.as_deref()),
+            source: Some(out.len()),
         });
         flatten_outline(&item.down, depth + 1, out);
     }

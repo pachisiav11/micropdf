@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use i_slint_backend_testing::{AccessibleRole, ElementQuery};
 use micropdf::settings::Settings;
 use micropdf::{Assistant, MainWindow, PageItem, viewer, wire};
+use mp_engine::{ImageSource, Rect};
 use slint::platform::Key;
 use slint::{ComponentHandle, Model};
 
@@ -93,7 +94,7 @@ fn comments_in(path: &std::path::Path) -> usize {
 }
 
 /// The bounds of comment `index` on page 1 of the active tab.
-fn comment_rect(index: usize) -> mp_engine::Rect {
+fn comment_rect(index: usize) -> Rect {
     viewer::with(|app| {
         let (doc, _) = app.active_doc()?;
         let list = app.engine().annotations(doc, 0).ok()?;
@@ -206,6 +207,26 @@ fn last_comment(w: &MainWindow) -> String {
 }
 
 /// The text of page `index` of the active tab, as the engine has it now.
+/// The links on page 1 of the active document.
+fn links() -> usize {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        app.engine().links(doc, 0).ok().map(|l| l.len())
+    })
+    .flatten()
+    .unwrap_or(usize::MAX)
+}
+
+/// The boxes of the images on page 1 of the active document.
+fn images() -> Vec<Rect> {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        app.engine().page_images(doc, 0).ok()
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+
 fn text_of(index: usize) -> String {
     viewer::with(|app| {
         let (doc, _) = app.active_doc()?;
@@ -1617,6 +1638,88 @@ fn steps() -> Vec<Step> {
                     && w.get_dirty()
                     && text_of(0) == "Hello world"
             },
+        ),
+        step(
+            "add text writes where it is clicked",
+            |w| {
+                w.invoke_command("tool-add-text".into());
+                let p = hello_page(w);
+                let (x, y) = (p.x + 20.0 / 300.0 * p.width, p.y + 150.0 / 200.0 * p.height);
+                w.invoke_pointer_down(x, y, 0, false);
+                w.invoke_pointer_up(x, y);
+                w.set_field_text("Added".into());
+                w.invoke_field_commit(0);
+            },
+            |w| w.get_status_left() == "Added the text" && text_of(0).contains("Added"),
+        ),
+        step(
+            "a box drawn with Links makes a link to the page typed",
+            |w| {
+                w.invoke_command("tool-link".into());
+                drag_hello(w, &[(20.0, 20.0), (80.0, 40.0)]);
+                w.invoke_form_edited(0, "1".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| w.get_status_left() == "Added the link" && links() == 1,
+        ),
+        step(
+            "a click on the link offers to delete it",
+            |w| {
+                drag_hello(w, &[(30.0, 30.0)]);
+                w.invoke_dialog_accept("".into());
+            },
+            |w| w.get_status_left() == "Deleted the link" && links() == 0,
+        ),
+        step(
+            "edit images picks an image and drags it",
+            |w| {
+                viewer::with(|app| {
+                    let (doc, _) = app.active_doc().unwrap();
+                    let at = Rect {
+                        x0: 200.0,
+                        y0: 120.0,
+                        x1: 240.0,
+                        y1: 160.0,
+                    };
+                    let png = ImageSource::File(fixture("red.png"));
+                    app.engine()
+                        .place_image(doc, 0, None, Some(at), png)
+                        .unwrap();
+                    app.edited(Some(0));
+                });
+                w.invoke_command("tool-edit-image".into());
+                drag_hello(w, &[(220.0, 140.0), (230.0, 140.0), (240.0, 140.0)]);
+            },
+            |w| {
+                w.get_status_left() == "Moved the image"
+                    && images().first().is_some_and(|r| (r.x0 - 220.0).abs() < 1.0)
+            },
+        ),
+        step(
+            "delete removes the picked image",
+            |w| w.invoke_command("image-delete".into()),
+            |w| w.get_status_left() == "Deleted the image" && images().is_empty(),
+        ),
+        step(
+            "a bookmark is added at the page read",
+            |w| {
+                w.invoke_command("bookmark-add".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                w.get_status_left() == "Added a bookmark"
+                    && w.get_outline().iter().map(|r| r.title).collect::<Vec<_>>() == ["Page 1"]
+            },
+        ),
+        step(
+            "the bookmark menu renames it",
+            |w| {
+                w.invoke_outline_menu(0);
+                w.invoke_command("bookmark-rename".into());
+                w.invoke_form_edited(0, "Start".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| w.get_outline().iter().map(|r| r.title).collect::<Vec<_>>() == ["Start"],
         ),
         step(
             "close the edited page",

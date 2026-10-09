@@ -375,6 +375,7 @@ fn map_key(app: &mut App, text: &str, ctrl: bool, shift: bool, alt: bool) -> Key
             "t" if shift => "reopen-tab",
             "f" => "find",
             "g" => "goto",
+            "b" => "bookmark-add",
             "k" => "palette",
             "p" if shift => "palette",
             "a" if shift => "assistant",

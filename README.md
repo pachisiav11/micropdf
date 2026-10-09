@@ -119,7 +119,18 @@ block's glyphs are removed by a text-only redaction, so pictures and drawings un
 and the new text is wrapped to the block's width from its first line down. It is set in the
 block's own font when that font has every letter typed; otherwise in the standard font closest to
 it, or in an installed Windows font for scripts the standard fonts lack, and the status line says
-so.
+so. Add text writes new text where you click, wrapped at the page's right margin.
+
+Edit images picks the image under a click: drag it to move it, drag a corner to resize it, and
+Delete removes it; Replace the picked image puts a picture file in its box, and Add an image puts
+one in a box you drag or at a click. Only the picked image changes, even where images overlap: it
+is taken out of the page's drawing by its box, through MuPDF's content filter, and drawn again
+where it now goes.
+
+The Links tool makes a link from a box you drag to a page number or a web address; a click on a
+link offers to delete it. Ctrl+B adds a bookmark at the place you are reading, named after the
+selected text if any; right-click a bookmark to rename, move, indent, outdent or delete it.
+Bookmarks keep their own actions and look when others change.
 
 ## Browser extension
 

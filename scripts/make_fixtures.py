@@ -15,9 +15,12 @@ xfa-dynamic.pdf    dynamic XFA: NeedsRendering, no AcroForm fields, a placeholde
 redact.pdf         2 pages of uncompressed text with an email address, a phone number, a secret
                    word and invisible text; document information, an XMP packet, an opening
                    JavaScript action and an attached file, for redaction and Sanitize.
+red.png            a 2 by 2 red PNG, for adding and replacing images.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
+import struct
+import zlib
 from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -253,6 +256,16 @@ def redact() -> bytes:
     return serialize(objs, b"/Info 8 0 R ")
 
 
+def red_png() -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    rows = b"".join(b"\x00" + b"\xd0\x20\x20" * 2 for _ in range(2))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
+
+
 def main() -> None:
     (FIXTURES / "outline-links.pdf").write_bytes(outline_links())
     (FIXTURES / "form.pdf").write_bytes(form())
@@ -266,8 +279,9 @@ def main() -> None:
     (FIXTURES / "xfa-static.pdf").write_bytes(xfa_static())
     (FIXTURES / "xfa-dynamic.pdf").write_bytes(xfa_dynamic())
     (FIXTURES / "redact.pdf").write_bytes(redact())
+    (FIXTURES / "red.png").write_bytes(red_png())
     print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf, "
-          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf")
+          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf, red.png")
 
 
 if __name__ == "__main__":

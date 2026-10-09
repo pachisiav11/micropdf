@@ -260,6 +260,7 @@ export component MainWindow inherits Window {
     callback form-chosen(int, int);
     callback outline-clicked(int);
     callback outline-toggle(int);
+    callback outline-menu(int);
     callback page-entered(string);
     callback find-edited(string);
     callback find-next();
@@ -768,6 +769,11 @@ export component MainWindow inherits Window {
                         spacing: 4px;
                         Menu {
                             MenuEntry { text: "Edit text"; checked: root.tool == 14; clicked => { root.command("tool-edit-text"); } }
+                            MenuEntry { text: "Add text"; checked: root.tool == 15; clicked => { root.command("tool-add-text"); } }
+                            MenuEntry { text: "Edit images"; checked: root.tool == 16; clicked => { root.command("tool-edit-image"); } }
+                            MenuEntry { text: "Add an image\u{2026}"; clicked => { root.command("image-add"); } }
+                            MenuEntry { text: "Links"; checked: root.tool == 17; clicked => { root.command("tool-link"); } }
+                            MenuEntry { text: "Add a bookmark\u{2026}"; clicked => { root.command("bookmark-add"); } }
                             MenuEntry { text: "Rotate pages\u{2026}"; clicked => { root.command("pages-rotate"); } }
                             MenuEntry { text: "Delete pages\u{2026}"; clicked => { root.command("pages-delete-some"); } }
                             MenuEntry { text: "Extract pages\u{2026}"; clicked => { root.command("pages-extract"); } }
@@ -778,8 +784,6 @@ export component MainWindow inherits Window {
                             MenuEntry { text: "Header and footer\u{2026}"; clicked => { root.command("header-footer"); } }
                             MenuEntry { text: "Watermark\u{2026}"; clicked => { root.command("watermark"); } }
                             MenuEntry { text: "Bates numbering\u{2026}"; clicked => { root.command("bates"); } }
-                            MenuEntry { text: "Recognize text (OCR)\u{2026}"; clicked => { root.command("ocr"); } }
-                            MenuEntry { text: "Compare with a file\u{2026}"; clicked => { root.command("compare"); } }
                         }
                         Menu {
                             MenuEntry { text: "Protect with password\u{2026}"; clicked => { root.command("protect"); } }
@@ -795,6 +799,8 @@ export component MainWindow inherits Window {
                             MenuEntry { text: "Measure perimeter"; checked: root.tool == 13 && root.measure-kind == 1; clicked => { root.command("measure-perimeter"); } }
                             MenuEntry { text: "Measure area"; checked: root.tool == 13 && root.measure-kind == 2; clicked => { root.command("measure-area"); } }
                             MenuEntry { text: "Set the measuring scale\u{2026}"; clicked => { root.command("measure-scale"); } }
+                            MenuEntry { text: "Recognize text (OCR)\u{2026}"; clicked => { root.command("ocr"); } }
+                            MenuEntry { text: "Compare with a file\u{2026}"; clicked => { root.command("compare"); } }
                         }
                     }
                 }
@@ -974,6 +980,26 @@ export component MainWindow inherits Window {
                                     row-touch := TouchArea {
                                         clicked => {
                                             root.outline-clicked(i);
+                                        }
+                                        pointer-event(e) => {
+                                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                                root.outline-menu(i);
+                                                bookmark-menu.show();
+                                            }
+                                        }
+                                    }
+                                    bookmark-menu := PopupWindow {
+                                        x: min(row-touch.mouse-x, parent.width - 120px);
+                                        y: row-touch.mouse-y;
+                                        width: 200px;
+                                        Menu {
+                                            MenuEntry { text: "Add a bookmark after\u{2026}"; clicked => { root.command("bookmark-add"); } }
+                                            MenuEntry { text: "Rename\u{2026}"; clicked => { root.command("bookmark-rename"); } }
+                                            MenuEntry { text: "Move up"; clicked => { root.command("bookmark-up"); } }
+                                            MenuEntry { text: "Move down"; clicked => { root.command("bookmark-down"); } }
+                                            MenuEntry { text: "Indent"; clicked => { root.command("bookmark-indent"); } }
+                                            MenuEntry { text: "Outdent"; clicked => { root.command("bookmark-outdent"); } }
+                                            MenuEntry { text: "Delete"; clicked => { root.command("bookmark-delete"); } }
                                         }
                                     }
                                     HorizontalLayout {

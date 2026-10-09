@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mp_engine::{
     Bates, Find, INFO_FIELDS, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection,
-    Recognize, Sanitize, Security, SignField, ocr_languages, parse_ranges,
+    Recognize, Rect, Sanitize, Security, SignField, ocr_languages, parse_ranges,
 };
 use slint::{ModelRc, SharedString, VecModel};
 use windows_sys::Win32::Foundation::SYSTEMTIME;
@@ -40,6 +40,23 @@ pub enum Form {
     Sign(SignField),
     Ocr,
     Scale,
+    Link {
+        page: usize,
+        rect: Rect,
+    },
+    DeleteLink {
+        page: usize,
+        rect: Rect,
+    },
+    /// Renames the bookmark.
+    Bookmark(usize),
+    /// Adds a bookmark at `at` in the outline, to `top` of `page`.
+    NewBookmark {
+        at: usize,
+        depth: usize,
+        page: usize,
+        top: f32,
+    },
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -410,7 +427,11 @@ fn open(app: &mut App, form: Form) {
             )
         }
         Form::Sign(field) => return crate::signing::open(app, field),
-        Form::Scale => return,
+        Form::Scale
+        | Form::Link { .. }
+        | Form::DeleteLink { .. }
+        | Form::Bookmark(_)
+        | Form::NewBookmark { .. } => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -705,6 +726,11 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
         }
         Form::Sign(field) => crate::signing::run(app, field, f)?,
         Form::Scale => crate::measure::set_scale(app, f)?,
+        Form::Link { page, rect } => crate::content::add_link(app, page, rect, f)?,
+        Form::DeleteLink { page, rect } => crate::content::delete_link(app, page, rect)?,
+        Form::Bookmark(_) | Form::NewBookmark { .. } => {
+            crate::content::bookmark_named(app, form, f)?
+        }
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()

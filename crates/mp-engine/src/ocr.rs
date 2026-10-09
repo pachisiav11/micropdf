@@ -275,28 +275,29 @@ fn glyphless_font(pdf: &mut PdfDocument) -> Result<PdfObject, Error> {
     Ok(pdf.add_object(&font)?)
 }
 
-/// Lists `font` in the page's font resources under a free name starting with `prefix`, and
-/// returns the name.
-pub(crate) fn font_resource(
+/// Lists `obj` in the page's resources of `kind` (Font, XObject) under a free name starting
+/// with `prefix`, and returns the name.
+pub(crate) fn resource(
     pdf: &PdfDocument,
     page: &PdfPage,
-    font: &PdfObject,
+    kind: &str,
+    obj: &PdfObject,
     prefix: &str,
 ) -> Result<String, Error> {
     let mut resources = page.resources()?;
-    let mut fonts = match resources.get_dict("Font")? {
+    let mut list = match resources.get_dict(kind)? {
         Some(f) if f.is_dict()? => f.copy_dict()?,
         _ => pdf.new_dict()?,
     };
     let mut name = String::new();
     for n in 0.. {
         name = format!("{prefix}{n}");
-        if fonts.get_dict(name.as_str())?.is_none() {
+        if list.get_dict(name.as_str())?.is_none() {
             break;
         }
     }
-    fonts.dict_put(name.as_str(), font.try_clone()?)?;
-    resources.dict_put("Font", fonts)?;
+    list.dict_put(name.as_str(), obj.try_clone()?)?;
+    resources.dict_put(kind, list)?;
     Ok(name)
 }
 
@@ -343,7 +344,7 @@ fn add_text_layer(doc: &Document, found: &[Found]) -> Result<(), Error> {
     } in found
     {
         let mut p = pdf.load_pdf_page(*page as i32)?;
-        let name = font_resource(&pdf, &p, &font, "OCR")?;
+        let name = resource(&pdf, &p, "Font", &font, "OCR")?;
         let ctm = p.ctm()?;
         // Page space from the page as it shows (y down, from its top left).
         let to_page = ctm.invert().ok_or(Error::Invalid("the page has no area"))?;

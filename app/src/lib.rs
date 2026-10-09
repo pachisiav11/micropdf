@@ -88,6 +88,9 @@ pub fn wire(window: &MainWindow) {
     window.on_outline_toggle(|row| {
         viewer::with(|app| app.outline_toggle(row as usize));
     });
+    window.on_outline_menu(|row| {
+        viewer::with(|app| content::outline_menu(app, row as usize));
+    });
     window.on_page_entered(|text| {
         viewer::with(|app| app.page_entered(&text));
     });

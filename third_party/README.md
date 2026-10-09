@@ -32,6 +32,9 @@ Changes:
   `pdf_subset_fonts` through the same shim; micropdf writes comment summaries with them.
 - `PdfWriteOptions::set_object_streams` and `PdfDocument::rewrite_images` — set
   `do_use_objstms` and wrap `pdf_rewrite_images` through the same shim, for Optimize.
+- `PdfPage::remove_images_at` — runs `pdf_filter_page_contents` with a sanitize filter whose
+  culler drops the images drawn over one box, through the same shim; micropdf moves, resizes
+  and deletes images with it.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 

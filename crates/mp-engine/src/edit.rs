@@ -1,6 +1,7 @@
-//! Editing page content in place: a block of text set again with new words. The block's glyphs
-//! go by a text-only redaction, so images and drawings under them stay; the new text is set
-//! in the block's own font when it has every glyph, else in the closest standard font.
+//! Editing page content in place. A block of text is set again with new words: its glyphs go
+//! by a text-only redaction, so images and drawings under them stay, and the new text is set in
+//! the block's own font when it has every glyph, else in the closest standard font. New text
+//! goes in the same way. Images are added, moved, resized, replaced and deleted.
 
 use std::path::PathBuf;
 
@@ -9,9 +10,9 @@ use mupdf::pdf::{
     PdfRedactLineArtMethod, PdfRedactOptions, PdfRedactTextMethod,
 };
 use mupdf::text_page::{TextBlockType, TextPageFlags};
-use mupdf::{Document, Font, Matrix};
+use mupdf::{Document, Font, Image, Matrix};
 
-use crate::ocr::font_resource;
+use crate::ocr::resource;
 use crate::pages::pdf;
 use crate::stamp::win_ansi_code;
 use crate::{DocId, Error, Rect};
@@ -32,17 +33,23 @@ pub struct Replaced {
     pub own: bool,
 }
 
+/// Where text is set: the first baseline's start, the right edge lines wrap at, the size,
+/// from one baseline to the next, the colour, and the font it should look like.
+struct Spot {
+    origin: (f32, f32),
+    right: f32,
+    size: f32,
+    leading: f32,
+    color: [f32; 3],
+    font: Option<Font>,
+}
+
 /// A block with what setting it again needs.
 struct Block {
     shown: TextBlock,
     /// Each line's box, for the redaction.
     lines: Vec<Rect>,
-    /// The first character's origin: where the first line starts, on its baseline.
-    origin: (f32, f32),
-    /// From one baseline to the next.
-    leading: f32,
-    color: [f32; 3],
-    font: Option<Font>,
+    spot: Spot,
 }
 
 fn blocks(page: &PdfPage) -> Result<Vec<Block>, Error> {
@@ -101,10 +108,14 @@ fn blocks(page: &PdfPage) -> Result<Vec<Block>, Error> {
                 size,
             },
             lines: lines.iter().map(|l| l.1).collect(),
-            origin: lines[0].2,
-            leading: leading.max(size * 0.8),
-            color: [r, g, b].map(|v| v as f32 / 255.0),
-            font,
+            spot: Spot {
+                origin: lines[0].2,
+                right: rect.x1,
+                size,
+                leading: leading.max(size * 0.8),
+                color: [r, g, b].map(|v| v as f32 / 255.0),
+                font,
+            },
         });
     }
     Ok(out)
@@ -213,24 +224,24 @@ impl Setter {
     }
 }
 
-/// Chooses the font for `text` in `block` and adds it to the page's resources.
+/// Chooses the font for `text` to look like `own` and adds it to the page's resources.
 fn setter(
     pdf: &mut PdfDocument,
     page: &mut PdfPage,
-    block: &Block,
+    own: Option<&Font>,
     text: &str,
 ) -> Result<(Setter, Replaced), Error> {
-    let own_name = block.font.as_ref().map_or("", |f| f.name());
+    let own_name = own.map_or("", |f| f.name());
     let base = own_name.rsplit('+').next().unwrap_or(own_name);
     let standard_own = STANDARD.iter().flatten().any(|&n| n == base);
     // An embedded font with every glyph is set again as itself; a standard one, which readers
     // supply, is named again rather than embedded.
     if !standard_own
-        && let Some(font) = &block.font
+        && let Some(font) = own
         && has_glyphs(font, text)
         && let Ok(obj) = pdf.add_font(font)
     {
-        let resource = font_resource(pdf, page, &obj, "Ed")?;
+        let resource = resource(pdf, page, "Font", &obj, "Ed")?;
         let replaced = Replaced {
             font: base.to_owned(),
             own: true,
@@ -249,7 +260,7 @@ fn setter(
         .chars()
         .all(|c| c.is_whitespace() || win_ansi_code(c).is_some())
     {
-        let name = standard(block.font.as_ref());
+        let name = standard(own);
         let (resource, xref, _) = page.insert_font(pdf, &InsertFontOptions::new(name))?;
         // MuPDF leaves standard fonts in StandardEncoding, which has no accented letters.
         if let Some(mut dict) = pdf.xref_object(xref)? {
@@ -275,7 +286,7 @@ fn setter(
         };
         if has_glyphs(&font, text) {
             let obj = pdf.add_font(&font)?;
-            let resource = font_resource(pdf, page, &obj, "Ed")?;
+            let resource = resource(pdf, page, "Font", &obj, "Ed")?;
             let replaced = Replaced {
                 font: font.name().to_owned(),
                 own: false,
@@ -335,6 +346,53 @@ fn wrap(setter: &Setter, text: &str, limit: f32) -> Result<Vec<Vec<(f32, String)
     Ok(lines)
 }
 
+/// The page's inverse transform: page space to PDF user space.
+fn to_pdf(page: &PdfPage) -> Result<Matrix, Error> {
+    page.ctm()?
+        .invert()
+        .ok_or(Error::Invalid("the page has no area"))
+}
+
+/// Adds `ops` over the page's contents.
+fn draw(pdf: &mut PdfDocument, page: &mut PdfPage, ops: &str) -> Result<(), Error> {
+    page.wrap_contents(pdf)?;
+    page.insert_contents(pdf, ops.as_bytes(), true)?;
+    Ok(())
+}
+
+/// Writes `text` at `spot`, wrapped at its right edge.
+fn set(
+    pdf: &mut PdfDocument,
+    page: &mut PdfPage,
+    spot: &Spot,
+    text: &str,
+) -> Result<Replaced, Error> {
+    let (setter, replaced) = setter(pdf, page, spot.font.as_ref(), text)?;
+    let size = spot.size;
+    let lines = wrap(&setter, text, (spot.right - spot.origin.0) / size * 1.02)?;
+    let to_pdf = to_pdf(page)?;
+    let [r, g, b] = spot.color;
+    let mut ops = format!(
+        "q\n{r:.3} {g:.3} {b:.3} rg\nBT\n/{} {size:.2} Tf\n",
+        setter.resource
+    );
+    for (i, line) in lines.iter().enumerate() {
+        let y = spot.origin.1 + i as f32 * spot.leading;
+        for (x, hex) in line {
+            // Text space is y up; the page space it is placed in, y down.
+            let mut tm = Matrix::new(1.0, 0.0, 0.0, -1.0, spot.origin.0 + x * size, y);
+            tm.concat(to_pdf.clone());
+            ops += &format!(
+                "{:.4} {:.4} {:.4} {:.4} {:.3} {:.3} Tm <{hex}> Tj\n",
+                tm.a, tm.b, tm.c, tm.d, tm.e, tm.f
+            );
+        }
+    }
+    ops += "ET\nQ\n";
+    draw(pdf, page, &ops)?;
+    Ok(replaced)
+}
+
 fn replace(doc: &Document, page_no: usize, rect: Rect, text: &str) -> Result<Replaced, Error> {
     let mut pdf = pdf(doc)?;
     let mut page = pdf.load_pdf_page(page_no as i32)?;
@@ -373,35 +431,93 @@ fn replace(doc: &Document, page_no: usize, rect: Rect, text: &str) -> Result<Rep
             own: true,
         });
     }
-    let (setter, replaced) = setter(&mut pdf, &mut page, &block, text)?;
-    let size = block.shown.size;
-    let limit = (block.shown.rect.x1 - block.origin.0) / size;
-    let lines = wrap(&setter, text, limit * 1.02)?;
-    let to_pdf = page
-        .ctm()?
-        .invert()
-        .ok_or(Error::Invalid("the page has no area"))?;
-    let [r, g, b] = block.color;
-    let mut ops = format!(
-        "q\n{r:.3} {g:.3} {b:.3} rg\nBT\n/{} {size:.2} Tf\n",
-        setter.resource
-    );
-    for (i, line) in lines.iter().enumerate() {
-        let y = block.origin.1 + i as f32 * block.leading;
-        for (x, hex) in line {
-            // Text space is y up; the page space it is placed in, y down.
-            let mut tm = Matrix::new(1.0, 0.0, 0.0, -1.0, block.origin.0 + x * size, y);
-            tm.concat(to_pdf.clone());
-            ops += &format!(
-                "{:.4} {:.4} {:.4} {:.4} {:.3} {:.3} Tm <{hex}> Tj\n",
-                tm.a, tm.b, tm.c, tm.d, tm.e, tm.f
-            );
+    set(&mut pdf, &mut page, &block.spot, text)
+}
+
+/// The image blocks of `page`: each one's box, the image, and how it is drawn (from the unit
+/// square to page space).
+fn images(page: &PdfPage) -> Result<Vec<(Rect, Image, Matrix)>, Error> {
+    let text = page.to_text_page(TextPageFlags::PRESERVE_IMAGES)?;
+    Ok(text
+        .blocks()
+        .filter(|b| b.r#type() == TextBlockType::Image)
+        .filter_map(|b| Some((b.bounds().into(), b.image()?, b.ctm()?)))
+        .collect())
+}
+
+/// What [`Engine::place_image`] puts where the image was.
+pub enum ImageSource {
+    /// The image already at the old box.
+    Same,
+    /// An image file.
+    File(PathBuf),
+}
+
+fn place(
+    doc: &Document,
+    page_no: usize,
+    from: Option<Rect>,
+    to: Option<Rect>,
+    source: ImageSource,
+) -> Result<(), Error> {
+    let mut pdf = pdf(doc)?;
+    let mut page = pdf.load_pdf_page(page_no as i32)?;
+    let to_pdf = to_pdf(&page)?;
+    let pdf_rect = |r: &Rect| mupdf::Rect::new(r.x0, r.y0, r.x1, r.y1).transform(&to_pdf);
+    let old = match from {
+        Some(from) => {
+            let near = |r: &Rect| (r.x0 - from.x0).abs() + (r.y1 - from.y1).abs();
+            let found = images(&page)?
+                .into_iter()
+                .min_by(|a, b| near(&a.0).total_cmp(&near(&b.0)))
+                .filter(|(r, ..)| near(r) < 2.0)
+                .ok_or(Error::NotFound)?;
+            if page.remove_images_at(pdf_rect(&found.0), 1.0)? == 0 {
+                return Err(Error::Invalid(
+                    "the image is drawn in a way micropdf cannot change",
+                ));
+            }
+            Some(found)
         }
-    }
-    ops += "ET\nQ\n";
-    page.wrap_contents(&mut pdf)?;
-    page.insert_contents(&mut pdf, ops.as_bytes(), true)?;
-    Ok(replaced)
+        None => None,
+    };
+    let Some(to) = to else {
+        return Ok(());
+    };
+    let (image, mut m) = match (source, old) {
+        (ImageSource::Same, Some((r, image, mut m))) => {
+            // As it was drawn, then from the old box to the new one.
+            let (sx, sy) = (to.width() / r.width(), to.height() / r.height());
+            m.concat(Matrix::new(
+                sx,
+                0.0,
+                0.0,
+                sy,
+                to.x0 - r.x0 * sx,
+                to.y0 - r.y0 * sy,
+            ));
+            (image, m)
+        }
+        (ImageSource::Same, None) => return Err(Error::NotFound),
+        (ImageSource::File(path), _) => {
+            let image = Image::from_file(&path.to_string_lossy())?;
+            // Fitted in the box, keeping its shape, and centred.
+            let (w, h) = (image.width() as f32, image.height() as f32);
+            let k = (to.width() / w).min(to.height() / h);
+            let (w, h) = (w * k, h * k);
+            let x = to.x0 + (to.width() - w) / 2.0;
+            let y = to.y0 + (to.height() - h) / 2.0;
+            (image, Matrix::new(w, 0.0, 0.0, -h, x, y + h))
+        }
+    };
+    m.concat(to_pdf);
+    let obj = pdf.add_image(&image)?;
+    let name = resource(&pdf, &page, "XObject", &obj, "Img")?;
+    let ops = format!(
+        "q\n{:.4} {:.4} {:.4} {:.4} {:.3} {:.3} cm\n/{name} Do\nQ\n",
+        m.a, m.b, m.c, m.d, m.e, m.f
+    );
+    draw(&mut pdf, &mut page, &ops)
 }
 
 impl crate::Engine {
@@ -423,5 +539,58 @@ impl crate::Engine {
         text: String,
     ) -> Result<Replaced, Error> {
         self.remove(doc, "Edit text", move |d| replace(d, page, rect, &text))
+    }
+
+    /// Writes `text` on `page` in black Helvetica of `size` (or an installed font that has
+    /// its letters), from the top left of `rect` and wrapped at its right edge.
+    pub fn add_text(
+        &self,
+        doc: DocId,
+        page: usize,
+        rect: Rect,
+        text: String,
+        size: f32,
+    ) -> Result<Replaced, Error> {
+        self.edit(doc, "Add text", move |d| {
+            let mut pdf = pdf(d)?;
+            let mut page = pdf.load_pdf_page(page as i32)?;
+            let spot = Spot {
+                origin: (rect.x0, rect.y0 + size * 0.9),
+                right: rect.x1,
+                size,
+                leading: size * 1.2,
+                color: [0.0; 3],
+                font: None,
+            };
+            set(&mut pdf, &mut page, &spot, &text)
+        })
+    }
+
+    /// The boxes of the images on `page`, in drawing order.
+    pub fn page_images(&self, doc: DocId, page: usize) -> Result<Vec<Rect>, Error> {
+        self.read(doc, move |d, _| {
+            let page = pdf(d)?.load_pdf_page(page as i32)?;
+            Ok(images(&page)?.into_iter().map(|i| i.0).collect())
+        })
+    }
+
+    /// Changes an image on `page` as one undo step: takes away the image at `from`, if any,
+    /// and draws `source` in `to`, if any. The same image is stretched to the new box; a file
+    /// is fitted in it.
+    pub fn place_image(
+        &self,
+        doc: DocId,
+        page: usize,
+        from: Option<Rect>,
+        to: Option<Rect>,
+        source: ImageSource,
+    ) -> Result<(), Error> {
+        let name = match (&from, &to, &source) {
+            (None, ..) => "Add image",
+            (_, None, _) => "Delete image",
+            (_, _, ImageSource::File(_)) => "Replace image",
+            _ => "Move image",
+        };
+        self.remove(doc, name, move |d| place(d, page, from, to, source))
     }
 }

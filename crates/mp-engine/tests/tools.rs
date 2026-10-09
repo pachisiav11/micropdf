@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use mp_engine::{
-    Bates, DocId, Engine, Find, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection,
-    Recognize, Rect, Sanitize, Security, SignField, SignWith, Signing, Trust,
+    Bates, DocId, Engine, Find, ImageSource, LabelStyle, LinkTarget, Optimize, OutlineItem,
+    Overlay, PATTERNS, Place, Protection, Recognize, Rect, Sanitize, Security, SignField, SignWith,
+    Signing, Trust,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -859,4 +860,113 @@ fn edited_text_reads_back_and_changes_only_its_box() {
             .join(" "),
         long
     );
+}
+
+#[test]
+fn added_text_images_links_and_bookmarks_read_back() {
+    let engine = Engine::start();
+    let scratch = Scratch::new("content");
+    let path = scratch.file("hello.pdf");
+    std::fs::copy(fixture("hello.pdf"), &path).unwrap();
+    let png = fixture("red.png");
+    let doc = open(&engine, &path);
+    let r = |x0, y0, x1, y1| Rect { x0, y0, x1, y1 };
+    let near = |a: Rect, b: Rect| {
+        [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1]
+            .iter()
+            .all(|d| d.abs() < 0.5)
+    };
+
+    engine
+        .add_text(
+            doc,
+            0,
+            r(72.0, 300.0, 400.0, 320.0),
+            "Added below".into(),
+            12.0,
+        )
+        .unwrap();
+    assert!(texts(&engine, doc)[0].contains("Added below"));
+
+    // Placed, moved, then replaced by a file fitted in the middle of a wide box, and deleted.
+    let square = r(100.0, 400.0, 160.0, 460.0);
+    let file = || ImageSource::File(png.clone());
+    engine
+        .place_image(doc, 0, None, Some(square), file())
+        .unwrap();
+    let images = engine.page_images(doc, 0).unwrap();
+    assert!(images.len() == 1 && near(images[0], square), "{images:?}");
+    let moved = r(200.0, 500.0, 290.0, 590.0);
+    engine
+        .place_image(doc, 0, Some(square), Some(moved), ImageSource::Same)
+        .unwrap();
+    let images = engine.page_images(doc, 0).unwrap();
+    assert!(images.len() == 1 && near(images[0], moved), "{images:?}");
+    let wide = r(200.0, 500.0, 390.0, 590.0);
+    engine
+        .place_image(doc, 0, Some(moved), Some(wide), file())
+        .unwrap();
+    let images = engine.page_images(doc, 0).unwrap();
+    let middle = r(250.0, 500.0, 340.0, 590.0);
+    assert!(images.len() == 1 && near(images[0], middle), "{images:?}");
+    engine
+        .place_image(doc, 0, Some(middle), None, ImageSource::Same)
+        .unwrap();
+    assert!(engine.page_images(doc, 0).unwrap().is_empty());
+    engine.undo(doc).unwrap();
+    assert_eq!(engine.page_images(doc, 0).unwrap().len(), 1);
+    assert!(texts(&engine, doc)[0].contains("Added below"));
+
+    let to_page = r(72.0, 600.0, 200.0, 620.0);
+    let top = LinkTarget::Page {
+        page: 0,
+        top: Some(100.0),
+    };
+    let web = LinkTarget::Uri("https://example.com/".into());
+    engine.add_link(doc, 0, to_page, top.clone()).unwrap();
+    engine
+        .add_link(doc, 0, r(72.0, 640.0, 200.0, 660.0), web.clone())
+        .unwrap();
+    let links = engine.links(doc, 0).unwrap();
+    assert_eq!(links.len(), 2, "{links:?}");
+    assert!(near(links[0].rect, to_page), "{links:?}");
+    assert_eq!(links[0].target, top);
+    assert_eq!(links[1].target, web);
+    engine.delete_link(doc, 0, links[0].rect).unwrap();
+    assert_eq!(engine.links(doc, 0).unwrap(), &links[1..]);
+
+    let item = |title: &str, depth| OutlineItem {
+        title: title.into(),
+        depth,
+        target: Some(top.clone()),
+        source: None,
+    };
+    let shape = |o: &[OutlineItem]| -> Vec<(String, usize)> {
+        o.iter().map(|i| (i.title.clone(), i.depth)).collect()
+    };
+    engine
+        .set_outline(doc, vec![item("One", 0), item("One a", 1), item("Two", 0)])
+        .unwrap();
+    let mut outline = engine.outline(doc).unwrap();
+    assert_eq!(
+        shape(&outline),
+        [("One".into(), 0), ("One a".into(), 1), ("Two".into(), 0)]
+    );
+    assert!(outline.iter().all(|i| i.target == Some(top.clone())));
+    // Renamed and moved to the front; the others keep their places under it.
+    outline[2].title = "First".into();
+    outline.rotate_right(1);
+    engine.set_outline(doc, outline).unwrap();
+    let saved = scratch.file("content.pdf");
+    engine.save(doc, &saved, false).unwrap();
+    let again = open(&engine, &saved);
+    let outline = engine.outline(again).unwrap();
+    assert_eq!(
+        shape(&outline),
+        [("First".into(), 0), ("One".into(), 0), ("One a".into(), 1)]
+    );
+    assert!(outline.iter().all(|i| i.target == Some(top.clone())));
+    assert_eq!(engine.links(again, 0).unwrap().len(), 1);
+    assert_eq!(engine.page_images(again, 0).unwrap().len(), 1);
+    assert!(texts(&engine, again)[0].contains("Added below"));
 }

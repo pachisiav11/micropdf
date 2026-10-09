@@ -1908,6 +1908,26 @@ impl PdfPage {
         .map(fz_matrix::into)
     }
 
+    /// Removes the images drawn over `rect` (PDF user space), give or take `slack` on each
+    /// side, from the page's contents and the forms they draw, which are copied for this page
+    /// first. Returns how many were removed.
+    pub fn remove_images_at(&mut self, rect: Rect, slack: f32) -> Result<usize, Error> {
+        let page = self.inner.as_ptr();
+        let mut removed = 0;
+        crate::pdf::document::journal_call(|err| unsafe {
+            shim::mp_pdf_remove_image(
+                context(),
+                (*page).doc,
+                page,
+                rect.into(),
+                slack,
+                &mut removed,
+                err,
+            )
+        })?;
+        Ok(removed as usize)
+    }
+
     pub fn filter(&mut self, mut opt: PdfFilterOptions) -> Result<(), Error> {
         unsafe {
             ffi_try!(mupdf_pdf_filter_page_contents(
@@ -2384,6 +2404,25 @@ impl Drop for PdfPageRotationGuard<'_> {
         if !self.restored {
             let _ = self.restore_inner();
         }
+    }
+}
+
+/// The wrapper in `shim/journal.c`.
+mod shim {
+    use std::os::raw::{c_char, c_int};
+
+    use mupdf_sys::{fz_context, fz_rect, pdf_document, pdf_page};
+
+    unsafe extern "C" {
+        pub fn mp_pdf_remove_image(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            page: *mut pdf_page,
+            target: fz_rect,
+            slack: f32,
+            removed: *mut c_int,
+            err: *mut *const c_char,
+        ) -> c_int;
     }
 }
 
