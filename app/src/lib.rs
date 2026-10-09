@@ -10,6 +10,7 @@ pub mod instance;
 pub mod layout;
 pub mod measure;
 pub mod palette;
+pub mod prepare;
 pub mod print;
 pub mod recolor;
 pub mod settings;

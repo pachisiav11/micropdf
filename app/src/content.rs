@@ -11,7 +11,7 @@ use crate::FormField;
 use crate::tools::{Done, Form, pick_files, text};
 use crate::viewer::{self, App, Drag, HANDLE, Tool};
 
-/// The comment id a `Drag::Shape` carries while it drags an image.
+/// The id of a picked image, and of a `Drag::Shape` that drags one.
 pub const IMAGE: i32 = i32::MIN;
 
 /// The type size of added text.
@@ -25,8 +25,9 @@ const IMAGES: (&str, &[&str]) = (
 #[derive(Default)]
 pub struct Content {
     pub(crate) text: Option<TextEdit>,
-    /// The picked image: its document, page and box.
-    pub(crate) image: Option<(DocId, usize, Rect)>,
+    /// The picked image or form field: its document, page, id (`IMAGE`, or the field's
+    /// widget) and box.
+    pub(crate) picked: Option<(DocId, usize, i32, Rect)>,
     /// An image file waiting for the box it goes in.
     file: Option<PathBuf>,
     /// The bookmark the outline panel's menu is for.
@@ -65,7 +66,7 @@ pub fn command(app: &mut App, id: &str) -> bool {
             return true;
         }
         "image-delete" => {
-            if !delete_image(app) {
+            if !(app.content.picked.is_some_and(|p| p.2 == IMAGE) && delete_picked(app)) {
                 app.status("Pick an image with Edit images first".into());
             }
             return true;
@@ -199,11 +200,11 @@ pub fn commit(app: &mut App) {
     }
 }
 
-/// Closes the editor and drops what was typed, and lets go of the picked image and of a file
-/// waiting to be placed; false if the editor was not open.
+/// Closes the editor and drops what was typed, and lets go of the picked image or field and
+/// of a file waiting to be placed; false if the editor was not open.
 pub fn cancel(app: &mut App) -> bool {
     app.content.file = None;
-    if app.content.image.take().is_some() {
+    if app.content.picked.take().is_some() {
         app.refresh_marks();
     }
     if app.content.text.take().is_none() {
@@ -225,11 +226,8 @@ pub(crate) fn image_down(
     at: (f32, f32),
 ) -> Option<Drag> {
     let (doc, ..) = app.reading()?;
-    if let Some((d, pg, rect)) = app.content.image
-        && (d, pg) == (doc, page)
-        && on_corner(app, page, rect, at)
-    {
-        return Some(shape(page, at, p, rect, true));
+    if let Some(drag) = corner(app, doc, page, p, at) {
+        return Some(drag);
     }
     if app.content.file.is_some() {
         return Some(Drag::Draw {
@@ -240,28 +238,49 @@ pub(crate) fn image_down(
     let images = app.engine().page_images(doc, page).unwrap_or_default();
     // The image drawn last is the one on top.
     let Some(rect) = images.into_iter().rev().find(|r| r.contains(p.0, p.1)) else {
-        app.content.image = None;
+        app.content.picked = None;
         app.refresh_marks();
         app.status("There is no image there".into());
         return None;
     };
-    app.content.image = Some((doc, page, rect));
+    app.content.picked = Some((doc, page, IMAGE, rect));
     app.refresh_marks();
     app.status(
         "Image picked. Drag it to move it, or a corner to resize it; Delete removes it".into(),
     );
-    Some(shape(page, at, p, rect, false))
+    Some(shape(page, IMAGE, at, p, rect, false))
 }
 
-fn shape(page: usize, origin: (f32, f32), start: (f32, f32), rect: Rect, resize: bool) -> Drag {
+/// A drag that resizes the picked image or field, when document point `at` is on one of its
+/// corners.
+pub(crate) fn corner(
+    app: &App,
+    doc: DocId,
+    page: usize,
+    p: (f32, f32),
+    at: (f32, f32),
+) -> Option<Drag> {
+    let (d, pg, id, rect) = app.content.picked?;
+    ((d, pg) == (doc, page) && on_corner(app, page, rect, at))
+        .then(|| shape(page, id, at, p, rect, true))
+}
+
+pub(crate) fn shape(
+    page: usize,
+    id: i32,
+    origin: (f32, f32),
+    start: (f32, f32),
+    rect: Rect,
+    resize: bool,
+) -> Drag {
     Drag::Shape {
         page,
-        id: IMAGE,
+        id,
         origin,
         start,
         rect,
         resize,
-        keep_aspect: true,
+        keep_aspect: id == IMAGE,
         current: rect,
         moved: false,
     }
@@ -277,7 +296,7 @@ fn on_corner(app: &App, page: usize, rect: Rect, (x, y): (f32, f32)) -> bool {
 
 /// The picked image was dragged to `to`.
 pub fn image_moved(app: &mut App, page: usize, to: Rect) {
-    if let Some((doc, _, from)) = app.content.image {
+    if let Some((doc, _, IMAGE, from)) = app.content.picked {
         change_image(app, doc, page, Some(from), Some(to), ImageSource::Same);
     }
 }
@@ -318,7 +337,7 @@ fn change_image(
         Ok(()) => {
             // A file is fitted in the box, so find where it went.
             let center = |r: &Rect| ((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
-            app.content.image = to.and_then(|to| {
+            app.content.picked = to.and_then(|to| {
                 let (cx, cy) = center(&to);
                 let images = engine.page_images(doc, page).unwrap_or_default();
                 let d = |r: &Rect| {
@@ -326,7 +345,7 @@ fn change_image(
                     (x - cx).hypot(y - cy)
                 };
                 let r = images.into_iter().min_by(|a, b| d(a).total_cmp(&d(b)))?;
-                Some((doc, page, r))
+                Some((doc, page, IMAGE, r))
             });
             app.edited(Some(page));
             app.status(done.into());
@@ -357,8 +376,8 @@ fn add_image(app: &mut App) {
 }
 
 fn replace_image(app: &mut App) {
-    let picked = app.content.image;
-    let (Some((doc, page, rect)), Some((_, path, ..))) = (picked, app.reading()) else {
+    let picked = app.content.picked.filter(|p| p.2 == IMAGE);
+    let (Some((doc, page, _, rect)), Some((_, path, ..))) = (picked, app.reading()) else {
         app.status("Pick an image with Edit images first".into());
         return;
     };
@@ -379,15 +398,19 @@ fn replace_image(app: &mut App) {
     );
 }
 
-/// Deletes the picked image; false if none is picked in the active document.
-pub fn delete_image(app: &mut App) -> bool {
-    let Some((doc, page, rect)) = app.content.image else {
+/// Deletes the picked image or field; false if none is picked in the active document.
+pub fn delete_picked(app: &mut App) -> bool {
+    let Some((doc, page, id, rect)) = app.content.picked else {
         return false;
     };
     if app.reading().is_none_or(|r| r.0 != doc) {
         return false;
     }
-    change_image(app, doc, page, Some(rect), None, ImageSource::Same);
+    if id == IMAGE {
+        change_image(app, doc, page, Some(rect), None, ImageSource::Same);
+    } else {
+        crate::prepare::delete(app, doc, page, id);
+    }
     true
 }
 

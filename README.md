@@ -132,6 +132,19 @@ link offers to delete it. Ctrl+B adds a bookmark at the place you are reading, n
 selected text if any; right-click a bookmark to rename, move, indent, outdent or delete it.
 Bookmarks keep their own actions and look when others change.
 
+## Prepare Form
+
+Tools → Prepare form picks fields: drag one to move it, drag a corner to resize it, Delete
+removes it, and a double-click opens its properties (name, tooltip, required, read only, and by
+kind: several lines and a calculation script, the options of a list or dropdown, the value a
+checkbox or radio button has when on, a button's label), with what a click on it does: open a web
+address, reset or submit the form, or run JavaScript. The Add entries add text fields,
+checkboxes, radio buttons (each one added joins the group of the one before), dropdowns, list
+boxes, buttons and signature fields, in a box you drag or at their usual size where you click.
+Find where fields go adds text fields over lines of underscores, empty boxes and the empty cells
+of ruled tables, and checkboxes in small empty squares. Tab order by rows or by columns sorts the
+fields of every page for the Tab key.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

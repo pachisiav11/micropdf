@@ -16,6 +16,8 @@ redact.pdf         2 pages of uncompressed text with an email address, a phone n
                    word and invisible text; document information, an XMP packet, an opening
                    JavaScript action and an attached file, for redaction and Sanitize.
 red.png            a 2 by 2 red PNG, for adding and replacing images.
+blank-form.pdf     one page, no fields: a line of underscores, an empty square, and a 3-row table
+                   whose right column is empty, for finding where fields go.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
@@ -256,6 +258,23 @@ def redact() -> bytes:
     return serialize(objs, b"/Info 8 0 R ")
 
 
+def blank_form() -> bytes:
+    rules = b"".join(b"72 %d m 472 %d l S\n" % (y, y) for y in (600, 580, 560, 540))
+    rules += b"".join(b"%d 600 m %d 540 l S\n" % (x, x) for x in (72, 272, 472))
+    labels = b"".join(b"BT /F1 10 Tf 76 %d Td (%s) Tj ET\n" % (y, t)
+                      for y, t in ((585, b"City"), (565, b"Country"), (545, b"Phone")))
+    content = (b"BT /F1 12 Tf 72 700 Td (Name: ____________________) Tj ET\n"
+               b"BT /F1 12 Tf 92 660 Td (I agree) Tj ET\n72 658 12 12 re S\n" + rules + labels)
+    return serialize([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        stream(content),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ])
+
+
 def red_png() -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         body = kind + data
@@ -280,8 +299,9 @@ def main() -> None:
     (FIXTURES / "xfa-dynamic.pdf").write_bytes(xfa_dynamic())
     (FIXTURES / "redact.pdf").write_bytes(redact())
     (FIXTURES / "red.png").write_bytes(red_png())
+    (FIXTURES / "blank-form.pdf").write_bytes(blank_form())
     print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf, "
-          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf, red.png")
+          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf, red.png, blank-form.pdf")
 
 
 if __name__ == "__main__":

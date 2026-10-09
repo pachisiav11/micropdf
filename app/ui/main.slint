@@ -762,9 +762,9 @@ export component MainWindow inherits Window {
                 }
 
                 tools-menu := PopupWindow {
-                    x: min(tools-button.x, parent.width - 440px);
+                    x: min(tools-button.x, parent.width - 660px);
                     y: parent.height - 4px;
-                    width: 440px;
+                    width: 660px;
                     HorizontalLayout {
                         spacing: 4px;
                         Menu {
@@ -801,6 +801,20 @@ export component MainWindow inherits Window {
                             MenuEntry { text: "Set the measuring scale\u{2026}"; clicked => { root.command("measure-scale"); } }
                             MenuEntry { text: "Recognize text (OCR)\u{2026}"; clicked => { root.command("ocr"); } }
                             MenuEntry { text: "Compare with a file\u{2026}"; clicked => { root.command("compare"); } }
+                        }
+                        Menu {
+                            MenuEntry { text: "Prepare form"; checked: root.tool == 18; clicked => { root.command("tool-prepare"); } }
+                            MenuEntry { text: "Add a text field"; clicked => { root.command("field-text"); } }
+                            MenuEntry { text: "Add a checkbox"; clicked => { root.command("field-checkbox"); } }
+                            MenuEntry { text: "Add radio buttons"; clicked => { root.command("field-radio"); } }
+                            MenuEntry { text: "Add a dropdown"; clicked => { root.command("field-dropdown"); } }
+                            MenuEntry { text: "Add a list box"; clicked => { root.command("field-list"); } }
+                            MenuEntry { text: "Add a button"; clicked => { root.command("field-button"); } }
+                            MenuEntry { text: "Add a signature field"; clicked => { root.command("field-signature"); } }
+                            MenuEntry { text: "Field properties\u{2026}"; clicked => { root.command("field-properties"); } }
+                            MenuEntry { text: "Find where fields go"; clicked => { root.command("field-detect"); } }
+                            MenuEntry { text: "Tab order by rows"; clicked => { root.command("field-order-rows"); } }
+                            MenuEntry { text: "Tab order by columns"; clicked => { root.command("field-order-columns"); } }
                         }
                     }
                 }

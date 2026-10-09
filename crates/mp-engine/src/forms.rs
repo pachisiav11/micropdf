@@ -163,6 +163,9 @@ pub fn edit(doc: &Document, page: usize, id: i32, edit: &FieldEdit) -> Result<()
         }
         let changed = match edit {
             FieldEdit::Value(text) => widget.set_value(&mut pdf, text, false)?,
+            FieldEdit::Toggle if widget.r#type()? == WidgetType::RadioButton => {
+                check_radio(&widget)?
+            }
             FieldEdit::Toggle => widget.toggle()?,
         };
         if !changed {
@@ -173,9 +176,51 @@ pub fn edit(doc: &Document, page: usize, id: i32, edit: &FieldEdit) -> Result<()
     })
 }
 
+/// Turns radio button `widget` on and the others of its group off; false if it has no on
+/// state. MuPDF 1.27 gives every button of the group the new state, even those that lack it,
+/// which leaves them stuck.
+fn check_radio(widget: &PdfWidget) -> Result<bool, Error> {
+    let Some(state) = on_state(widget)? else {
+        return Ok(false);
+    };
+    let mut head = widget.annotation().object();
+    while head.get_dict("T")?.is_none() {
+        match head.get_dict("Parent")? {
+            Some(parent) => head = parent,
+            None => break,
+        }
+    }
+    let on = PdfObject::new_name(&state)?;
+    head.dict_put("V", on.clone())?;
+    let buttons = match head.get_dict("Kids")? {
+        Some(kids) => (0..kids.len()? as i32)
+            .filter_map(|i| kids.get_array(i).ok().flatten())
+            .collect(),
+        None => vec![head],
+    };
+    for mut b in buttons {
+        let states = b
+            .get_dict("AP")?
+            .and_then(|ap| ap.get_dict("N").ok().flatten());
+        let has = match states {
+            Some(n) if n.is_dict()? => n.get_dict(state.as_str())?.is_some(),
+            _ => false,
+        };
+        b.dict_put(
+            "AS",
+            if has {
+                on.clone()
+            } else {
+                PdfObject::new_name("Off")?
+            },
+        )?;
+    }
+    Ok(true)
+}
+
 /// The state a checkbox or radio button takes when on, from its appearances: the one not
 /// named Off.
-fn on_state(widget: &PdfWidget) -> Result<Option<String>, Error> {
+pub(crate) fn on_state(widget: &PdfWidget) -> Result<Option<String>, Error> {
     let states = match widget.annotation().object().get_dict("AP")? {
         Some(ap) => ap.get_dict("N")?,
         None => None,

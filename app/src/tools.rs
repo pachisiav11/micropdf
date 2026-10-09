@@ -57,6 +57,10 @@ pub enum Form {
         page: usize,
         top: f32,
     },
+    FieldProps {
+        page: usize,
+        id: i32,
+    },
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -431,7 +435,8 @@ fn open(app: &mut App, form: Form) {
         | Form::Link { .. }
         | Form::DeleteLink { .. }
         | Form::Bookmark(_)
-        | Form::NewBookmark { .. } => return,
+        | Form::NewBookmark { .. }
+        | Form::FieldProps { .. } => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -731,6 +736,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
         Form::Bookmark(_) | Form::NewBookmark { .. } => {
             crate::content::bookmark_named(app, form, f)?
         }
+        Form::FieldProps { page, id } => crate::prepare::set_props(app, page, id, f)?,
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()

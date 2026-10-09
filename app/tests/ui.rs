@@ -217,6 +217,17 @@ fn links() -> usize {
     .unwrap_or(usize::MAX)
 }
 
+/// The names of the fields on page 1 of the active document.
+fn fields() -> Vec<String> {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        app.engine().fields(doc, 0).ok()
+    })
+    .flatten()
+    .map(|f| f.into_iter().map(|f| f.name).collect())
+    .unwrap_or_default()
+}
+
 /// The boxes of the images on page 1 of the active document.
 fn images() -> Vec<Rect> {
     viewer::with(|app| {
@@ -1720,6 +1731,30 @@ fn steps() -> Vec<Step> {
                 w.invoke_dialog_accept("".into());
             },
             |w| w.get_outline().iter().map(|r| r.title).collect::<Vec<_>>() == ["Start"],
+        ),
+        step(
+            "a click with Add a text field adds one and picks it",
+            |w| {
+                w.invoke_command("field-text".into());
+                drag_hello(w, &[(20.0, 160.0)]);
+            },
+            |w| w.get_status_left().starts_with("Added the field") && fields() == ["Text1"],
+        ),
+        step(
+            "a double-click opens its properties, which rename it",
+            |w| {
+                let p = hello_page(w);
+                let (x, y) = (p.x + 30.0 / 300.0 * p.width, p.y + 170.0 / 200.0 * p.height);
+                w.invoke_pointer_double(x, y);
+                w.invoke_form_edited(0, "Email".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| w.get_status_left() == "Changed the field" && fields() == ["Email"],
+        ),
+        step(
+            "Delete removes the picked field",
+            key(char::from(Key::Delete)),
+            |w| w.get_status_left() == "Deleted the field" && fields().is_empty(),
         ),
         step(
             "close the edited page",

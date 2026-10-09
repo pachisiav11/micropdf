@@ -381,6 +381,7 @@ pub struct App {
     pub(crate) split: Option<crate::split::Split>,
     pub(crate) measuring: crate::measure::Measuring,
     pub(crate) content: crate::content::Content,
+    pub(crate) prepare: crate::prepare::Prepare,
 }
 
 impl App {
@@ -486,6 +487,7 @@ impl App {
             split: None,
             measuring: Default::default(),
             content: Default::default(),
+            prepare: Default::default(),
         };
         app.refresh_recent();
         app.refresh_sign_menu();
@@ -2142,6 +2144,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     crate::content::click(self, page, (px, py));
                 } else if self.tool == Tool::EditImage {
                     self.drag = crate::content::image_down(self, page, (px, py), (x, y));
+                } else if self.tool == Tool::Field {
+                    self.drag = crate::prepare::down(self, page, (px, py), (x, y));
                 } else if self.tool == Tool::Measure
                     && self.measuring.kind != mp_engine::Measure::Distance
                 {
@@ -2363,6 +2367,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     pub fn pointer_double(&mut self, x: f32, y: f32) {
+        if self.tool == Tool::Field {
+            return crate::prepare::properties(self);
+        }
         if self.tool == Tool::Measure && crate::measure::finish_outline(self) {
             return;
         }
@@ -2538,15 +2545,15 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 picked_marks(f, resizable(a), &mut marks);
             }
         }
-        if let Some((doc, page, rect)) = self.content.image
+        if let Some((doc, page, id, rect)) = self.content.picked
             && doc == tab.info.id
         {
             let rect = match self.drag {
                 Some(Drag::Shape {
-                    id: crate::content::IMAGE,
+                    id: dragged,
                     current,
                     ..
-                }) => current,
+                }) if dragged == id => current,
                 _ => rect,
             };
             if let Some(f) = tab.layout.to_view(page, &rect) {
@@ -3880,6 +3887,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
             }
             Tool::EditImage => crate::content::image_drawn(self, page, rect, small),
             Tool::Link => crate::content::link_drawn(self, page, rect, small),
+            Tool::Field => crate::prepare::drawn(self, page, rect, small),
             _ if small => self.status("Drag to draw the shape".into()),
             Tool::Measure => crate::measure::finish(self, page, vec![a, b]),
             Tool::Line => {
@@ -5022,6 +5030,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
         if id == crate::content::IMAGE {
             return crate::content::image_moved(self, page, rect);
         }
+        if self.tool == Tool::Field {
+            return crate::prepare::moved(self, page, id, rect);
+        }
         let Some(doc) = self.tab().map(|t| t.info.id) else {
             return;
         };
@@ -5245,7 +5256,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Deletes the picked comment. Returns false if none is picked.
     pub fn delete_picked(&mut self) -> bool {
-        if crate::content::delete_image(self) {
+        if crate::content::delete_picked(self) {
             return true;
         }
         let Some(index) = self.picked_index() else {
@@ -5956,6 +5967,8 @@ pub enum Tool {
     EditImage,
     /// Draws a link, or deletes the one clicked.
     Link,
+    /// Prepare Form: picks fields to change, or adds them.
+    Field,
 }
 
 /// The signature pad's state that the window does not hold.
