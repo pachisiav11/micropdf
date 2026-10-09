@@ -205,6 +205,25 @@ fn last_comment(w: &MainWindow) -> String {
         .unwrap_or_default()
 }
 
+/// The text of page `index` of the active tab, as the engine has it now.
+fn text_of(index: usize) -> String {
+    viewer::with(|app| {
+        let (doc, _) = app.active_doc()?;
+        let list = app.engine().display_list(doc, index).ok()?;
+        let text = mp_engine::page_text(&list).ok()?;
+        Some(text.chars.iter().map(|c| c.ch).collect())
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+
+/// Whether thumbnail `index` is wider than it is tall.
+fn thumb_wide(w: &MainWindow, index: usize) -> bool {
+    w.get_thumbs()
+        .row_data(index)
+        .is_some_and(|t| t.width > t.height)
+}
+
 fn steps() -> Vec<Step> {
     let zoom_before = Rc::new(RefCell::new(String::new()));
     let zoom_after = Rc::clone(&zoom_before);
@@ -1257,6 +1276,126 @@ fn steps() -> Vec<Step> {
             |w| w.global::<Assistant>().invoke_link("page:1".into()),
             |w| marks(w, 6) == 1 && page(w) == "1",
         ),
+        step(
+            "open a copy of a two-page file for the tools",
+            |_| {
+                std::fs::copy(fixture("redact.pdf"), scratch("tools.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("tools.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("tools.pdf")),
+        ),
+        step(
+            "Ctrl+click picks a second thumbnail",
+            |w| {
+                w.invoke_thumb_press(0, false, false, false);
+                w.invoke_thumb_drop(0, 0.0);
+                w.invoke_thumb_press(1, true, false, false);
+            },
+            |w| w.get_thumbs().iter().filter(|t| t.selected).count() == 2,
+        ),
+        step(
+            "the page menu turns both picked pages",
+            command("pages-rotate-cw"),
+            |w| thumb_wide(w, 0) && thumb_wide(w, 1) && w.get_undo_name() == "Rotate pages",
+        ),
+        step("undo turns them back", command("undo"), |w| {
+            !thumb_wide(w, 0) && !thumb_wide(w, 1)
+        }),
+        step(
+            "dragging page 2's thumbnail up moves it first",
+            |w| {
+                // A click on a picked thumbnail leaves it the only one.
+                w.invoke_thumb_press(0, false, false, false);
+                w.invoke_thumb_drop(0, 0.0);
+                w.invoke_thumb_press(1, false, false, false);
+                w.invoke_thumb_drop(1, -200.0);
+            },
+            |w| text_of(0).contains("Page two") && page(w) == "1",
+        ),
+        step(
+            "the header and footer form numbers the pages",
+            |w| {
+                w.invoke_command("header-footer".into());
+                assert_eq!(w.get_dialog_kind(), "form");
+                w.invoke_dialog_accept("".into());
+            },
+            |_| text_of(0).contains("Page 1 of 2") && text_of(1).contains("Page 2 of 2"),
+        ),
+        step(
+            "text typed in a form reaches the tool",
+            |w| {
+                w.invoke_command("watermark".into());
+                w.invoke_form_edited(0, "TOP SECRET".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |_| text_of(0).contains("TOP") && text_of(1).contains("TOP"),
+        ),
+        step(
+            "the properties form sets the title",
+            |w| {
+                w.invoke_command("doc-properties".into());
+                w.invoke_form_edited(0, "Tools test".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| w.get_info().iter().any(|r| r.value == "Tools test"),
+        ),
+        step(
+            "search and redact marks the email address",
+            |w| {
+                w.invoke_command("redact-search".into());
+                w.invoke_form_chosen(0, 1);
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                w.get_status_left() == "Marked 1 match for redaction"
+                    && w.get_comments().iter().any(|r| r.kind == "Redaction")
+            },
+        ),
+        step(
+            "applying the redactions removes it",
+            |w| {
+                w.invoke_command("redact-apply".into());
+                assert_eq!(w.get_dialog_kind(), "confirm");
+                w.invoke_dialog_accept("".into());
+            },
+            |_| {
+                let all = text_of(0) + &text_of(1);
+                all.contains("SECRET-PLAN") && !all.contains("jane.doe@example.com")
+            },
+        ),
+        step(
+            "protect saves the file with a password",
+            |w| {
+                w.invoke_command("protect".into());
+                w.invoke_form_edited(0, "pw".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                let engine = viewer::with(|app| app.engine()).unwrap();
+                let info = engine.open(scratch("tools.pdf")).unwrap();
+                engine.close(info.id);
+                w.get_status_left().starts_with("Protected")
+                    && !w.get_dirty()
+                    && info.needs_password
+            },
+        ),
+        step(
+            "remove protection saves it without one",
+            command("unprotect"),
+            |w| {
+                let engine = viewer::with(|app| app.engine()).unwrap();
+                let info = engine.open(scratch("tools.pdf")).unwrap();
+                engine.close(info.id);
+                w.get_status_left().starts_with("Removed the password") && !info.needs_password
+            },
+        ),
+        step("close the tools copy", command("close-tab"), |w| {
+            let closed = active_title(w) == "xfa-dynamic.pdf";
+            if closed {
+                let _ = std::fs::remove_file(scratch("tools.pdf"));
+            }
+            closed
+        }),
         step(
             "every button has an accessible name",
             |_| {},

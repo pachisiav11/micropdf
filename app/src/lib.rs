@@ -11,6 +11,7 @@ pub mod palette;
 pub mod print;
 pub mod recolor;
 pub mod settings;
+pub mod tools;
 pub mod viewer;
 
 slint::include_modules!();
@@ -61,6 +62,21 @@ pub fn wire(window: &MainWindow) {
     });
     window.on_thumb_clicked(|page| {
         viewer::with(|app| app.go_to(page as usize, None, true));
+    });
+    window.on_thumb_press(|page, ctrl, shift, right| {
+        viewer::with(|app| app.thumb_press(page as usize, ctrl, shift, right));
+    });
+    window.on_thumb_drop(|page, dy| {
+        viewer::with(|app| app.thumb_drop(page as usize, dy));
+    });
+    window.on_form_edited(|i, text| {
+        viewer::with(|app| app.form_change(i as usize, |f| f.text = text));
+    });
+    window.on_form_checked(|i, on| {
+        viewer::with(|app| app.form_change(i as usize, |f| f.checked = on));
+    });
+    window.on_form_chosen(|i, index| {
+        viewer::with(|app| app.form_change(i as usize, |f| f.index = index));
     });
     window.on_outline_clicked(|row| {
         viewer::with(|app| app.outline_clicked(row as usize));

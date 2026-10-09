@@ -3,7 +3,7 @@
 //! back through `invoke_from_event_loop`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use mp_engine::{
     Annot, AnnotKind, Attachment, Border, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind,
     History, LINE_ENDS, Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, Properties,
-    REVIEW_STATES, Rect, RenderPool, Restyle, STAMPS, Style, Tile, Xfa, readable_date,
+    REVIEW_STATES, Rect, RenderPool, Restyle, STAMPS, Security, Style, Tile, Xfa, readable_date,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer, SharedString,
@@ -25,8 +25,8 @@ use crate::palette;
 use crate::recolor::ReadingMode;
 use crate::settings::{SavedMark, Settings};
 use crate::{
-    AttachmentRow, CommentRow, InfoRow, LayerRow, MainWindow, MarkItem, Named, OutlineRow,
-    PageItem, PaletteItem, Swatch, TabItem, Theme, ThumbItem, TileItem,
+    AttachmentRow, CommentRow, FormField, InfoRow, LayerRow, MainWindow, MarkItem, Named,
+    OutlineRow, PageItem, PaletteItem, Swatch, TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -176,6 +176,13 @@ struct DocTab {
     comments_scan: Option<u64>,
     /// The comment picked on the page or in the list, by page and id.
     picked: Option<(usize, i32)>,
+    /// Pages picked in the thumbnails; empty means the current page alone.
+    chosen: BTreeSet<usize>,
+    /// The thumbnail a press landed on, and whether a release there without a drag picks it
+    /// alone.
+    pressed: Option<(usize, bool)>,
+    /// Each page's label, as the thumbnails show it.
+    labels: Vec<String>,
 }
 
 impl DocTab {
@@ -237,6 +244,11 @@ enum Ask {
         page: usize,
         id: i32,
         props: Properties,
+    },
+    /// A tool's form; the fields as they first show.
+    Form {
+        form: crate::tools::Form,
+        fields: Vec<FormField>,
     },
     Quit,
     Message,
@@ -312,6 +324,7 @@ struct Models {
     attachments: Rc<VecModel<AttachmentRow>>,
     layers: Rc<VecModel<LayerRow>>,
     comments: Rc<VecModel<CommentRow>>,
+    form: Rc<VecModel<FormField>>,
 }
 
 pub struct App {
@@ -380,6 +393,7 @@ impl App {
             attachments: Rc::new(VecModel::default()),
             layers: Rc::new(VecModel::default()),
             comments: Rc::new(VecModel::default()),
+            form: Rc::new(VecModel::default()),
         };
         window.set_tabs(ModelRc::from(models.tabs.clone()));
         window.set_pages(ModelRc::from(models.pages.clone()));
@@ -393,6 +407,7 @@ impl App {
         window.set_attachments(ModelRc::from(models.attachments.clone()));
         window.set_layers(ModelRc::from(models.layers.clone()));
         window.set_comments(ModelRc::from(models.comments.clone()));
+        window.set_form_fields(ModelRc::from(models.form.clone()));
         let named = |list: &[(&str, &str)]| {
             let items: Vec<Named> = list
                 .iter()
@@ -563,6 +578,7 @@ impl App {
         let metadata = self.engine.metadata(info.id).unwrap_or_default();
         let attachments = self.engine.attachments(info.id).unwrap_or_default();
         let layers = self.engine.layers(info.id).unwrap_or_default();
+        let labels = self.engine.page_labels(info.id).unwrap_or_default();
         let expanded = if outline.len() <= 30 {
             (0..outline.len()).collect()
         } else {
@@ -622,6 +638,9 @@ impl App {
             comments: Vec::new(),
             comments_scan: None,
             picked: None,
+            chosen: BTreeSet::new(),
+            pressed: None,
+            labels,
         };
         self.tabs.push(tab);
         self.scan_comments(self.tabs.len() - 1);
@@ -973,6 +992,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let metadata = self.engine.metadata(info.id).unwrap_or_default();
         let attachments = self.engine.attachments(info.id).unwrap_or_default();
         let layers = self.engine.layers(info.id).unwrap_or_default();
+        let labels = self.engine.page_labels(info.id).unwrap_or_default();
         let generation = self.bump();
         let thumb_generation = self.bump();
         let active = self.active == Some(index);
@@ -1001,6 +1021,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
         tab.metadata = metadata;
         tab.attachments = attachments;
         tab.layers = layers;
+        tab.labels = labels;
+        tab.chosen.clear();
         tab.dirty = false;
         tab.saved = None;
         tab.edits = History::default();
@@ -1067,6 +1089,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     window.set_dialog_subject(props.subject.clone().into());
                     window.set_dialog_locked(props.locked);
                     window.set_dialog_printed(props.printed);
+                }
+                if let Ask::Form { fields, .. } = &d.ask {
+                    self.models.form.set_vec(fields.clone());
                 }
                 window.set_dialog_kind(d.kind.into());
                 if d.kind == "password" || d.kind == "input" {
@@ -1171,6 +1196,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
                         Err(e) => self.status(format!("Could not change the comment: {e}")),
                     }
                 }
+            }
+            Ask::Form { form, .. } => {
+                let fields = self.models.form.iter().collect();
+                crate::tools::accept(self, form, fields);
             }
             Ask::Quit => {
                 for tab in &mut self.tabs {
@@ -2682,10 +2711,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 ThumbItem {
                     index: i as i32,
                     image: tab.thumbs.get(&i).cloned().unwrap_or_default(),
-                    label: (i + 1).to_string().into(),
+                    label: tab
+                        .labels
+                        .get(i)
+                        .filter(|l| !l.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| (i + 1).to_string())
+                        .into(),
                     width: (w * s).round(),
                     height: (h * s).round(),
                     current: i == tab.current,
+                    selected: tab.chosen.contains(&i),
                 }
             })
             .collect();
@@ -3308,7 +3344,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
     }
 
     /// Redraws the active tab after an edit changed `page`, or any page when None.
-    fn edited(&mut self, page: Option<usize>) {
+    pub(crate) fn edited(&mut self, page: Option<usize>) {
         self.changed(page, false);
     }
 
@@ -3319,8 +3355,10 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let Some(tab) = self.tab() else { return };
         let edits = self.engine.history(tab.info.id).unwrap_or_default();
         let attachments = self.engine.attachments(tab.info.id).unwrap_or_default();
+        let metadata = self.engine.metadata(tab.info.id).unwrap_or_default();
         let Some(tab) = self.tab_mut() else { return };
         tab.attachments = attachments;
+        tab.metadata = metadata;
         if !undo && edits.position <= tab.saved_position {
             // The new step replaced the saved state's steps; no undo reaches it again.
             tab.saved_position = usize::MAX;
@@ -3349,7 +3387,53 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.refresh_marks();
         self.update_view();
         self.fill_files();
+        self.rebuild_info();
         self.refresh_comments(page);
+    }
+
+    /// Reads the active tab's pages again after an edit that added, removed, moved, turned or
+    /// cropped some, or after undoing one; goes to `page` when given.
+    pub(crate) fn restructure(&mut self, page: Option<usize>, undo: bool) {
+        let Some(index) = self.active else { return };
+        let doc = self.tabs[index].info.id;
+        let Ok(sizes) = self.engine.page_sizes(doc) else {
+            return;
+        };
+        if sizes.is_empty() {
+            return;
+        }
+        let outline = self.engine.outline(doc).unwrap_or_default();
+        let labels = self.engine.page_labels(doc).unwrap_or_default();
+        let generation = self.bump();
+        let tab = &mut self.tabs[index];
+        tab.sizes = sizes
+            .iter()
+            .map(|s| (s.width.max(1.0), s.height.max(1.0)))
+            .collect();
+        let count = tab.sizes.len();
+        tab.current = page.unwrap_or(tab.current).min(count - 1);
+        tab.pending = Some(Spot {
+            page: tab.current,
+            frac: 0.0,
+            x_frac: 0.5,
+        });
+        // Pages moved, so tiles of one page may now belong to another.
+        tab.generation = generation;
+        tab.tiles.clear();
+        tab.inflight.clear();
+        tab.chosen.retain(|&p| p < count);
+        tab.outline = outline;
+        tab.outline_current = None;
+        tab.labels = labels;
+        let query = tab.search.query.clone();
+        if let Some(window) = self.window() {
+            window.set_page_count(count as i32);
+        }
+        self.changed(None, undo);
+        self.rebuild_outline();
+        self.relayout();
+        self.update_view();
+        self.start_search(query);
     }
 
     /// Lists every page's comments on a worker thread; the result replaces the tab's list.
@@ -3676,6 +3760,15 @@ Open it in Adobe Acrobat Reader to fill it in.",
                     width: 1.5,
                 };
                 self.add_comment(page, new, red);
+            }
+            Tool::Redact => {
+                let Some(doc) = self.tab().map(|t| t.info.id) else {
+                    return;
+                };
+                match self.engine.mark_redaction(doc, page, vec![rect]) {
+                    Ok(()) => self.edited(Some(page)),
+                    Err(e) => self.status(format!("Could not mark the area: {e}")),
+                }
             }
             Tool::TextBox => self.push_dialog(Dialog {
                 ask: Ask::TextBox { page, rect },
@@ -5072,7 +5165,11 @@ Open it in Adobe Acrobat Reader to fill it in.",
         };
         match result {
             Ok(_) => {
-                self.changed(None, true);
+                if crate::tools::reshapes(&step) {
+                    self.restructure(None, true);
+                } else {
+                    self.changed(None, true);
+                }
                 let verb = if redo { "Redid" } else { "Undid" };
                 self.status(format!("{verb}: {step}"));
             }
@@ -5101,6 +5198,32 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 }
                 self.refresh_names();
                 self.status(format!("Saved {}", file_name(&path)));
+            }
+            Err(e) => self.message("Could not save", format!("{}\n\n{e}", path.display())),
+        }
+    }
+
+    /// Rewrites the active tab's file, edits included, with `security`.
+    pub(crate) fn save_secured(&mut self, security: Security) {
+        let Some(index) = self.active else { return };
+        let (info, path) = (self.tabs[index].info, self.tabs[index].path.clone());
+        let what = match security {
+            Security::Remove => "Removed the password from",
+            _ => "Protected",
+        };
+        match self.engine.save_secured(info.id, &path, false, security) {
+            Ok(reopened) => {
+                if reopened {
+                    self.adopt(index, info);
+                }
+                if let Some(tab) = self.tab_mut() {
+                    tab.dirty = false;
+                    tab.saved = file_stamp(&path);
+                    tab.saved_position = tab.edits.position;
+                }
+                self.refresh_names();
+                self.rebuild_info();
+                self.status(format!("{what} {}", file_name(&path)));
             }
             Err(e) => self.message("Could not save", format!("{}\n\n{e}", path.display())),
         }
@@ -5214,6 +5337,202 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     pub fn engine(&self) -> Arc<Engine> {
         Arc::clone(&self.engine)
+    }
+
+    /// The pages picked in the thumbnails, or the current page; in order.
+    pub(crate) fn chosen_pages(&self) -> Vec<usize> {
+        match self.tab() {
+            Some(t) if t.chosen.is_empty() => vec![t.current],
+            Some(t) => t.chosen.iter().copied().collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Picks `pages` in the thumbnails.
+    pub(crate) fn choose(&mut self, pages: impl IntoIterator<Item = usize>) {
+        if let Some(tab) = self.tab_mut() {
+            tab.chosen = pages.into_iter().collect();
+        }
+        self.rebuild_thumbs();
+    }
+
+    /// The pages the top-level bookmarks go to, in order.
+    pub(crate) fn chapter_starts(&self) -> Vec<usize> {
+        let Some(tab) = self.tab() else {
+            return Vec::new();
+        };
+        let mut pages: Vec<usize> = tab
+            .outline
+            .iter()
+            .filter(|o| o.depth == 0)
+            .filter_map(|o| match o.target {
+                Some(LinkTarget::Page { page, .. }) => Some(page),
+                _ => None,
+            })
+            .collect();
+        pages.sort_unstable();
+        pages.dedup();
+        pages
+    }
+
+    /// A document information value such as "Title", or "" when it is not set.
+    pub(crate) fn info_value(&self, key: &str) -> String {
+        self.tab()
+            .and_then(|t| t.metadata.iter().find(|(k, _)| k == key))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn redaction_count(&self) -> usize {
+        self.tab().map_or(0, |t| {
+            t.comments
+                .iter()
+                .filter(|(_, a)| a.kind == AnnotKind::Redact)
+                .count()
+        })
+    }
+
+    /// Shows a tool's form; with no fields it asks to confirm.
+    pub(crate) fn show_form(
+        &mut self,
+        form: crate::tools::Form,
+        title: &str,
+        text: &str,
+        ok: &'static str,
+        fields: Vec<FormField>,
+    ) {
+        let kind = if fields.is_empty() { "confirm" } else { "form" };
+        self.push_dialog(Dialog {
+            ask: Ask::Form { form, fields },
+            kind,
+            title: title.into(),
+            text: text.into(),
+            ok,
+            cancel: "Cancel",
+        });
+    }
+
+    /// Records an edit the user made to field `index` of the form that shows.
+    pub fn form_change(&self, index: usize, change: impl FnOnce(&mut FormField)) {
+        if let Some(mut field) = self.models.form.row_data(index) {
+            change(&mut field);
+            self.models.form.set_row_data(index, field);
+        }
+    }
+
+    /// A press on a page's thumbnail: alone it goes to the page, with Ctrl it adds or drops
+    /// the page from the picked ones, with Shift it picks the run of pages up to it, and with
+    /// the right button it picks the page for the menu unless it is picked already.
+    pub fn thumb_press(&mut self, page: usize, ctrl: bool, shift: bool, right: bool) {
+        let Some(tab) = self.tab_mut() else { return };
+        if page >= tab.page_count() {
+            return;
+        }
+        let anchor = tab.pressed.map_or(tab.current, |(p, _)| p);
+        if tab.chosen.is_empty() && (ctrl || shift) {
+            tab.chosen.insert(tab.current);
+        }
+        if right {
+            if !tab.chosen.contains(&page) {
+                tab.chosen.clear();
+                tab.chosen.insert(page);
+            }
+        } else if ctrl {
+            if !tab.chosen.remove(&page) {
+                tab.chosen.insert(page);
+            }
+            tab.pressed = Some((page, false));
+        } else if shift {
+            tab.chosen = (anchor.min(page)..=anchor.max(page)).collect();
+        } else {
+            // A press on one of several picked pages may start dragging them all.
+            let keep = tab.chosen.len() > 1 && tab.chosen.contains(&page);
+            if !keep {
+                tab.chosen.clear();
+            }
+            tab.pressed = Some((page, keep));
+            self.go_to(page, None, true);
+        }
+        self.rebuild_thumbs();
+    }
+
+    /// The left button released on thumbnail `page` after moving `dy` pixels: a drag moves
+    /// the picked pages (or this one) to where the pointer is.
+    pub fn thumb_drop(&mut self, page: usize, dy: f32) {
+        let Some(tab) = self.tab_mut() else { return };
+        let Some((pressed, keep)) = tab.pressed else {
+            return;
+        };
+        if dy.abs() < 12.0 {
+            if keep {
+                tab.chosen.clear();
+                self.rebuild_thumbs();
+            }
+            return;
+        }
+        let tops = &tab.thumb_tops;
+        if page >= tops.len() {
+            return;
+        }
+        let middle = |i: usize| {
+            let end = tops
+                .get(i + 1)
+                .copied()
+                .unwrap_or(tops[i] + 2.0 * THUMB_EXTRA);
+            (tops[i] + end) / 2.0
+        };
+        // Taken from the thumbnail's middle; the pages go before the first thumbnail whose
+        // middle is below the pointer.
+        let y = middle(page) + dy;
+        let before = (0..tops.len())
+            .find(|&i| middle(i) > y)
+            .unwrap_or(tops.len());
+        let pages: Vec<usize> = if tab.chosen.contains(&pressed) {
+            tab.chosen.iter().copied().collect()
+        } else {
+            vec![pressed]
+        };
+        let (first, last) = (pages[0], pages[pages.len() - 1]);
+        if last - first + 1 == pages.len() && (first..=last + 1).contains(&before) {
+            return;
+        }
+        let doc = tab.info.id;
+        let n = pages.len();
+        match self.engine.move_pages(doc, pages, before) {
+            Ok(at) => {
+                self.restructure(Some(at), false);
+                self.choose(at..at + n);
+            }
+            Err(e) => self.status(format!("Could not move the pages: {e}")),
+        }
+    }
+
+    /// Marks the selected text for redaction.
+    pub fn redact_selection(&mut self) {
+        let Some(sel) = self.tab().and_then(|t| t.selection) else {
+            self.status("Select text first".into());
+            return;
+        };
+        let Some(text) = self.page_text(sel.page) else {
+            return;
+        };
+        let range = sel.range();
+        if range.end > text.chars.len() {
+            return;
+        }
+        let rects = text.line_rects(range);
+        let Some(doc) = self.tab().map(|t| t.info.id) else {
+            return;
+        };
+        match self.engine.mark_redaction(doc, sel.page, rects) {
+            Ok(()) => {
+                if let Some(tab) = self.tab_mut() {
+                    tab.selection = None;
+                }
+                self.edited(Some(sel.page));
+            }
+            Err(e) => self.status(format!("Could not mark the text: {e}")),
+        }
     }
 }
 
@@ -5375,6 +5694,7 @@ pub enum Tool {
     Stamp,
     Callout,
     Attach,
+    Redact,
 }
 
 /// The signature pad's state that the window does not hold.
@@ -5512,7 +5832,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     match bytes {
         b if b >= 1 << 30 => format!("{:.2} GB", b as f64 / (1u64 << 30) as f64),
         b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),

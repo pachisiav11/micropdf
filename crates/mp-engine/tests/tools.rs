@@ -412,12 +412,12 @@ fn redaction_removes_text_from_the_page_and_the_file() {
         .mark_redaction(
             doc,
             1,
-            Rect {
+            vec![Rect {
                 x0: 0.0,
                 y0: 0.0,
                 x1: 1.0,
                 y1: 1.0,
-            },
+            }],
         )
         .unwrap();
 

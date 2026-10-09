@@ -1,4 +1,4 @@
-import { ScrollView, LineEdit, ListView, CheckBox } from "std-widgets.slint";
+import { ScrollView, LineEdit, ListView, CheckBox, ComboBox } from "std-widgets.slint";
 import { Theme } from "tokens.slint";
 import { DialogButton, Icon, Menu, MenuEntry, SidebarTab, ToolButton } from "widgets.slint";
 import { Assistant, AssistantPanel, ChatItem } from "assistant.slint";
@@ -43,6 +43,17 @@ export struct ThumbItem {
     width: length,
     height: length,
     current: bool,
+    selected: bool,
+}
+
+// One field of a tool's form: kind 0 text, 1 password, 2 check box, 3 choice.
+export struct FormField {
+    label: string,
+    kind: int,
+    text: string,
+    checked: bool,
+    options: [string],
+    index: int,
 }
 
 export struct OutlineRow {
@@ -212,6 +223,14 @@ export component MainWindow inherits Window {
     callback select-tab(int);
     callback close-tab(int);
     callback thumb-clicked(int);
+    // A page thumbnail pressed: with Ctrl or Shift held, or with the right button.
+    callback thumb-press(int, bool, bool, bool);
+    // A thumbnail released after the pointer moved this far down (up when negative).
+    callback thumb-drop(int, length);
+    in property <[FormField]> form-fields;
+    callback form-edited(int, string);
+    callback form-checked(int, bool);
+    callback form-chosen(int, int);
     callback outline-clicked(int);
     callback outline-toggle(int);
     callback page-entered(string);
@@ -624,6 +643,14 @@ export component MainWindow inherits Window {
                             root.command("strikeout");
                         }
                     }
+                    tools-button := ToolButton {
+                        label: "Tools";
+                        tip: "Pages, stamps, protection and redaction";
+                        enabled: root.has-document;
+                        clicked => {
+                            tools-menu.show();
+                        }
+                    }
                     sign-button := ToolButton {
                         label: "Sign";
                         tip: "Sign or add initials";
@@ -702,6 +729,38 @@ export component MainWindow inherits Window {
                         MenuEntry { text: "Callout"; checked: root.tool == 9; clicked => { root.command("tool-callout"); } }
                         MenuEntry { text: "Stamp\u{2026}"; checked: root.tool == 8; clicked => { stamp-menu.show(); } }
                         MenuEntry { text: "Attach file"; checked: root.tool == 10; clicked => { root.command("tool-attach"); } }
+                    }
+                }
+
+                tools-menu := PopupWindow {
+                    x: min(tools-button.x, parent.width - 440px);
+                    y: parent.height - 4px;
+                    width: 440px;
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Menu {
+                            MenuEntry { text: "Rotate pages\u{2026}"; clicked => { root.command("pages-rotate"); } }
+                            MenuEntry { text: "Delete pages\u{2026}"; clicked => { root.command("pages-delete-some"); } }
+                            MenuEntry { text: "Extract pages\u{2026}"; clicked => { root.command("pages-extract"); } }
+                            MenuEntry { text: "Split document\u{2026}"; clicked => { root.command("split"); } }
+                            MenuEntry { text: "Combine files\u{2026}"; clicked => { root.command("combine"); } }
+                            MenuEntry { text: "Crop pages\u{2026}"; clicked => { root.command("pages-crop"); } }
+                            MenuEntry { text: "Number pages\u{2026}"; clicked => { root.command("page-labels"); } }
+                            MenuEntry { text: "Header and footer\u{2026}"; clicked => { root.command("header-footer"); } }
+                            MenuEntry { text: "Watermark\u{2026}"; clicked => { root.command("watermark"); } }
+                            MenuEntry { text: "Bates numbering\u{2026}"; clicked => { root.command("bates"); } }
+                        }
+                        Menu {
+                            MenuEntry { text: "Protect with password\u{2026}"; clicked => { root.command("protect"); } }
+                            MenuEntry { text: "Remove protection"; clicked => { root.command("unprotect"); } }
+                            MenuEntry { text: "Reduce file size\u{2026}"; clicked => { root.command("optimize"); } }
+                            MenuEntry { text: "Document properties\u{2026}"; clicked => { root.command("doc-properties"); } }
+                            MenuEntry { text: "Sanitize\u{2026}"; clicked => { root.command("sanitize"); } }
+                            MenuEntry { text: "Redact area"; checked: root.tool == 11; clicked => { root.command("tool-redact"); } }
+                            MenuEntry { text: "Redact selected text"; clicked => { root.command("redact-selection"); } }
+                            MenuEntry { text: "Search and redact\u{2026}"; clicked => { root.command("redact-search"); } }
+                            MenuEntry { text: "Apply redactions\u{2026}"; clicked => { root.command("redact-apply"); } }
+                        }
                     }
                 }
 
@@ -803,7 +862,7 @@ export component MainWindow inherits Window {
                                         width: thumb.width + 6px;
                                         height: thumb.height + 6px;
                                         border-radius: Theme.radius-sm;
-                                        background: thumb.current ? Theme.accent : transparent;
+                                        background: thumb.current ? Theme.accent : thumb.selected ? Theme.accent.with-alpha(0.45) : transparent;
                                         Rectangle {
                                             x: 3px;
                                             y: 3px;
@@ -826,9 +885,35 @@ export component MainWindow inherits Window {
                                         horizontal-alignment: center;
                                         color: thumb.current ? Theme.text : Theme.text-muted;
                                     }
-                                    TouchArea {
-                                        clicked => {
-                                            root.thumb-clicked(thumb.index);
+                                    thumb-touch := TouchArea {
+                                        pointer-event(e) => {
+                                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                                root.thumb-press(thumb.index, e.modifiers.control, e.modifiers.shift, false);
+                                            }
+                                            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                                                root.thumb-drop(thumb.index, self.mouse-y - self.pressed-y);
+                                            }
+                                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                                root.thumb-press(thumb.index, false, false, true);
+                                                page-menu.show();
+                                            }
+                                        }
+                                    }
+                                    page-menu := PopupWindow {
+                                        x: min(thumb-touch.mouse-x, parent.width - 120px);
+                                        y: thumb-touch.mouse-y;
+                                        width: 200px;
+                                        Menu {
+                                            MenuEntry { text: "Rotate right"; clicked => { root.command("pages-rotate-cw"); } }
+                                            MenuEntry { text: "Rotate left"; clicked => { root.command("pages-rotate-ccw"); } }
+                                            MenuEntry { text: "Duplicate"; clicked => { root.command("pages-duplicate"); } }
+                                            MenuEntry { text: "Insert blank page after"; clicked => { root.command("pages-insert-blank"); } }
+                                            MenuEntry { text: "Insert pages from file\u{2026}"; clicked => { root.command("pages-insert-file"); } }
+                                            MenuEntry { text: "Replace from file\u{2026}"; clicked => { root.command("pages-replace"); } }
+                                            MenuEntry { text: "Move to\u{2026}"; clicked => { root.command("pages-move"); } }
+                                            MenuEntry { text: "Extract\u{2026}"; clicked => { root.command("pages-extract"); } }
+                                            MenuEntry { text: "Crop\u{2026}"; clicked => { root.command("pages-crop"); } }
+                                            MenuEntry { text: "Delete"; clicked => { root.command("pages-delete"); } }
                                         }
                                     }
                                 }
@@ -1987,7 +2072,7 @@ export component MainWindow inherits Window {
             Rectangle {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 3;
-                width: min(440px, parent.width - 40px);
+                width: min(root.dialog-kind == "form" ? 480px : 440px, parent.width - 40px);
                 height: dialog-layout.preferred-height;
                 background: Theme.bg-tertiary;
                 border-radius: Theme.radius-lg;
@@ -2052,6 +2137,44 @@ export component MainWindow inherits Window {
                                 CheckBox {
                                     text: "Printed with the page";
                                     checked <=> root.dialog-printed;
+                                }
+                            }
+                        }
+                        if root.dialog-kind == "form": VerticalLayout {
+                            spacing: 6px;
+                            for field[i] in root.form-fields: HorizontalLayout {
+                                spacing: 10px;
+                                if field.kind != 2: Text {
+                                    width: 130px;
+                                    text: field.label;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                if field.kind == 0 || field.kind == 1: LineEdit {
+                                    horizontal-stretch: 1;
+                                    text: field.text;
+                                    input-type: field.kind == 1 ? InputType.password : InputType.text;
+                                    accessible-label: field.label;
+                                    edited(t) => {
+                                        root.form-edited(i, t);
+                                    }
+                                }
+                                if field.kind == 2: CheckBox {
+                                    text: field.label;
+                                    checked: field.checked;
+                                    toggled => {
+                                        root.form-checked(i, self.checked);
+                                    }
+                                }
+                                if field.kind == 3: ComboBox {
+                                    horizontal-stretch: 1;
+                                    model: field.options;
+                                    current-index: field.index;
+                                    accessible-label: field.label;
+                                    selected => {
+                                        root.form-chosen(i, self.current-index);
+                                    }
                                 }
                             }
                         }

@@ -50,6 +50,21 @@ even after a rename. Summaries of the document or the page and "Explain the sele
 right-click menu of selected text) are one click away; tokens used today show under the question
 box. Nothing is sent until you ask.
 
+## Tools
+
+The Tools button holds what works on whole pages and files. Click a page thumbnail to go to it,
+Ctrl+click or Shift+click to pick several, drag them to a new place, and right-click for the page
+menu: rotate, duplicate, insert a blank page or another PDF's pages, replace, move, extract, crop
+and delete. The Tools menu adds splitting (every few pages, at page ranges or at top-level
+bookmarks), combining files, page labels, headers and footers, watermarks, Bates numbers, password
+protection (AES-256, with print, copy, change and comment permissions), a smaller copy of the file
+(images downsampled, fonts subset), the document's title and author, and Sanitize, which removes
+metadata, scripts, attached files, hidden text and, if asked, comments. Redaction marks areas
+(the Redact area tool), selected text, or every match of words or patterns (email addresses, phone,
+card and US Social Security numbers, or a regular expression); applying the marks removes the text,
+images and drawings under them, and the next save rewrites the file so nothing removed stays in it.
+Every page edit can be undone until you save.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

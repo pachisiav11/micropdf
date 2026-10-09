@@ -85,15 +85,6 @@ pub(crate) fn mark(page: &mut PdfPage, rects: &[Rect]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Marks an area of page `page` for redaction.
-pub(crate) fn mark_area(doc: &Document, page: usize, rect: Rect) -> Result<(), Error> {
-    let mut page = pdf(doc)?.load_pdf_page(page as i32)?;
-    let mut annot =
-        page.add_redact_annotation(mupdf::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1))?;
-    annot.update()?;
-    Ok(())
-}
-
 /// Applies every redaction mark; returns how many pages changed.
 pub(crate) fn apply(doc: &Document) -> Result<usize, Error> {
     let pdf = pdf(doc)?;
@@ -130,9 +121,16 @@ impl crate::Engine {
         })
     }
 
-    /// Marks an area of a page for redaction.
-    pub fn mark_redaction(&self, doc: crate::DocId, page: usize, rect: Rect) -> Result<(), Error> {
-        self.edit(doc, "Mark for redaction", move |d| mark_area(d, page, rect))
+    /// Marks `rects` on a page (page space) as one redaction: an area, or selected lines.
+    pub fn mark_redaction(
+        &self,
+        doc: crate::DocId,
+        page: usize,
+        rects: Vec<Rect>,
+    ) -> Result<(), Error> {
+        self.edit(doc, "Mark for redaction", move |d| {
+            mark(&mut pdf(d)?.load_pdf_page(page as i32)?, &rects)
+        })
     }
 
     /// Removes what lies under every redaction mark; returns how many pages changed.

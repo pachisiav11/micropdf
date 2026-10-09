@@ -154,6 +154,9 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
         "import-comments" => return Some("import-comments"),
         "sign-image" => return Some("sign-image"),
         _ => {
+            if crate::tools::command(app, id) {
+                return None;
+            }
             if let Some(name) = id.strip_prefix("stamp-") {
                 app.start_stamp(name);
             }
