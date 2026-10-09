@@ -1,0 +1,66 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Metadata 9 0 R /OpenAction << /S /JavaScript /JS (app.alert\('hi'\)) >> /Names << /EmbeddedFiles << /Names [(secret.txt) 10 0 R] >> >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 99999999999999999999 612 792] /Contents 5 0 R /Resources << /Font << /F1 7 0 R >> >> >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 7 0 R >> >> >>
+endobj
+5 0 obj
+<< /Length 2072 700 Td (Contact jane.doe@example.com or call \(555\) 123-4567.) Tj ET
+BT /F1 14 Tf 72 670 Td (Project SECRET-PLAN starts on Monday.) Tj ET
+BT 3 Tr /F1 14 Tf 72 640 Td (HIDDEN-OCR-LAYER) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Length 55 >>
+stream
+BT /F1 14 Tf 72 700 Td (Page two keeps its text.) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endo‚j
+8 0 obj
+<< /Title (Redaction test) /Author (Jane Doe) >>
+endobj
+9 0 obj
+<< /Length 58 /Type /Metadata /Subtype /XML >>
+stream
+<x:xmpmeta xmlns:x='adobe:ns:meta/'>xmp-secret</x:xmpmeta>
+endstream
+endobj
+10 0 obj
+<< /Type /Filespec /F (secret.txt) /UF (secret.txt) /EF << /F 11 0 R >> >>
+endobj
+11 0 obj
+<< /Length 17 /Type /EmbeddedFile /Params << /Size 17 >> >>
+stream
+attachment-secret
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000200 00000 n 
+0000000263 00000 n 
+0000000389 00000 n 
+0000000515 00000 n 
+0000000773 00000 n 
+0000000878 00000 n 
+0000000948 00000 n 
+0000001012 00000 n 
+0000001150 00000 n 
+0000001241 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 8 0 R >>
+startxref
+1352
+%%EOF

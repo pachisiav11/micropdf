@@ -35,6 +35,8 @@ Changes:
 - `PdfPage::remove_images_at` — runs `pdf_filter_page_contents` with a sanitize filter whose
   culler drops the images drawn over one box, through the same shim; micropdf moves, resizes
   and deletes images with it.
+- `Document::outlines` — an outline item with no title (MuPDF leaves the pointer NULL) reads as
+  an empty title instead of dereferencing NULL; found by micropdf's fuzz test.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 

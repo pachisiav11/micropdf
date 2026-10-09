@@ -93,6 +93,12 @@ impl Drop for RenderPool {
 
 /// Renders a whole page at `scale` (1.0 = 72 dpi) on the calling thread.
 pub fn render(list: &DisplayList, scale: f32) -> Result<PageImage, Error> {
+    // A page box can claim any size, and MuPDF then works on a pixmap of it for minutes.
+    let b = list.bounds();
+    let (w, h) = ((b.x1 - b.x0) * scale, (b.y1 - b.y0) * scale);
+    if !(w.max(h) <= 65_536.0 && w * h <= 268_435_456.0) {
+        return Err(Error::Invalid("the page is too large to draw whole"));
+    }
     let pixmap = list.to_pixmap(
         &Matrix::new_scale(scale, scale),
         &Colorspace::device_rgb(),

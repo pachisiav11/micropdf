@@ -35,6 +35,12 @@ The first build compiles MuPDF from source and takes several minutes. `mupdf-sys
 Visual Studio 2019/2022 toolsets; with newer Build Tools set the toolset yourself, e.g.
 `MUPDF_MSVC_PLATFORM_TOOLSET=v145` for Visual Studio 2026.
 
+`crates/mp-engine/tests/fuzz.rs` damages the fixtures at random (flipped and cut bytes, repeated
+and spliced pieces, hostile numbers) and puts each through open, render, text, comments, fields,
+signatures and save; `MICROPDF_FUZZ=20000` tries more inputs than the default 200, and
+`MICROPDF_FUZZ_SEED` another sequence. The input being tried is kept in `%TEMP%\micropdf-fuzz`,
+so one that crashes the process stays there to become a fixture.
+
 Design tokens live in `design/tokens.json`; after editing, run `node scripts/gen-tokens.mjs` to
 regenerate `app/ui/tokens.slint` and `extension/src/tokens.css` (CI fails if they are stale).
 

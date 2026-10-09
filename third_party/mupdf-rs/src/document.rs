@@ -235,7 +235,12 @@ impl Document {
             let mut outlines = Vec::new();
             let mut next = outline;
             while !next.is_null() {
-                let title = CStr::from_ptr((*next).title).to_string_lossy().into_owned();
+                // MuPDF leaves the title NULL for an item without one.
+                let title = if (*next).title.is_null() {
+                    String::new()
+                } else {
+                    CStr::from_ptr((*next).title).to_string_lossy().into_owned()
+                };
 
                 let (uri, dest) = if !(*next).uri.is_null() {
                     let uri = CStr::from_ptr((*next).uri);

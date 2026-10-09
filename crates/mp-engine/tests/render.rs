@@ -114,3 +114,34 @@ fn opens_multi_page_fixture() {
         3
     );
 }
+
+/// Fuzzing found a page 10^20 points wide, which took minutes and gigabytes to draw whole.
+#[test]
+fn a_huge_page_box_is_read_quickly() {
+    let data = std::fs::read(fixture("cjk.pdf")).unwrap();
+    let text = String::from_utf8_lossy(&data).replace(
+        "/MediaBox [0 0 300 360]",
+        "/MediaBox [99999999999999999999 0 300 360]",
+    );
+    let path = std::env::temp_dir().join("micropdf-huge-box.pdf");
+    std::fs::write(&path, text.as_bytes()).unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let engine = Engine::start();
+        let doc = engine.open(&path).unwrap().id;
+        let list = engine.display_list(doc, 0).unwrap();
+        assert!(mp_engine::render(&list, 0.5).is_err());
+        let tile = mp_engine::Tile {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 256,
+        };
+        mp_engine::render_tile(&list, 0.5, 0, tile).unwrap();
+        engine.words(doc).unwrap();
+        done.send(()).unwrap();
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the page took too long");
+}
