@@ -2707,6 +2707,7 @@ dependencies = [
  "base64",
  "dwrote",
  "mupdf",
+ "regex",
  "roxmltree",
  "windows-sys 0.61.2",
 ]

@@ -6,7 +6,7 @@ use mupdf::color::AnnotationColor;
 use mupdf::pdf::{
     AnnotationBorderEffect, AnnotationBorderStyle, AnnotationFlags, AnnotationQuadPoints,
     EmbeddedFileOptions, LineEndingStyle, PdfAnnotation, PdfAnnotationType, PdfDocument, PdfObject,
-    PdfPage, PdfWriteOptions,
+    PdfPage,
 };
 use mupdf::{Document, Point, Quad};
 
@@ -31,6 +31,8 @@ pub enum AnnotKind {
     Callout,
     /// A file attached to the page (a FileAttachment annotation).
     File,
+    /// Marked for redaction (a Redact annotation), until redactions are applied.
+    Redact,
     Other,
 }
 
@@ -51,6 +53,7 @@ impl AnnotKind {
             AnnotKind::Stamp => "Stamp",
             AnnotKind::Callout => "Callout",
             AnnotKind::File => "Attachment",
+            AnnotKind::Redact => "Redaction",
             AnnotKind::Other => "Comment",
         }
     }
@@ -256,6 +259,7 @@ fn kind_of(t: PdfAnnotationType) -> Option<AnnotKind> {
         PdfAnnotationType::Line => AnnotKind::Line,
         PdfAnnotationType::Stamp => AnnotKind::Stamp,
         PdfAnnotationType::FileAttachment => AnnotKind::File,
+        PdfAnnotationType::Redact => AnnotKind::Redact,
         // Links, form widgets and popups have their own panels or none.
         PdfAnnotationType::Link | PdfAnnotationType::Widget | PdfAnnotationType::Popup => {
             return None;
@@ -1220,29 +1224,5 @@ pub(crate) fn replace(original: &Path, replacement: &Path) -> Result<(), Error> 
             ),
         )));
     }
-    Ok(())
-}
-
-/// Writes the document to `target`. Incremental saves append the changes to a copy of
-/// `original`, which keeps existing signatures valid; full saves rewrite and compact it.
-pub fn save(
-    doc: &Document,
-    original: &Path,
-    target: &Path,
-    incremental: bool,
-) -> Result<(), Error> {
-    let pdf = PdfDocument::try_from(doc.clone()).map_err(|_| Error::NotPdf)?;
-    let target_str = target.to_str().ok_or(Error::Invalid("path is not UTF-8"))?;
-    let mut options = PdfWriteOptions::default();
-    if incremental && pdf.can_be_saved_incrementally() {
-        // MuPDF appends to the file at `target`, so it must start as the original bytes.
-        if target != original {
-            std::fs::copy(original, target)?;
-        }
-        options.set_incremental(true);
-    } else {
-        options.set_garbage_level(1).set_compress(true);
-    }
-    pdf.save_with_options(target_str, options)?;
     Ok(())
 }

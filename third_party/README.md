@@ -30,6 +30,8 @@ Changes:
   `add_embedded_file` too.
 - `Text::show_glyph` and `PdfDocument::subset_fonts` — wrap `fz_show_glyph` and
   `pdf_subset_fonts` through the same shim; micropdf writes comment summaries with them.
+- `PdfWriteOptions::set_object_streams` and `PdfDocument::rewrite_images` — set
+  `do_use_objstms` and wrap `pdf_rewrite_images` through the same shim, for Optimize.
 
 Upstream these changes before bumping the version, then drop the vendored copy.
 

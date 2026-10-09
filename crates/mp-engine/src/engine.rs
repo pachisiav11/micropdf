@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use crate::attachments;
 use crate::forms::{self, Field, FieldEdit, Xfa};
 use crate::marks::{self, Mark};
 use crate::render::Preview;
+use crate::secure::{self, Security};
 use crate::summary;
 use crate::xfdf;
 use crate::{Attachment, Error, Layer, Link, LinkTarget, OutlineItem, Rect};
@@ -39,6 +41,10 @@ pub struct PageSize {
 }
 
 type Reply<T> = Sender<Result<T, Error>>;
+
+/// Work for the engine thread on one document, given the password that opened it; see
+/// [`Engine::edit`].
+type Job = Box<dyn FnOnce(&Document, Option<&str>) -> Result<Box<dyn Any + Send>, Error> + Send>;
 
 enum Command {
     Open {
@@ -257,7 +263,17 @@ enum Command {
         doc: DocId,
         target: PathBuf,
         incremental: bool,
+        security: Security,
         reply: Reply<bool>,
+    },
+    Edit {
+        doc: DocId,
+        /// The undo step's name; empty for work that changes nothing.
+        name: &'static str,
+        /// The next save must rewrite the file, so that removed content leaves it.
+        rewrite: bool,
+        job: Job,
+        reply: Reply<Box<dyn Any + Send>>,
     },
     History {
         doc: DocId,
@@ -643,13 +659,75 @@ impl Engine {
     /// rewritten beside it and swapped in, and the document opens again: it returns true, the
     /// edit history is gone and comment ids may differ.
     pub fn save(&self, doc: DocId, target: &Path, incremental: bool) -> Result<bool, Error> {
+        self.save_secured(doc, target, incremental, Security::Keep)
+    }
+
+    /// [`Engine::save`] that also adds, keeps or removes the file's password and permissions.
+    /// Any change to them rewrites the whole file.
+    pub fn save_secured(
+        &self,
+        doc: DocId,
+        target: &Path,
+        incremental: bool,
+        security: Security,
+    ) -> Result<bool, Error> {
         let target = target.to_path_buf();
         self.call(|reply| Command::Save {
             doc,
             target,
-            incremental,
+            incremental: incremental && matches!(security, Security::Keep),
+            security,
             reply,
         })
+    }
+
+    /// Runs `f` on the engine thread as one undoable step called `name`, and forgets the
+    /// document's display lists: any page may have changed, or moved.
+    pub(crate) fn edit<T: Send + 'static>(
+        &self,
+        doc: DocId,
+        name: &'static str,
+        f: impl FnOnce(&Document) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        self.job(doc, name, false, move |d, _| f(d))
+    }
+
+    /// [`Engine::edit`] for edits that remove content: the next save rewrites the file.
+    pub(crate) fn remove<T: Send + 'static>(
+        &self,
+        doc: DocId,
+        name: &'static str,
+        f: impl FnOnce(&Document) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        self.job(doc, name, true, move |d, _| f(d))
+    }
+
+    /// Runs `f` on the engine thread, for work that leaves the document as it is.
+    pub(crate) fn read<T: Send + 'static>(
+        &self,
+        doc: DocId,
+        f: impl FnOnce(&Document, Option<&str>) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        self.job(doc, "", false, f)
+    }
+
+    fn job<T: Send + 'static>(
+        &self,
+        doc: DocId,
+        name: &'static str,
+        rewrite: bool,
+        f: impl FnOnce(&Document, Option<&str>) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let job: Job =
+            Box::new(move |d, password| f(d, password).map(|v| Box::new(v) as Box<dyn Any + Send>));
+        self.call(|reply| Command::Edit {
+            doc,
+            name,
+            rewrite,
+            job,
+            reply,
+        })
+        .map(|v| *v.downcast::<T>().expect("a job replies with its own type"))
     }
 
     /// What Undo and Redo would do now.
@@ -708,6 +786,8 @@ fn run(rx: mpsc::Receiver<Command>) {
     let mut paths: HashMap<DocId, PathBuf> = HashMap::new();
     // Kept to open an encrypted document again after a save rewrites it.
     let mut passwords: HashMap<DocId, String> = HashMap::new();
+    // Documents whose next save must rewrite the file; see Command::Edit.
+    let mut rewrite_next = std::collections::HashSet::new();
     let mut lists = ListCache::default();
     let mut next_id = 0;
 
@@ -1078,26 +1158,37 @@ fn run(rx: mpsc::Receiver<Command>) {
                 doc,
                 target,
                 incremental,
+                security,
                 reply,
             } => {
                 let result = (|| {
                     let original = paths.get(&doc).ok_or(Error::UnknownDocument)?.clone();
                     let d = docs.get(&doc).ok_or(Error::UnknownDocument)?;
-                    if !annots::same_file(&original, &target)
-                        || (incremental && annots::can_append(d))
-                    {
-                        annots::save(d, &original, &target, incremental)?;
+                    let same = annots::same_file(&original, &target);
+                    let incremental = incremental && !rewrite_next.contains(&doc);
+                    if !same || (incremental && annots::can_append(d)) {
+                        secure::save(d, &original, &target, incremental, &security)?;
                         return Ok(false);
                     }
                     // MuPDF reads the open file as it goes, so a full rewrite cannot go over
                     // it. Write a sibling, close the document, swap the files, open again.
                     let temp = annots::sibling(&original);
-                    if let Err(e) = annots::save(d, &original, &temp, false) {
+                    if let Err(e) = secure::save(d, &original, &temp, false, &security) {
                         let _ = std::fs::remove_file(&temp);
                         return Err(e);
                     }
                     docs.remove(&doc);
                     lists.remove_doc(doc);
+                    match &security {
+                        Security::Keep => {}
+                        Security::Remove => {
+                            passwords.remove(&doc);
+                        }
+                        Security::Protect(p) => {
+                            passwords.insert(doc, p.password().to_owned());
+                        }
+                    }
+                    rewrite_next.remove(&doc);
                     let replaced = annots::replace(&original, &temp);
                     match reopen(&original, passwords.get(&doc)) {
                         Ok(d) => {
@@ -1112,6 +1203,29 @@ fn run(rx: mpsc::Receiver<Command>) {
                     replaced?;
                     Ok(true)
                 })();
+                let _ = reply.send(result);
+            }
+            Command::Edit {
+                doc,
+                name,
+                rewrite,
+                job,
+                reply,
+            } => {
+                let password = passwords.get(&doc).map(String::as_str);
+                let result = with_doc(&docs, doc, |d| {
+                    if name.is_empty() {
+                        job(d, password)
+                    } else {
+                        annots::operation(d, name, || job(d, password))
+                    }
+                });
+                if !name.is_empty() {
+                    lists.remove_doc(doc);
+                }
+                if rewrite && result.is_ok() {
+                    rewrite_next.insert(doc);
+                }
                 let _ = reply.send(result);
             }
             Command::History { doc, reply } => {
@@ -1130,6 +1244,7 @@ fn run(rx: mpsc::Receiver<Command>) {
                 let _ = reply.send(result);
             }
             Command::Close { doc } => {
+                rewrite_next.remove(&doc);
                 paths.remove(&doc);
                 passwords.remove(&doc);
                 docs.remove(&doc);

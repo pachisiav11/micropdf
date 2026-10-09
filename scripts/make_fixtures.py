@@ -12,6 +12,9 @@ calc.pdf           AcroForm with JavaScript: total = a + b (calculate, two decim
                    rejects values over 100 (validate).
 xfa-static.pdf     AcroForm text field plus an XFA packet (a static XFA form).
 xfa-dynamic.pdf    dynamic XFA: NeedsRendering, no AcroForm fields, a placeholder page.
+redact.pdf         2 pages of uncompressed text with an email address, a phone number, a secret
+                   word and invisible text; document information, an XMP packet, an opening
+                   JavaScript action and an attached file, for redaction and Sanitize.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
@@ -20,7 +23,7 @@ from pathlib import Path
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
-def serialize(objects: list[bytes]) -> bytes:
+def serialize(objects: list[bytes], trailer: bytes = b"") -> bytes:
     """objects[0] is object 1 and must be the catalog."""
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
@@ -30,7 +33,7 @@ def serialize(objects: list[bytes]) -> bytes:
     xref = len(out)
     out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
     out += b"".join(b"%010d 00000 n \n" % off for off in offsets)
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    out += b"trailer\n<< /Size %d /Root 1 0 R %s>>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, trailer, xref)
     return bytes(out)
 
 
@@ -227,6 +230,29 @@ def xfa_dynamic() -> bytes:
     return serialize(objs)
 
 
+def redact() -> bytes:
+    # 1 catalog, 2 pages, 3-4 pages, 5-6 contents, 7 font, 8 info, 9 XMP, 10 filespec, 11 file
+    page1 = (b"BT /F1 14 Tf 72 700 Td (Contact jane.doe@example.com or call \\(555\\) 123-4567.) Tj ET\n"
+             b"BT /F1 14 Tf 72 670 Td (Project SECRET-PLAN starts on Monday.) Tj ET\n"
+             b"BT 3 Tr /F1 14 Tf 72 640 Td (HIDDEN-OCR-LAYER) Tj ET")
+    secret = b"attachment-secret"
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R /Metadata 9 0 R /OpenAction << /S /JavaScript /JS (app.alert\\('hi'\\)) >> "
+        b"/Names << /EmbeddedFiles << /Names [(secret.txt) 10 0 R] >> >> >>",
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 7 0 R >> >> >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 7 0 R >> >> >>",
+        stream(page1),
+        stream(b"BT /F1 14 Tf 72 700 Td (Page two keeps its text.) Tj ET"),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Title (Redaction test) /Author (Jane Doe) >>",
+        stream(b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>xmp-secret</x:xmpmeta>", b"/Type /Metadata /Subtype /XML "),
+        b"<< /Type /Filespec /F (secret.txt) /UF (secret.txt) /EF << /F 11 0 R >> >>",
+        stream(secret, b"/Type /EmbeddedFile /Params << /Size %d >> " % len(secret)),
+    ]
+    return serialize(objs, b"/Info 8 0 R ")
+
+
 def main() -> None:
     (FIXTURES / "outline-links.pdf").write_bytes(outline_links())
     (FIXTURES / "form.pdf").write_bytes(form())
@@ -239,8 +265,9 @@ def main() -> None:
     (FIXTURES / "calc.pdf").write_bytes(calc())
     (FIXTURES / "xfa-static.pdf").write_bytes(xfa_static())
     (FIXTURES / "xfa-dynamic.pdf").write_bytes(xfa_dynamic())
+    (FIXTURES / "redact.pdf").write_bytes(redact())
     print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf, "
-          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf")
+          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf")
 
 
 if __name__ == "__main__":

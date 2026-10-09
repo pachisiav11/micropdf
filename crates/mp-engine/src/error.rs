@@ -10,6 +10,8 @@ pub enum Error {
     NotPdf,
     /// The request itself is malformed.
     Invalid(&'static str),
+    /// The request cannot be done, for the reason given.
+    Message(String),
     Io(std::io::Error),
     /// The engine or render pool thread is gone (it panicked or was shut down).
     Stopped,
@@ -23,6 +25,7 @@ impl fmt::Display for Error {
             Error::NotFound => f.write_str("not found in the document"),
             Error::NotPdf => f.write_str("this needs a PDF document"),
             Error::Invalid(why) => f.write_str(why),
+            Error::Message(why) => f.write_str(why),
             Error::Io(e) => write!(f, "{e}"),
             Error::Stopped => f.write_str("PDF engine has stopped"),
         }

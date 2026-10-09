@@ -15,5 +15,7 @@ dwrote = { version = "0.11.5", default-features = false }
 mupdf.workspace = true
 # Reads XFDF form data (src/forms.rs); already in the tree through Slint's SVG support.
 roxmltree = "0.21"
+# Patterns for Search and redact (src/redact.rs); already in the tree.
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
 # ReplaceFileW for saving over the open file (src/annots.rs).
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }

@@ -3,6 +3,7 @@
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M5 — organize, protect, redact, optimize (v0.5)
+- 2026-10-09 06:28: M5.2 — app UI for M5: page thumbnails select / drag / menu, tool forms (pages, stamps, protect, optimize, properties, sanitize, redaction)
 - 2026-10-07 00:18: M6 — OCR, digital signatures, compare, measure (v0.6)
 - 2026-10-07 00:18: M7 — edit content, prepare form (v0.7)
 - 2026-10-07 00:18: M8 — conversion + LibreOffice add-on (v0.8)

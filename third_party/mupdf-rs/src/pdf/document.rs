@@ -140,6 +140,12 @@ impl PdfWriteOptions {
         self
     }
 
+    /// Packs objects into compressed object streams (PDF 1.5).
+    pub fn set_object_streams(&mut self, value: bool) -> &mut Self {
+        self.inner.do_use_objstms = if value { 1 } else { 0 };
+        self
+    }
+
     pub fn linear(self) -> bool {
         self.inner.do_linear != 0
     }
@@ -1844,6 +1850,39 @@ impl PdfDocument {
         journal_call(|err| unsafe { journal::mp_pdf_subset_fonts(context(), self.inner, err) })
     }
 
+    /// Downsamples colour and grey images finer than 1.5 x `dpi` to `dpi`, and recompresses
+    /// JPEG images at `quality` (1-100), keeping each only when it gets smaller
+    /// (`pdf_rewrite_images`). Black-and-white images are left alone.
+    pub fn rewrite_images(&mut self, dpi: i32, quality: u8) -> Result<(), Error> {
+        let quality = CString::new(quality.clamp(1, 100).to_string())?;
+        // SAFETY: an all-zero pdf_image_rewriter_options leaves every kind of image alone.
+        let mut o: pdf_image_rewriter_options = unsafe { std::mem::zeroed() };
+        let threshold = dpi + dpi / 2;
+        o.color_lossless_image_subsample_method = FZ_SUBSAMPLE_BICUBIC as c_int;
+        o.color_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC as c_int;
+        o.gray_lossless_image_subsample_method = FZ_SUBSAMPLE_BICUBIC as c_int;
+        o.gray_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC as c_int;
+        o.color_lossless_image_subsample_threshold = threshold;
+        o.color_lossy_image_subsample_threshold = threshold;
+        o.gray_lossless_image_subsample_threshold = threshold;
+        o.gray_lossy_image_subsample_threshold = threshold;
+        o.color_lossless_image_subsample_to = dpi;
+        o.color_lossy_image_subsample_to = dpi;
+        o.gray_lossless_image_subsample_to = dpi;
+        o.gray_lossy_image_subsample_to = dpi;
+        o.color_lossless_image_recompress_method = FZ_RECOMPRESS_LOSSLESS as c_int;
+        o.gray_lossless_image_recompress_method = FZ_RECOMPRESS_LOSSLESS as c_int;
+        o.color_lossy_image_recompress_method = FZ_RECOMPRESS_JPEG as c_int;
+        o.gray_lossy_image_recompress_method = FZ_RECOMPRESS_JPEG as c_int;
+        o.color_lossy_image_recompress_quality = quality.as_ptr() as *mut c_char;
+        o.gray_lossy_image_recompress_quality = quality.as_ptr() as *mut c_char;
+        o.recompress_when = FZ_RECOMPRESS_WHEN_SMALLER as c_int;
+        // SAFETY: `o` and the quality string it points at outlive the call.
+        journal_call(|err| unsafe {
+            journal::mp_pdf_rewrite_images(context(), self.inner, &mut o, err)
+        })
+    }
+
     pub fn set_outlines(&mut self, toc: &[Outline]) -> Result<(), Error> {
         self.delete_outlines()?;
 
@@ -2455,6 +2494,12 @@ mod journal {
         pub fn mp_pdf_subset_fonts(
             ctx: *mut fz_context,
             doc: *mut pdf_document,
+            err: *mut *const c_char,
+        ) -> c_int;
+        pub fn mp_pdf_rewrite_images(
+            ctx: *mut fz_context,
+            doc: *mut pdf_document,
+            opts: *mut mupdf_sys::pdf_image_rewriter_options,
             err: *mut *const c_char,
         ) -> c_int;
     }

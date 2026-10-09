@@ -17,6 +17,7 @@ typedef struct pdf_annot pdf_annot;
 typedef struct fz_display_list fz_display_list;
 typedef struct fz_text fz_text;
 typedef struct fz_font fz_font;
+typedef struct pdf_image_rewriter_options pdf_image_rewriter_options;
 typedef struct { float a, b, c, d, e, f; } fz_matrix;
 
 extern const fz_matrix fz_identity;
@@ -37,6 +38,7 @@ void pdf_set_annot_appearance_from_display_list(fz_context *ctx, pdf_annot *anno
 /* The last two parameters are the enums fz_bidi_direction and fz_text_language. */
 void fz_show_glyph(fz_context *ctx, fz_text *text, fz_font *font, fz_matrix trm, int glyph, int unicode, int wmode, int bidi_level, int markup_dir, int language);
 void pdf_subset_fonts(fz_context *ctx, pdf_document *doc, int pages_len, const int *pages);
+void pdf_rewrite_images(fz_context *ctx, pdf_document *doc, pdf_image_rewriter_options *opts);
 
 /* The expansion of MuPDF's fz_try / fz_catch macros. */
 #define TRY(ctx) if (!setjmp(*fz_push_try(ctx))) if (fz_do_try(ctx)) do
@@ -115,6 +117,13 @@ int mp_show_glyph(fz_context *ctx, fz_text *text, fz_font *font, fz_matrix trm, 
 int mp_pdf_subset_fonts(fz_context *ctx, pdf_document *doc, const char **err)
 {
 	TRY(ctx) { pdf_subset_fonts(ctx, doc, 0, NULL); }
+	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
+	return 0;
+}
+
+int mp_pdf_rewrite_images(fz_context *ctx, pdf_document *doc, pdf_image_rewriter_options *opts, const char **err)
+{
+	TRY(ctx) { pdf_rewrite_images(ctx, doc, opts); }
 	CATCH(ctx) { *err = fz_caught_message(ctx); return -1; }
 	return 0;
 }
