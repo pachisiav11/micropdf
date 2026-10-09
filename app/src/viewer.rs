@@ -3401,6 +3401,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.changed(page, false);
     }
 
+    /// Shows document `doc` after an edit made off the window's thread.
+    pub(crate) fn edited_doc(&mut self, doc: DocId) {
+        let Some(index) = self.tabs.iter().position(|t| t.info.id == doc) else {
+            return;
+        };
+        if self.active != Some(index) {
+            self.select(index);
+        }
+        self.edited(None);
+    }
+
     /// Redraws after an edit, or after undo or redo when `undo` is set; those can return to
     /// the saved state.
     fn changed(&mut self, page: Option<usize>, undo: bool) {

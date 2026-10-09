@@ -19,3 +19,11 @@ roxmltree = "0.21"
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
 # ReplaceFileW for saving over the open file (src/annots.rs).
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+# Windows' own OCR engine (src/ocr.rs); already in the tree.
+windows = { version = "0.62.2", features = [
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+] }

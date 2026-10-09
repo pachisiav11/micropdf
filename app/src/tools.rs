@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mp_engine::{
-    Bates, Find, INFO_FIELDS, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection, Sanitize,
-    Security, SignField, parse_ranges,
+    Bates, Find, INFO_FIELDS, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection,
+    Recognize, Sanitize, Security, SignField, ocr_languages, parse_ranges,
 };
 use slint::{ModelRc, SharedString, VecModel};
 use windows_sys::Win32::Foundation::SYSTEMTIME;
@@ -38,6 +38,7 @@ pub enum Form {
     Redact,
     ApplyRedactions,
     Sign(SignField),
+    Ocr,
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -77,6 +78,12 @@ pub fn command(app: &mut App, id: &str) -> bool {
         "sanitize" => Form::Sanitize,
         "redact-search" => Form::Redact,
         "redact-apply" => Form::ApplyRedactions,
+        "ocr" if OCR_RUNNING.load(Ordering::SeqCst) => {
+            OCR_STOP.store(true, Ordering::SeqCst);
+            app.status("Stopping text recognition\u{2026}".into());
+            return true;
+        }
+        "ocr" => Form::Ocr,
         _ => {
             let done = match id {
                 "pages-rotate-cw" => turn(app, 90),
@@ -402,6 +409,32 @@ fn open(app: &mut App, form: Form) {
             )
         }
         Form::Sign(field) => return crate::signing::open(app, field),
+        Form::Ocr => {
+            let languages = ocr_languages();
+            if languages.is_empty() {
+                app.message(
+                    "No text recognition language",
+                    "Windows recognizes text in the languages whose \"Optical character \
+                     recognition\" feature is installed. Add one in Settings, under Time & \
+                     language > Language & region, then try again."
+                        .into(),
+                );
+                return;
+            }
+            let names: Vec<&str> = languages.iter().map(|l| l.name.as_str()).collect();
+            (
+                "Recognize text",
+                "Scanned pages get an invisible layer of the text Windows reads in them, so you \
+                 can search, select and copy it. You can undo it until you save.",
+                "Recognize",
+                vec![
+                    choice("Language", &names, 0),
+                    text("Pages", &all),
+                    check("Skip pages that already have text", true),
+                    check("Straighten pages scanned askew", false),
+                ],
+            )
+        }
     };
     app.show_form(form, title, note, ok, fields);
 }
@@ -669,6 +702,17 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             ));
         }
         Form::Sign(field) => crate::signing::run(app, field, f)?,
+        Form::Ocr => {
+            let how = Recognize {
+                language: ocr_languages()
+                    .get(f[0].index.max(0) as usize)
+                    .map(|l| l.tag.clone())
+                    .unwrap_or_default(),
+                skip_text: f[2].checked,
+                deskew: f[3].checked,
+            };
+            recognize(doc, pages(&f[1])?, how, engine);
+        }
     }
     Ok(())
 }
@@ -737,6 +781,51 @@ fn today() -> String {
     let mut t = SYSTEMTIME::default();
     unsafe { GetLocalTime(&mut t) };
     format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
+}
+
+static OCR_RUNNING: AtomicBool = AtomicBool::new(false);
+static OCR_STOP: AtomicBool = AtomicBool::new(false);
+
+/// Recognizes text on a thread, showing progress in the status bar; choosing the command
+/// again stops it.
+fn recognize(
+    doc: mp_engine::DocId,
+    pages: Vec<usize>,
+    how: Recognize,
+    engine: std::sync::Arc<mp_engine::Engine>,
+) {
+    OCR_RUNNING.store(true, Ordering::SeqCst);
+    OCR_STOP.store(false, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let result = engine.recognize_text(doc, &pages, &how, |done, total| {
+            if done < total {
+                let text = format!(
+                    "Recognizing text: page {} of {total}. Choose Recognize text again to stop.",
+                    done + 1
+                );
+                let _ = slint::invoke_from_event_loop(move || {
+                    viewer::with(|app| app.status(text));
+                });
+            }
+            !OCR_STOP.load(Ordering::SeqCst)
+        });
+        OCR_RUNNING.store(false, Ordering::SeqCst);
+        let stopped = OCR_STOP.load(Ordering::SeqCst);
+        let _ = slint::invoke_from_event_loop(move || {
+            viewer::with(|app| match result {
+                Ok(_) if stopped => app.status("Stopped text recognition".into()),
+                Ok(0) => app.status("No text was found, or every page has text already".into()),
+                Ok(n) => {
+                    app.edited_doc(doc);
+                    app.status(format!(
+                        "Recognized text on {n} page{}. Save to keep it.",
+                        if n == 1 { "" } else { "s" }
+                    ));
+                }
+                Err(e) => app.message("Could not recognize the text", e.to_string()),
+            });
+        });
+    });
 }
 
 /// One system file dialog at a time.

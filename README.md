@@ -65,6 +65,17 @@ card and US Social Security numbers, or a regular expression); applying the mark
 images and drawings under them, and the next save rewrites the file so nothing removed stays in it.
 Every page edit can be undone until you save.
 
+## Text recognition
+
+Tools → Recognize text (OCR) reads scanned pages with the OCR engine built into Windows, in any
+language whose "Optical character recognition" feature is installed (Settings → Time & language →
+Language & region). Each page is rendered at 300 dpi and recognized on a background thread; the
+words go back over the page as invisible text in a glyphless font with a Unicode map, sized and
+stretched to each word's box, so search, selection and copying work as on a born-digital page.
+Pages that already have text, or a text layer from any OCR tool, are skipped unless you say
+otherwise. Straighten turns pages scanned askew level first, by the angle at which their rows of
+dark pixels line up best. The layer is one undoable step until you save.
+
 ## Digital signatures
 
 Sign → Sign with a certificate, then drag a box on the page or click an empty signature field.

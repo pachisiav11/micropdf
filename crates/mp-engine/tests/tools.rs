@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use mp_engine::{
-    Bates, DocId, Engine, Find, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection, Rect,
-    Sanitize, Security, SignField, SignWith, Signing, Trust,
+    Bates, DocId, Engine, Find, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection,
+    Recognize, Rect, Sanitize, Security, SignField, SignWith, Signing, Trust,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -547,4 +547,160 @@ fn signatures_sign_count_later_changes_and_certify() {
     let certified = signed_copy(&engine, &scratch.file("certified.pdf"), true);
     let s = engine.signatures(certified).unwrap();
     assert!(s[0].certifies && s[0].intact, "{s:?}");
+}
+
+/// Writes fixtures/scanned.pdf: hello.pdf's page as a 150 dpi picture with no text, as a
+/// scanner makes it, and on page 2 the same picture fed in 3 degrees askew.
+#[test]
+#[ignore]
+fn write_scanned_fixture() {
+    use mupdf::pdf::{PdfDocument, PdfWriteOptions};
+    use mupdf::{Colorspace, Document, Image, Matrix};
+    let hello = Document::open(fixture("hello.pdf").to_str().unwrap()).unwrap();
+    let scale = 150.0 / 72.0;
+    let pixmap = hello
+        .load_page(0)
+        .unwrap()
+        .to_pixmap(
+            &Matrix::new_scale(scale, scale),
+            &Colorspace::device_gray(),
+            false,
+            false,
+        )
+        .unwrap();
+    let mut pdf = PdfDocument::new();
+    let image = pdf
+        .add_image(&Image::from_pixmap(&pixmap).unwrap())
+        .unwrap();
+    let (sin, cos) = 3f32.to_radians().sin_cos();
+    let askew = format!(
+        "q {cos} {sin} {} {cos} {} {} cm ",
+        -sin,
+        150.0 - (150.0 * cos - 100.0 * sin),
+        100.0 - (150.0 * sin + 100.0 * cos)
+    );
+    for turn in ["", askew.as_str()] {
+        let mut page = pdf.new_page((300.0, 200.0)).unwrap();
+        let mut xobjects = pdf.new_dict().unwrap();
+        xobjects.dict_put("Scan", image.clone()).unwrap();
+        page.resources()
+            .unwrap()
+            .dict_put("XObject", xobjects)
+            .unwrap();
+        let ops = format!(
+            "{turn}q 300 0 0 200 0 0 cm /Scan Do Q\n{}",
+            if turn.is_empty() { "" } else { "Q\n" }
+        );
+        page.insert_contents(&mut pdf, ops.as_bytes(), true)
+            .unwrap();
+    }
+    let mut options = PdfWriteOptions::default();
+    options.set_compress(true).set_garbage_level(1);
+    pdf.save_with_options(fixture("scanned.pdf").to_str().unwrap(), options)
+        .unwrap();
+}
+
+/// The box around the letters of a document's first page.
+fn ink(engine: &Engine, doc: DocId) -> Rect {
+    let text = mp_engine::page_text(&engine.display_list(doc, 0).unwrap()).unwrap();
+    text.chars
+        .iter()
+        .filter(|c| !c.ch.is_whitespace())
+        .map(|c| c.rect)
+        .reduce(|a, b| Rect {
+            x0: a.x0.min(b.x0),
+            y0: a.y0.min(b.y0),
+            x1: a.x1.max(b.x1),
+            y1: a.y1.max(b.y1),
+        })
+        .unwrap()
+}
+
+#[test]
+fn ocr_makes_a_scanned_page_searchable() {
+    if mp_engine::ocr_languages().is_empty() {
+        eprintln!("skipped: Windows has no text recognition language installed");
+        return;
+    }
+    let engine = Engine::start();
+    let scratch = Scratch::new("ocr");
+    let path = scratch.file("scanned.pdf");
+    std::fs::copy(fixture("scanned.pdf"), &path).unwrap();
+    let doc = open(&engine, &path);
+    assert!(texts(&engine, doc)[0].trim().is_empty());
+
+    let how = Recognize {
+        skip_text: true,
+        ..Recognize::default()
+    };
+    let mut seen = Vec::new();
+    let pages = engine
+        .recognize_text(doc, &[0], &how, |done, total| {
+            seen.push((done, total));
+            true
+        })
+        .unwrap();
+    assert_eq!((pages, seen), (1, vec![(0, 1), (1, 1)]));
+    let text = texts(&engine, doc)[0].to_lowercase();
+    assert!(text.contains("hello micropdf"), "{text}");
+    // The words lie where the picture shows them: across, give or take a few points, and up
+    // and down within the font's boxes, which reach above the letters.
+    let hello = open(&engine, &fixture("hello.pdf"));
+    let (want, got) = (ink(&engine, hello), ink(&engine, doc));
+    assert!(
+        (want.x0 - got.x0).abs() < 5.0
+            && (want.x1 - got.x1).abs() < 5.0
+            && got.y0 > want.y0 - 3.0
+            && got.y1 < want.y1 + 3.0,
+        "{want:?} {got:?}"
+    );
+
+    // The page has text now, so it is skipped; undo takes the layer away.
+    assert_eq!(
+        engine.recognize_text(doc, &[0], &how, |_, _| true).unwrap(),
+        0
+    );
+    engine.save(doc, &path, true).unwrap();
+    engine.undo(doc).unwrap();
+    assert!(texts(&engine, doc)[0].trim().is_empty());
+    engine.close(doc);
+    let doc = open(&engine, &path);
+    assert!(
+        texts(&engine, doc)[0]
+            .to_lowercase()
+            .contains("hello micropdf")
+    );
+
+    // Page 2 is askew: straightening turns it level, so its ink is as tall as page 1's.
+    let (level, before) = (ink_height(&engine, doc, 0), ink_height(&engine, doc, 1));
+    assert!(before > level + 2.0, "{level} {before}");
+    let how = Recognize {
+        deskew: true,
+        ..Recognize::default()
+    };
+    assert_eq!(
+        engine.recognize_text(doc, &[1], &how, |_, _| true).unwrap(),
+        1
+    );
+    let after = ink_height(&engine, doc, 1);
+    assert!((after - level).abs() < 1.0, "{level} {after}");
+    let text = mp_engine::page_text(&engine.display_list(doc, 1).unwrap()).unwrap();
+    assert!(
+        text.text(0..text.chars.len())
+            .to_lowercase()
+            .contains("hello micropdf")
+    );
+}
+
+/// How tall, in points, the dark pixels of a page reach.
+fn ink_height(engine: &Engine, doc: DocId, page: usize) -> f32 {
+    let image = mp_engine::render(&engine.display_list(doc, page).unwrap(), 2.0).unwrap();
+    let rows: Vec<usize> = image
+        .rgb
+        .chunks(image.width as usize * 3)
+        .enumerate()
+        .filter(|(_, row)| row.iter().any(|&v| v < 160))
+        .map(|(y, _)| y)
+        .collect();
+    (rows.last().unwrap() - rows[0]) as f32 / 2.0
 }

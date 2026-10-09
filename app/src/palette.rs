@@ -105,6 +105,7 @@ pub const COMMANDS: &[Command] = &[
     c("tool-ink", "Tool: draw", ""),
     c("tool-redact", "Tool: redact an area", ""),
     c("tool-certify", "Tool: sign with a certificate", ""),
+    c("ocr", "Recognize text (OCR)", ""),
     c("pages-rotate", "Pages: rotate", ""),
     c(
         "pages-rotate-cw",

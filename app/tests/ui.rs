@@ -1430,6 +1430,42 @@ fn steps() -> Vec<Step> {
             active_title(w) == "xfa-dynamic.pdf"
         }),
         step(
+            "open a scanned page",
+            |_| {
+                std::fs::copy(fixture("scanned.pdf"), scratch("scanned.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("scanned.pdf")));
+            },
+            |w| {
+                active_title(w) == viewer::file_name(&scratch("scanned.pdf"))
+                    && text_of(0).is_empty()
+            },
+        ),
+        step(
+            "text recognition gives it text",
+            |w| {
+                w.invoke_command("ocr".into());
+                // Without an OCR language, a message says so instead; accepting closes it.
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                w.get_dialog_kind().is_empty()
+                    && (mp_engine::ocr_languages().is_empty()
+                        || (w.get_status_left() == "Recognized text on 2 pages. Save to keep it."
+                            && text_of(0).contains("Hello")
+                            && w.get_dirty()))
+            },
+        ),
+        step("undo takes it away", command("undo"), |w| {
+            !w.get_dirty() && text_of(0).is_empty()
+        }),
+        step("close the scanned page", command("close-tab"), |w| {
+            let closed = active_title(w) == "xfa-dynamic.pdf";
+            if closed {
+                let _ = std::fs::remove_file(scratch("scanned.pdf"));
+            }
+            closed
+        }),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {
