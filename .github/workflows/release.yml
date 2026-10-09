@@ -1,0 +1,36 @@
+name: Release
+
+# A pushed tag v<version> builds the release with scripts/release.ps1 and publishes it as a
+# GitHub release; installed copies find it there when they check for updates. See RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Update key
+        shell: pwsh
+        env:
+          UPDATE_KEY: ${{ secrets.UPDATE_KEY }}
+        run: |
+          if (-not $env:UPDATE_KEY) { throw "The UPDATE_KEY secret is not set." }
+          $key = Join-Path $env:RUNNER_TEMP "update-key.bin"
+          [IO.File]::WriteAllBytes($key, [Convert]::FromBase64String($env:UPDATE_KEY))
+          "MICROPDF_UPDATE_KEY=$key" >> $env:GITHUB_ENV
+      - run: powershell -File scripts\release.ps1
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem dist\*.zip, dist\latest.json, dist\latest.json.sig
+          gh release create $env:GITHUB_REF_NAME $files.FullName --title $env:GITHUB_REF_NAME --generate-notes

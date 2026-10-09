@@ -50,7 +50,8 @@ A release is a zip: unpack it anywhere and run `Install.cmd` (or `micropdf.exe -
 micropdf goes into `%LOCALAPPDATA%\Programs\micropdf`, for you alone and with no administrator
 prompt, and adds a Start menu entry, "Open with" for PDF files (Settings > Default apps makes it
 the default), the browser extension's bridge, and an entry in Settings > Apps > Installed apps
-that uninstalls it (`micropdf.exe --uninstall`). `scripts/release.ps1` builds the zip.
+that uninstalls it (`micropdf.exe --uninstall`). `scripts/release.ps1` builds the zip; see
+[RELEASING.md](RELEASING.md).
 
 micropdf looks for updates only when asked: "Check for updates" in the palette, or "Check for
 updates when micropdf starts" to have it look at each start. It reads the latest GitHub release's
@@ -233,7 +234,9 @@ npm run e2e     # builds, then browser tests with the extension loaded, headless
 
 Load `extension/dist` as an unpacked extension (`chrome://extensions`, Developer mode, Load
 unpacked) in Chrome, Edge or Brave. The manifest carries a fixed key, so the extension ID is always
-`phhaejfhblmccnkhnhjflbhckkanlnki`, the ID that the native host accepts.
+`phhaejfhblmccnkhnhjflbhckkanlnki`; the native host accepts it and the IDs the extension has in
+the Chrome Web Store and Edge Add-ons. [docs/privacy.md](docs/privacy.md) says what the app and
+the extension do with your data, and why the extension asks for each permission.
 
 To hand PDFs to the desktop app, register the native host once with
 `micropdf-bridge.exe --register` (the app's "Add micropdf to Windows PDF apps" does this too).

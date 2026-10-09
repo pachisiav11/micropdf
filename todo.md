@@ -1,5 +1,4 @@
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
-- 2026-10-09 12:42: M10.5 — Release docs: privacy page, store listings for Chrome Web Store and Edge Add-ons, code signing steps, release workflow
 - 2026-10-09 12:42: M10.6 — Performance pass: run the bench (after 3 am only) and fix regressions

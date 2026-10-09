@@ -32,8 +32,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWi
 
 /// The name the extension connects to.
 const HOST: &str = "com.micropdf.bridge";
-/// The extension's ID, fixed by the key in its manifest.
-const EXTENSION_ID: &str = "phhaejfhblmccnkhnhjflbhckkanlnki";
+/// The extension's IDs: the one the key in its manifest fixes, for builds loaded unpacked, then
+/// the ones the Chrome Web Store and Edge Add-ons give it, which take no key (RELEASING.md).
+const EXTENSION_IDS: [&str; 1] = ["phhaejfhblmccnkhnhjflbhckkanlnki"];
+
+fn origins() -> Vec<String> {
+    EXTENSION_IDS
+        .iter()
+        .map(|id| format!("chrome-extension://{id}/"))
+        .collect()
+}
 /// Chrome sends at most 64 MiB in one message.
 const MAX_MESSAGE: usize = 64 << 20;
 /// Where each browser looks for native messaging hosts, under HKEY_CURRENT_USER.
@@ -329,7 +337,7 @@ fn manifest(exe: &Path) -> Value {
         "description": "micropdf desktop bridge",
         "path": exe,
         "type": "stdio",
-        "allowed_origins": [format!("chrome-extension://{EXTENSION_ID}/")],
+        "allowed_origins": origins(),
     })
 }
 
@@ -411,7 +419,10 @@ fn main() -> ExitCode {
         "--unregister" => unregister(),
         // The browser passes the caller's origin first; only the micropdf extension may call.
         origin if origin.starts_with("chrome-extension://") => {
-            if origin.trim_end_matches('/') != format!("chrome-extension://{EXTENSION_ID}") {
+            if !origins()
+                .iter()
+                .any(|o| o.trim_end_matches('/') == origin.trim_end_matches('/'))
+            {
                 return ExitCode::FAILURE;
             }
             serve(
@@ -634,7 +645,7 @@ mod tests {
         assert_eq!(m["path"], r"C:\micropdf\micropdf-bridge.exe");
         assert_eq!(
             m["allowed_origins"],
-            json!([format!("chrome-extension://{EXTENSION_ID}/")])
+            json!(["chrome-extension://phhaejfhblmccnkhnhjflbhckkanlnki/"])
         );
     }
 }
