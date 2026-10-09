@@ -2,3 +2,4 @@
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
 - 2026-10-09 12:42: M10.6 — Performance pass: run the bench (after 3 am only) and fix regressions
+- 2026-10-09 16:12: M10.1 — heap corruption (0xc0000374) in the fuzz test's writing operations: MICROPDF_FUZZ=20000 MICROPDF_FUZZ_SEED=777 cargo test -p mp-engine --test fuzz damaged

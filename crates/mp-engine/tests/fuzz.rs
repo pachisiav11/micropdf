@@ -1,6 +1,7 @@
 //! Mutation fuzzing: the fixtures, with bytes flipped, cut, repeated, spliced from other files
 //! and numbers made hostile, go through open, render, text, links, comments, fields,
-//! signatures and save. Failing to open is fine; a panic or a crash is not.
+//! signatures, attachments, layers and save, then export, size reduction, sanitizing and
+//! flattening. Failing to open is fine; a panic or a crash is not.
 //!
 //! `MICROPDF_FUZZ=n` tries n inputs instead of 200, and `MICROPDF_FUZZ_SEED` picks another
 //! sequence. The input being tried is written to `micropdf-fuzz\input.pdf` in the temp
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use mp_engine::{Engine, Error, render};
+use mp_engine::{Engine, Error, Export, Optimize, Sanitize, render};
 
 struct Rng(u64);
 
@@ -63,7 +64,8 @@ fn mutate(rng: &mut Rng, data: &mut Vec<u8>, other: &[u8]) {
     }
 }
 
-/// Reads all there is to read of the file at `path`, then saves it to `out` and opens that.
+/// Reads all there is to read of the file at `path`, saves it to `out` and opens that, then
+/// exports it, makes it smaller, sanitizes and flattens it.
 fn exercise(engine: &Engine, path: &Path, out: &Path) -> Result<(), Error> {
     let info = engine.open(path)?;
     let doc = info.id;
@@ -81,9 +83,26 @@ fn exercise(engine: &Engine, path: &Path, out: &Path) -> Result<(), Error> {
             let _ = engine.fields(doc, page);
         }
         let _ = engine.words(doc);
+        let _ = engine.metadata(doc);
+        let _ = engine.attachments(doc);
+        let _ = engine.layers(doc);
         engine.save(doc, out, false)?;
         let saved = engine.open(out)?;
         engine.close(saved.id);
+        for format in [Export::Text, Export::Excel, Export::Markdown] {
+            let _ = engine.export(doc, format, out.with_extension(format.extension()));
+        }
+        let _ = engine.optimize(doc, out.with_extension("small.pdf"), Optimize::SMALLEST);
+        let all = Sanitize {
+            metadata: true,
+            scripts: true,
+            attachments: true,
+            hidden_text: true,
+            comments: true,
+        };
+        let _ = engine.sanitize(doc, all);
+        let _ = engine.flatten(doc, true, true);
+        engine.save(doc, out, false)?;
         Ok(())
     })();
     engine.close(doc);
