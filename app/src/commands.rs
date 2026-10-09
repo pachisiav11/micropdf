@@ -161,6 +161,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
                 || crate::prepare::command(app, id)
                 || crate::convert::command(app, id)
                 || crate::library::command(app, id)
+                || crate::batch::command(app, id)
             {
                 return None;
             }

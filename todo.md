@@ -1,5 +1,9 @@
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
-- 2026-10-07 00:18: M9 — library + batch (v0.9)
-- 2026-10-09 12:26: M9.2 — Batch: run a tool over many files (optimize, sanitize, OCR, flatten, rotate, watermark, protect, export)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)
+- 2026-10-09 12:42: M10.1 — Robustness: mutation fuzzing of open, render, text, comments, fields, signatures and save; every crash becomes a fixture
+- 2026-10-09 12:42: M10.2 — Accessibility: names, roles, states and default actions for Narrator on every control; keyboard path through the palette
+- 2026-10-09 12:42: M10.3 — Installer: per-user install and uninstall from the exe itself (Start menu, Open with, native host, Apps list), release zip script
+- 2026-10-09 12:42: M10.4 — Signed updates: opt-in check of GitHub Releases, manifest signed with ECDSA P-256 and checked by Windows CNG, signing tool
+- 2026-10-09 12:42: M10.5 — Release docs: privacy page, store listings for Chrome Web Store and Edge Add-ons, code signing steps, release workflow
+- 2026-10-09 12:42: M10.6 — Performance pass: run the bench (after 3 am only) and fix regressions

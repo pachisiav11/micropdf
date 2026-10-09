@@ -65,6 +65,8 @@ pub enum Form {
     Addon(bool),
     /// Takes a folder out of the library.
     LibraryRemove,
+    /// Runs a tool on many files.
+    Batch,
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -443,7 +445,8 @@ fn open(app: &mut App, form: Form) {
         | Form::NewBookmark { .. }
         | Form::FieldProps { .. }
         | Form::Addon(_)
-        | Form::LibraryRemove => return,
+        | Form::LibraryRemove
+        | Form::Batch => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -496,6 +499,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
         Form::LibraryRemove => {
             return crate::library::remove_folder(app, f[0].index.max(0) as usize);
         }
+        Form::Batch => return crate::batch::run(app, f),
         _ => {}
     }
     let Some((doc, path, _, count)) = app.reading() else {
@@ -751,7 +755,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             crate::content::bookmark_named(app, form, f)?
         }
         Form::FieldProps { page, id } => crate::prepare::set_props(app, page, id, f)?,
-        Form::Addon(_) | Form::LibraryRemove => {}
+        Form::Addon(_) | Form::LibraryRemove | Form::Batch => {}
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()
@@ -827,7 +831,7 @@ pub(crate) fn stem(path: &Path) -> String {
         .into_owned()
 }
 
-fn today() -> String {
+pub(crate) fn today() -> String {
     let mut t = SYSTEMTIME::default();
     unsafe { GetLocalTime(&mut t) };
     format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)

@@ -176,6 +176,7 @@ pub const COMMANDS: &[Command] = &[
     c("protect", "Protect with a password", ""),
     c("unprotect", "Remove password protection", ""),
     c("optimize", "Reduce file size", ""),
+    c("batch", "Run a tool on many files", ""),
     c("doc-properties", "Edit document properties", ""),
     c("sanitize", "Sanitize document", ""),
     c("redact-selection", "Redact selected text", ""),

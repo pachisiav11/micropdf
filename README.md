@@ -179,6 +179,15 @@ Enter opens the file at that page with the words marked. Library files also come
 the ordinary palette. The text is kept on disk, not in memory: a search reads one document at a
 time, and 1000 PDFs are searched in a few milliseconds.
 
+## Batch
+
+Tools → Run a tool on many files reduces the size of, sanitizes, recognizes text in, flattens,
+rotates, watermarks, password-protects or exports a set of PDFs at once. Pick the tool, then the
+files, then a folder for the results, which keep the files' names; the files themselves are not
+changed. The work runs on a thread with progress in the status line, a file that fails (one that
+needs a password, say) is listed at the end without stopping the rest, and choosing the command
+again stops the batch.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

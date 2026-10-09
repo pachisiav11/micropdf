@@ -3,6 +3,7 @@
 
 pub mod assistant;
 pub mod assoc;
+pub mod batch;
 pub mod bench;
 pub mod commands;
 pub mod content;
