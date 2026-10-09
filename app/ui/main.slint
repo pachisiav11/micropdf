@@ -443,6 +443,9 @@ export component MainWindow inherits Window {
                         background: i == root.active-tab ? Theme.bg : tab-touch.has-hover ? Theme.bg-hover : transparent;
                         accessible-role: tab;
                         accessible-label: tab-item.title;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: i == root.active-tab;
+                        accessible-action-default => { root.select-tab(i); }
 
                         tab-touch := TouchArea {
                             clicked => {
@@ -950,6 +953,10 @@ export component MainWindow inherits Window {
                                     height: thumb.height + 34px;
                                     accessible-role: button;
                                     accessible-label: "Page " + thumb.label;
+                                    accessible-action-default => {
+                                        root.thumb-press(thumb.index, false, false, false);
+                                        root.thumb-drop(thumb.index, 0);
+                                    }
                                     Rectangle {
                                         x: (parent.width - self.width) / 2;
                                         y: 8px;
@@ -1020,6 +1027,10 @@ export component MainWindow inherits Window {
                                     background: row.current ? Theme.bg-active : row-touch.has-hover ? Theme.bg-hover : transparent;
                                     accessible-role: button;
                                     accessible-label: row.title;
+                                    accessible-expandable: row.has-children;
+                                    accessible-expanded: row.expanded;
+                                    accessible-action-default => { root.outline-clicked(i); }
+                                    accessible-action-expand => { root.outline-toggle(i); }
                                     row-touch := TouchArea {
                                         clicked => {
                                             root.outline-clicked(i);
@@ -1080,6 +1091,7 @@ export component MainWindow inherits Window {
                                     background: file-touch.has-hover ? Theme.bg-hover : transparent;
                                     accessible-role: button;
                                     accessible-label: "Save " + file.name;
+                                    accessible-action-default => { root.attachment-save(i); }
                                     file-touch := TouchArea {
                                         clicked => {
                                             root.attachment-save(i);
@@ -1157,6 +1169,7 @@ export component MainWindow inherits Window {
                                     background: comment-touch.has-hover ? Theme.bg-hover : transparent;
                                     accessible-role: button;
                                     accessible-label: comment.kind + ", " + comment.detail + (comment.status != "" ? ", " + comment.status : "") + (comment.text != "" ? ": " + comment.text : "");
+                                    accessible-action-default => { root.comment-clicked(comment.index); }
                                     comment-touch := TouchArea {
                                         clicked => {
                                             root.comment-clicked(comment.index);
@@ -1282,6 +1295,13 @@ export component MainWindow inherits Window {
                                     accessible-role: checkbox;
                                     accessible-label: layer.name;
                                     accessible-checked: layer.visible;
+                                    accessible-checkable: true;
+                                    accessible-enabled: layer.toggle && !layer.locked;
+                                    accessible-action-default => {
+                                        if (layer.toggle && !layer.locked) {
+                                            root.layer-toggle(i);
+                                        }
+                                    }
                                     layer-touch := TouchArea {
                                         enabled: layer.toggle && !layer.locked;
                                         clicked => {
@@ -1649,6 +1669,7 @@ export component MainWindow inherits Window {
                                 background: recent-touch.has-hover ? Theme.bg-hover : transparent;
                                 accessible-role: button;
                                 accessible-label: "Open " + item.title;
+                                accessible-action-default => { root.recent-clicked(i); }
                                 recent-touch := TouchArea {
                                     clicked => {
                                         root.recent-clicked(i);
@@ -2035,6 +2056,7 @@ export component MainWindow inherits Window {
                                 background: i == root.palette-selected ? Theme.bg-active : item-touch.has-hover ? Theme.bg-hover : transparent;
                                 accessible-role: button;
                                 accessible-label: item.title;
+                                accessible-action-default => { root.palette-accept(i); }
                                 item-touch := TouchArea {
                                     clicked => {
                                         root.palette-accept(i);

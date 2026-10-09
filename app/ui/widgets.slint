@@ -4,6 +4,8 @@ import { Theme } from "tokens.slint";
 export component Icon inherits Text {
     font-family: "Segoe MDL2 Assets";
     font-size: 14px;
+    // The glyph means nothing read aloud; the control around it is named.
+    accessible-role: none;
     horizontal-alignment: center;
     vertical-alignment: center;
 }
@@ -26,6 +28,7 @@ export component ToolButton inherits Rectangle {
         : transparent;
     accessible-role: button;
     accessible-label: root.tip != "" ? root.tip : root.label;
+    accessible-enabled: root.enabled;
     accessible-action-default => {
         if (root.enabled) {
             root.clicked();
@@ -92,6 +95,11 @@ export component MenuEntry inherits Rectangle {
     background: touch.has-hover ? Theme.bg-hover : transparent;
     accessible-role: button;
     accessible-label: root.text;
+    accessible-checkable: root.checked;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.clicked();
+    }
 
     HorizontalLayout {
         padding-left: 8px;
@@ -126,6 +134,11 @@ export component SidebarTab inherits Rectangle {
     background: root.active ? Theme.bg-active : touch.has-hover ? Theme.bg-hover : transparent;
     accessible-role: tab;
     accessible-label: root.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.active;
+    accessible-action-default => {
+        root.clicked();
+    }
 
     Text {
         text: root.text;

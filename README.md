@@ -194,6 +194,13 @@ changed. The work runs on a thread with progress in the status line, a file that
 needs a password, say) is listed at the end without stopping the rest, and choosing the command
 again stops the batch.
 
+## Accessibility
+
+Every control has a name, a role and its state (checked, selected, expanded) for Narrator and
+other screen readers, and acts on their default action. Every command is in the palette (Ctrl+K),
+with its shortcut, so the app works from the keyboard alone; the reading modes (Dark, Sepia and
+Invert) change the page colours for contrast.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,
