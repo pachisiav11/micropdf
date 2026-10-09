@@ -812,3 +812,51 @@ fn measurements_take_the_page_scale_and_keep_it() {
         .collect();
     assert_eq!(kinds, [AnnotKind::Measure; 3]);
 }
+
+#[test]
+fn edited_text_reads_back_and_changes_only_its_box() {
+    let engine = Engine::start();
+    let scratch = Scratch::new("edit");
+    let path = scratch.file("hello.pdf");
+    std::fs::copy(fixture("hello.pdf"), &path).unwrap();
+    let doc = open(&engine, &path);
+    let blocks = engine.text_blocks(doc, 0).unwrap();
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    assert_eq!(blocks[0].text, "Hello micropdf");
+    let r = blocks[0].rect;
+    let shot = || mp_engine::render(&engine.display_list(doc, 0).unwrap(), 1.0).unwrap();
+    let before = shot();
+    let replaced = engine
+        .replace_text(doc, 0, r, "Hello world".into())
+        .unwrap();
+    assert!(replaced.own, "{replaced:?}");
+    assert_eq!(texts(&engine, doc)[0].trim(), "Hello world");
+    let after = shot();
+    let pixels = |image: &mp_engine::PageImage| image.rgb.as_chunks::<3>().0.to_vec();
+    for (i, (a, b)) in pixels(&before).iter().zip(pixels(&after)).enumerate() {
+        let (x, y) = (
+            (i as u32 % before.width) as f32,
+            (i as u32 / before.width) as f32,
+        );
+        let inside = x >= r.x0 - 2.0 && x <= r.x1 + 2.0 && y >= r.y0 - 2.0 && y <= r.y1 + 2.0;
+        assert!(*a == b || inside, "pixel {x}, {y} changed outside {r:?}");
+    }
+
+    // Longer text wraps to the block's width, line under line.
+    engine.undo(doc).unwrap();
+    let long = "Hello micropdf, set again in place and wrapped";
+    engine.replace_text(doc, 0, r, long.into()).unwrap();
+    let lines: Vec<String> = texts(&engine, doc)[0].lines().map(str::to_owned).collect();
+    assert!(lines.len() > 1, "{lines:?}");
+    assert_eq!(lines.join(" "), long);
+    let saved = scratch.file("edited.pdf");
+    engine.save(doc, &saved, false).unwrap();
+    let again = open(&engine, &saved);
+    assert_eq!(
+        texts(&engine, again)[0]
+            .lines()
+            .collect::<Vec<_>>()
+            .join(" "),
+        long
+    );
+}

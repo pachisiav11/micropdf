@@ -111,6 +111,16 @@ is set, the scale a drawing's page states, or else 1 in = 1 in. Each is kept in 
 Line, PolyLine or Polygon measurement annotation other readers show, with its value in the
 comment and, for a distance, written on the line.
 
+## Editing content
+
+Tools → Edit text, then click a block of text: it opens in an editor over the page, and what you
+type takes its place when you click elsewhere or press Ctrl+Enter (Esc keeps the old text). The
+block's glyphs are removed by a text-only redaction, so pictures and drawings under them stay,
+and the new text is wrapped to the block's width from its first line down. It is set in the
+block's own font when that font has every letter typed; otherwise in the standard font closest to
+it, or in an installed Windows font for scripts the standard fonts lack, and the status line says
+so.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

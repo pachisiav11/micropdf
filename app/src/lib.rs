@@ -5,6 +5,7 @@ pub mod assistant;
 pub mod assoc;
 pub mod bench;
 pub mod commands;
+pub mod content;
 pub mod instance;
 pub mod layout;
 pub mod measure;

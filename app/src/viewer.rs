@@ -380,6 +380,7 @@ pub struct App {
     flash_timer: Timer,
     pub(crate) split: Option<crate::split::Split>,
     pub(crate) measuring: crate::measure::Measuring,
+    pub(crate) text_edit: Option<crate::content::TextEdit>,
 }
 
 impl App {
@@ -484,6 +485,7 @@ impl App {
             flash_timer: Timer::default(),
             split: None,
             measuring: Default::default(),
+            text_edit: None,
         };
         app.refresh_recent();
         app.refresh_sign_menu();
@@ -2136,6 +2138,8 @@ Open it in Adobe Acrobat Reader to fill it in.",
                         ok: "Add",
                         cancel: "Cancel",
                     });
+                } else if self.tool == Tool::EditText {
+                    crate::content::click(self, page, (px, py));
                 } else if self.tool == Tool::Measure
                     && self.measuring.kind != mp_engine::Measure::Distance
                 {
@@ -3729,6 +3733,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.ghost = None;
         self.place_ghost();
         crate::measure::cancel(self);
+        crate::content::cancel(self);
         if let Some(w) = self.window() {
             w.set_tool(tool as i32);
         }
@@ -4020,6 +4025,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Lays the field editor over the focused text field, or hides it.
     fn place_field_editor(&self) {
+        if self.text_edit.is_some() {
+            return crate::content::place(self);
+        }
         let Some(w) = self.window() else { return };
         let placed = self
             .field_focus
@@ -4051,6 +4059,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
     /// Ends typing in the focused field and keeps the text. `step` 1 or -1 moves on to the
     /// next or previous field; 0 and 2 (the editor lost the keyboard) leave the form.
     pub fn field_commit(&mut self, step: i32) {
+        if self.text_edit.is_some() {
+            return crate::content::commit(self);
+        }
         let Some(f) = self.field_focus.as_mut().filter(|f| f.editing) else {
             return;
         };
@@ -4083,6 +4094,9 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Ends typing in the focused field and drops the text.
     pub fn field_cancel(&mut self) {
+        if crate::content::cancel(self) {
+            return;
+        }
         if self.field_focus.take().is_some() {
             self.refresh_marks();
         }
@@ -4108,6 +4122,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
 
     /// Commits the field being typed into, if any.
     fn commit_open_field(&mut self) {
+        crate::content::commit(self);
         if self.field_focus.as_ref().is_some_and(|f| f.editing) {
             self.field_commit(2);
         }
@@ -5483,6 +5498,12 @@ Open it in Adobe Acrobat Reader to fill it in.",
         Arc::clone(&self.engine)
     }
 
+    /// Page-space `rect` of `page` in document space: x, y, width and height.
+    pub(crate) fn view_rect(&self, page: usize, rect: &Rect) -> Option<(f32, f32, f32, f32)> {
+        let f = self.tab()?.layout.to_view(page, rect)?;
+        Some((f.x, f.y, f.width, f.height))
+    }
+
     /// Page-space point `(x, y)` of `page` in document space.
     pub(crate) fn view_point(&self, page: usize, (x, y): (f32, f32)) -> Option<(f32, f32)> {
         let r = Rect {
@@ -5873,6 +5894,8 @@ pub enum Tool {
     Certify,
     /// Measures a distance, perimeter or area, as `measuring.kind` says.
     Measure,
+    /// Opens a block of text to type over.
+    EditText,
 }
 
 /// The signature pad's state that the window does not hold.

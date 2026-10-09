@@ -222,15 +222,20 @@ const WIN_ANSI_HIGH: [(u8, char); 27] = [
     (0x9F, 'Ÿ'),
 ];
 
+/// The WinAnsiEncoding code of `ch`, if it has one.
+pub(crate) fn win_ansi_code(ch: char) -> Option<u8> {
+    match ch as u32 {
+        0x20..=0x7E | 0xA0..=0xFF => Some(ch as u8),
+        _ => WIN_ANSI_HIGH
+            .iter()
+            .find(|(_, c)| *c == ch)
+            .map(|(b, _)| *b),
+    }
+}
+
 fn win_ansi(text: &str) -> Vec<u8> {
     text.chars()
-        .map(|ch| match ch as u32 {
-            0x20..=0x7E | 0xA0..=0xFF => ch as u8,
-            _ => WIN_ANSI_HIGH
-                .iter()
-                .find(|(_, c)| *c == ch)
-                .map_or(b'?', |(b, _)| *b),
-        })
+        .map(|ch| win_ansi_code(ch).unwrap_or(b'?'))
         .collect()
 }
 

@@ -8,6 +8,7 @@
 mod annots;
 mod attachments;
 mod compare;
+mod edit;
 mod engine;
 mod error;
 mod fonts;
@@ -31,6 +32,7 @@ pub use annots::{
     STAMPS, Style, readable_date,
 };
 pub use compare::{Change, Comparison, Word, compare_words};
+pub use edit::{Replaced, TextBlock};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;
 pub use fonts::{has_cjk, has_font};

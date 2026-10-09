@@ -767,6 +767,7 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                         spacing: 4px;
                         Menu {
+                            MenuEntry { text: "Edit text"; checked: root.tool == 14; clicked => { root.command("tool-edit-text"); } }
                             MenuEntry { text: "Rotate pages\u{2026}"; clicked => { root.command("pages-rotate"); } }
                             MenuEntry { text: "Delete pages\u{2026}"; clicked => { root.command("pages-delete-some"); } }
                             MenuEntry { text: "Extract pages\u{2026}"; clicked => { root.command("pages-extract"); } }
@@ -1381,53 +1382,6 @@ export component MainWindow inherits Window {
                                 opacity: 0.6;
                             }
                         }
-                        Rectangle {
-                            visible: root.field-editing;
-                            x: root.field-x;
-                            y: root.field-y;
-                            width: root.field-width;
-                            height: root.field-height;
-                            background: #ffffff;
-                            border-width: 2px;
-                            border-color: Theme.accent;
-                            clip: true;
-                            FocusScope {
-                                capture-key-pressed(e) => {
-                                    if (e.text == Key.Escape) {
-                                        root.field-cancel();
-                                        return accept;
-                                    }
-                                    if (e.text == Key.Tab || e.text == Key.Backtab) {
-                                        root.field-commit(e.text == Key.Backtab || e.modifiers.shift ? -1 : 1);
-                                        return accept;
-                                    }
-                                    if (e.text == Key.Return && (!root.field-multiline || e.modifiers.control)) {
-                                        root.field-commit(0);
-                                        return accept;
-                                    }
-                                    return reject;
-                                }
-                                field-input := TextInput {
-                                    x: 4px;
-                                    y: root.field-multiline ? 3px : 0px;
-                                    width: parent.width - 8px;
-                                    height: root.field-multiline ? parent.height - 6px : parent.height;
-                                    text <=> root.field-text;
-                                    font-size: root.field-font-size;
-                                    color: #000000;
-                                    selection-background-color: #4a7dff66;
-                                    single-line: !root.field-multiline;
-                                    wrap: root.field-multiline ? TextWrap.word-wrap : TextWrap.no-wrap;
-                                    vertical-alignment: root.field-multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
-                                    accessible-label: root.field-name;
-                                    changed has-focus => {
-                                        if (!self.has-focus && root.field-editing) {
-                                            root.field-commit(2);
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         text-menu := PopupWindow {
                             x: root.menu-x;
                             y: root.menu-y;
@@ -1526,6 +1480,53 @@ export component MainWindow inherits Window {
                                     return accept;
                                 }
                                 return reject;
+                            }
+                        }
+                        Rectangle {
+                            visible: root.field-editing;
+                            x: root.field-x;
+                            y: root.field-y;
+                            width: root.field-width;
+                            height: root.field-height;
+                            background: #ffffff;
+                            border-width: 2px;
+                            border-color: Theme.accent;
+                            clip: true;
+                            FocusScope {
+                                capture-key-pressed(e) => {
+                                    if (e.text == Key.Escape) {
+                                        root.field-cancel();
+                                        return accept;
+                                    }
+                                    if (e.text == Key.Tab || e.text == Key.Backtab) {
+                                        root.field-commit(e.text == Key.Backtab || e.modifiers.shift ? -1 : 1);
+                                        return accept;
+                                    }
+                                    if (e.text == Key.Return && (!root.field-multiline || e.modifiers.control)) {
+                                        root.field-commit(0);
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                                field-input := TextInput {
+                                    x: 4px;
+                                    y: root.field-multiline ? 3px : 0px;
+                                    width: parent.width - 8px;
+                                    height: root.field-multiline ? parent.height - 6px : parent.height;
+                                    text <=> root.field-text;
+                                    font-size: root.field-font-size;
+                                    color: #000000;
+                                    selection-background-color: #4a7dff66;
+                                    single-line: !root.field-multiline;
+                                    wrap: root.field-multiline ? TextWrap.word-wrap : TextWrap.no-wrap;
+                                    vertical-alignment: root.field-multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
+                                    accessible-label: root.field-name;
+                                    changed has-focus => {
+                                        if (!self.has-focus && root.field-editing) {
+                                            root.field-commit(2);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

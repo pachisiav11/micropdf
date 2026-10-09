@@ -1584,6 +1584,56 @@ fn steps() -> Vec<Step> {
             },
         ),
         step(
+            "open a page to edit",
+            |_| {
+                std::fs::copy(fixture("hello.pdf"), scratch("edit.pdf")).unwrap();
+                viewer::with(|app| app.open(scratch("edit.pdf")));
+            },
+            |w| active_title(w) == viewer::file_name(&scratch("edit.pdf")),
+        ),
+        step(
+            "edit text opens the block clicked",
+            |w| {
+                w.invoke_command("tool-edit-text".into());
+                let p = hello_page(w);
+                let (x, y) = (
+                    p.x + 124.0 / 300.0 * p.width,
+                    p.y + 102.0 / 200.0 * p.height,
+                );
+                w.invoke_pointer_down(x, y, 0, false);
+                w.invoke_pointer_up(x, y);
+            },
+            |w| w.get_field_editing() && w.get_field_text() == "Hello micropdf",
+        ),
+        step(
+            "the text typed is set in its place",
+            |w| {
+                w.set_field_text("Hello world".into());
+                w.invoke_field_commit(0);
+            },
+            |w| {
+                w.get_status_left() == "Edited the text"
+                    && !w.get_field_editing()
+                    && w.get_dirty()
+                    && text_of(0) == "Hello world"
+            },
+        ),
+        step(
+            "close the edited page",
+            |w| {
+                w.invoke_command("tool-select".into());
+                w.invoke_command("close-tab".into());
+                w.invoke_dialog_accept("".into());
+            },
+            |w| {
+                let closed = active_title(w) == "xfa-dynamic.pdf";
+                if closed {
+                    let _ = std::fs::remove_file(scratch("edit.pdf"));
+                }
+                closed
+            },
+        ),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

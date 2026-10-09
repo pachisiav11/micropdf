@@ -157,6 +157,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
             if crate::tools::command(app, id)
                 || crate::split::command(app, id)
                 || crate::measure::command(app, id)
+                || crate::content::command(app, id)
             {
                 return None;
             }
