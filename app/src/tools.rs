@@ -234,11 +234,13 @@ fn open(app: &mut App, form: Form) {
                         "Every few pages",
                         "At these page ranges",
                         "At each top-level bookmark",
+                        "Under a file size",
                     ],
                     0,
                 ),
                 text("Pages per file", "1"),
                 text("Page ranges", "1-3, 4-"),
+                text("Largest file (MB)", "10"),
             ],
         ),
         Form::Crop => (
@@ -455,6 +457,8 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             });
         }
         Form::Split => {
+            // A size limit (max > 0) groups the pages on the dialog's thread.
+            let mut max = 0;
             let groups = match f[0].index {
                 0 => {
                     let n: usize = number(&f[1])?;
@@ -468,6 +472,14 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
                         .collect()
                 }
                 1 => parse_ranges(&f[2].text, count)?,
+                3 => {
+                    let mb: f64 = number(&f[3])?;
+                    if mb <= 0.0 {
+                        return Err("The largest file size must be more than 0.".into());
+                    }
+                    max = (mb * 1024.0 * 1024.0) as u64;
+                    Vec::new()
+                }
                 _ => {
                     let mut starts = app.chapter_starts();
                     if starts.len() < 2 {
@@ -480,6 +492,10 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             };
             let name = format!("{}.pdf", stem(&path));
             save_dialog("Split: name the parts", &path, name, move |first| {
+                let groups = match max {
+                    0 => groups,
+                    max => engine.size_groups(doc, max)?,
+                };
                 let parts = engine.split(doc, groups, first)?;
                 Ok(format!("Saved {} files", parts.len()))
             });

@@ -159,11 +159,40 @@ pub(crate) fn replace(
     Ok(n)
 }
 
-fn write(out: &PdfDocument, target: &Path) -> Result<(), Error> {
+fn compact() -> PdfWriteOptions {
     let mut options = PdfWriteOptions::default();
     options.set_garbage_level(3).set_compress(true);
+    options
+}
+
+fn write(out: &PdfDocument, target: &Path) -> Result<(), Error> {
     let target = target.to_str().ok_or(Error::Invalid("path is not UTF-8"))?;
-    Ok(out.save_with_options(target, options)?)
+    Ok(out.save_with_options(target, compact())?)
+}
+
+/// Groups every page, in order, so each group's file stays under `max` bytes. A page's share is
+/// its size written alone, which also counts the fonts and images it shares with other pages,
+/// so parts come out smaller than `max` rather than larger. A page over `max` is a part alone.
+pub(crate) fn size_groups(doc: &Document, max: u64) -> Result<Vec<Vec<usize>>, Error> {
+    let pdf = pdf(doc)?;
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut used = 0;
+    for p in 0..count(&pdf)? {
+        let mut out = PdfDocument::new();
+        insert(&mut out, &pdf, PageSelection::Pages(vec![p]), 0)?;
+        let size = out.write_to_with_options(&mut std::io::sink(), compact())?;
+        match groups.last_mut() {
+            Some(group) if used + size <= max => {
+                group.push(p);
+                used += size;
+            }
+            _ => {
+                groups.push(vec![p]);
+                used = size;
+            }
+        }
+    }
+    Ok(groups)
 }
 
 /// Writes `pages` to a new PDF at `target`.
@@ -364,6 +393,11 @@ impl crate::Engine {
         target: PathBuf,
     ) -> Result<(), Error> {
         self.read(doc, move |d, _| extract(d, &pages, &target))
+    }
+
+    /// See [`size_groups`].
+    pub fn size_groups(&self, doc: DocId, max: u64) -> Result<Vec<Vec<usize>>, Error> {
+        self.read(doc, move |d, _| size_groups(d, max))
     }
 
     /// See [`split`].

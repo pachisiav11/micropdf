@@ -133,6 +133,9 @@ fn pages_go_to_new_files_and_files_combine() {
     let two = open(&engine, &scratch.file("two.pdf"));
     assert_eq!(first_lines(&engine, two), ["Chapter 1", "Chapter 3"]);
 
+    assert_eq!(engine.size_groups(doc, 1).unwrap(), [[0], [1], [2]]);
+    assert_eq!(engine.size_groups(doc, u64::MAX).unwrap(), [[0, 1, 2]]);
+
     let groups = mp_engine::parse_ranges("1, 2-", 3).unwrap();
     let written = engine.split(doc, groups, scratch.file("part.pdf")).unwrap();
     assert_eq!(
