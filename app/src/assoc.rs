@@ -7,8 +7,9 @@ use std::io;
 
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_DWORD, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW,
+    RegSetValueExW,
 };
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
@@ -17,18 +18,19 @@ const PROG_ID: &str = "micropdf.pdf";
 const CAPABILITIES: &str = r"Software\micropdf\Capabilities";
 
 #[derive(Debug, PartialEq)]
-enum Value {
+pub(crate) enum Value {
     Text(String),
+    Number(u32),
     /// An empty REG_NONE value, as `OpenWithProgids` expects.
     Empty,
 }
 
 /// One registry value under HKEY_CURRENT_USER; an empty name is the key's default value.
 #[derive(Debug, PartialEq)]
-struct Entry {
-    key: String,
-    name: &'static str,
-    value: Value,
+pub(crate) struct Entry {
+    pub(crate) key: String,
+    pub(crate) name: &'static str,
+    pub(crate) value: Value,
 }
 
 fn entries(exe: &str) -> Vec<Entry> {
@@ -86,7 +88,7 @@ fn entries(exe: &str) -> Vec<Entry> {
     ]
 }
 
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
@@ -98,7 +100,7 @@ fn check(status: u32) -> io::Result<()> {
     }
 }
 
-fn write(entry: &Entry) -> io::Result<()> {
+pub(crate) fn write(entry: &Entry) -> io::Result<()> {
     let key = wide(&entry.key);
     let mut handle: HKEY = std::ptr::null_mut();
     // SAFETY: `key` is NUL-terminated; `handle` receives an open key that is closed below.
@@ -118,6 +120,7 @@ fn write(entry: &Entry) -> io::Result<()> {
     let name = wide(entry.name);
     let (kind, data) = match &entry.value {
         Value::Text(text) => (REG_SZ, wide(text)),
+        Value::Number(n) => (REG_DWORD, vec![*n as u16, (*n >> 16) as u16]),
         Value::Empty => (REG_NONE, Vec::new()),
     };
     // SAFETY: `handle` is open; `data` holds `data.len()` UTF-16 units.
@@ -184,9 +187,7 @@ pub fn unregister() -> io::Result<()> {
         r"Software\Classes\Applications\micropdf.exe".to_owned(),
         CAPABILITIES.to_owned(),
     ] {
-        let tree = wide(&tree);
-        // SAFETY: `tree` is NUL-terminated. A missing key is not an error worth reporting.
-        unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, tree.as_ptr()) };
+        delete_tree(&tree);
     }
     for (key, name) in [
         (r"Software\Classes\.pdf\OpenWithProgids", PROG_ID),
@@ -198,6 +199,14 @@ pub fn unregister() -> io::Result<()> {
     }
     notify_shell();
     bridge("--unregister")
+}
+
+/// Deletes `key` under HKEY_CURRENT_USER and all below it; a missing key is not an error worth
+/// reporting.
+pub(crate) fn delete_tree(key: &str) {
+    let key = wide(key);
+    // SAFETY: `key` is NUL-terminated.
+    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, key.as_ptr()) };
 }
 
 /// Whether PDF files are registered to open with this exe.

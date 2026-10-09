@@ -8,6 +8,7 @@ pub mod bench;
 pub mod commands;
 pub mod content;
 pub mod convert;
+pub mod install;
 pub mod instance;
 pub mod layout;
 pub mod library;

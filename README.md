@@ -44,6 +44,14 @@ so one that crashes the process stays there to become a fixture.
 Design tokens live in `design/tokens.json`; after editing, run `node scripts/gen-tokens.mjs` to
 regenerate `app/ui/tokens.slint` and `extension/src/tokens.css` (CI fails if they are stale).
 
+## Installing
+
+A release is a zip: unpack it anywhere and run `Install.cmd` (or `micropdf.exe --install`).
+micropdf goes into `%LOCALAPPDATA%\Programs\micropdf`, for you alone and with no administrator
+prompt, and adds a Start menu entry, "Open with" for PDF files (Settings > Default apps makes it
+the default), the browser extension's bridge, and an entry in Settings > Apps > Installed apps
+that uninstalls it (`micropdf.exe --uninstall`). `scripts/release.ps1` builds the zip.
+
 ## Assistant
 
 Ctrl+Shift+A opens the assistant, which answers questions about the open document with a model

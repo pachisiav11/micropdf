@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use micropdf::settings::Settings;
-use micropdf::{MainWindow, bench, instance, viewer, wire};
+use micropdf::{MainWindow, bench, install, instance, viewer, wire};
 use slint::ComponentHandle;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
@@ -14,6 +14,13 @@ fn main() -> Result<(), slint::PlatformError> {
     while let Some(arg) = args.next() {
         if arg == "--bench-scroll" {
             bench_out = args.next().map(PathBuf::from);
+        } else if arg == "--install" {
+            if !install::install() {
+                return Ok(());
+            }
+        } else if arg == "--uninstall" {
+            install::uninstall();
+            return Ok(());
         } else {
             files.push(PathBuf::from(arg));
         }
