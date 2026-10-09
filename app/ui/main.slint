@@ -833,6 +833,7 @@ export component MainWindow inherits Window {
                     Menu {
                         if root.has-document: MenuEntry { text: "Export to Word\u{2026}"; clicked => { root.command("export-word"); } }
                         if root.has-document: MenuEntry { text: "Export to Excel\u{2026}"; clicked => { root.command("export-excel"); } }
+                        if root.has-document: MenuEntry { text: "Export to PowerPoint\u{2026}"; clicked => { root.command("export-powerpoint"); } }
                         if root.has-document: MenuEntry { text: "Export to OpenDocument\u{2026}"; clicked => { root.command("export-odt"); } }
                         if root.has-document: MenuEntry { text: "Export as PNG images\u{2026}"; clicked => { root.command("export-png"); } }
                         if root.has-document: MenuEntry { text: "Export as JPEG images\u{2026}"; clicked => { root.command("export-jpeg"); } }
@@ -840,6 +841,7 @@ export component MainWindow inherits Window {
                         if root.has-document: MenuEntry { text: "Export to a web page\u{2026}"; clicked => { root.command("export-html"); } }
                         if root.has-document: MenuEntry { text: "Export to Markdown\u{2026}"; clicked => { root.command("export-markdown"); } }
                         MenuEntry { text: "Create a PDF from files\u{2026}"; clicked => { root.command("create-pdf"); } }
+                        MenuEntry { text: "LibreOffice add-on\u{2026}"; clicked => { root.command("addon"); } }
                     }
                 }
 

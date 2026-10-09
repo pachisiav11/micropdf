@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use context::{Context, link_citations, ranges};
-pub use http::WinHttp;
+pub use http::{WinHttp, get};
 pub use store::{Config, DailyUsage, content_hash, key, load_chat, save_chat, set_key, tokens};
 
 /// Guard against oversized-request errors: roughly 75k tokens, which leaves room for the

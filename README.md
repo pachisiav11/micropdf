@@ -154,9 +154,18 @@ document writers. For Excel, MuPDF segments each page and hunts for tables in th
 rules around it; each table becomes a sheet, numbers stay numbers, and a document with no tables
 gives a sheet a page of its text. Markdown marks headings by type size and keeps the paragraphs.
 
-Create a PDF from files makes one PDF of PDFs, images, web pages and text files, in the order of
-their names; Combine files in Tools takes the same files after the open document. Web pages and
-text are laid out on A4 pages.
+Create a PDF from files makes one PDF of PDFs, Office files (Word, Excel, PowerPoint, RTF and
+OpenDocument), images, web pages and text files, in the order of their names; Combine files in
+Tools takes the same files after the open document. Web pages and text are laid out on A4 pages.
+Office files go through Microsoft Office when it is installed, driven unseen over COM, and
+otherwise through LibreOffice; export to PowerPoint always uses LibreOffice's PDF import. Either
+is stopped after three minutes, in case it waits on a dialog no one sees.
+
+Without Office or LibreOffice, Convert → LibreOffice add-on downloads the newest stable
+LibreOffice for 64-bit Windows (about 350 MB) from The Document Foundation, checks it against the
+SHA-256 published beside it, and unpacks it with an administrative install into
+`%LOCALAPPDATA%\micropdf\addons`, which needs no admin rights and registers nothing. The same
+entry removes that folder and everything in it.
 
 ## Browser extension
 

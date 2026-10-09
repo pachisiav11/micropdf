@@ -61,6 +61,8 @@ pub enum Form {
         page: usize,
         id: i32,
     },
+    /// Installs the LibreOffice add-on, or removes it.
+    Addon(bool),
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -437,7 +439,8 @@ fn open(app: &mut App, form: Form) {
         | Form::DeleteLink { .. }
         | Form::Bookmark(_)
         | Form::NewBookmark { .. }
-        | Form::FieldProps { .. } => return,
+        | Form::FieldProps { .. }
+        | Form::Addon(_) => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -485,6 +488,9 @@ pub(crate) fn number<T: std::str::FromStr>(field: &FormField) -> Result<T, Box<d
 }
 
 fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
+    if let Form::Addon(install) = form {
+        return crate::convert::run_addon(app, install);
+    }
     let Some((doc, path, _, count)) = app.reading() else {
         return Ok(());
     };
@@ -738,6 +744,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             crate::content::bookmark_named(app, form, f)?
         }
         Form::FieldProps { page, id } => crate::prepare::set_props(app, page, id, f)?,
+        Form::Addon(_) => {}
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()
@@ -905,9 +912,10 @@ pub(crate) const PDFS: (&str, &[&str]) = ("PDF documents", &["pdf"]);
 
 /// What a PDF can be made of.
 const SOURCES: (&str, &[&str]) = (
-    "PDFs, images, web pages and text",
+    "PDFs, Office files, images, web pages and text",
     &[
-        "pdf", "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "htm", "html", "xhtml", "txt",
+        "pdf", "doc", "docx", "rtf", "odt", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "png",
+        "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "htm", "html", "xhtml", "txt",
     ],
 );
 
@@ -980,8 +988,8 @@ fn pick_pdf(app: &mut App, insert: bool) -> Done {
     Ok(())
 }
 
-/// Makes a new PDF of files the user picks (PDFs, images, web pages, text), after the active
-/// document's file when `with_active`, and opens it.
+/// Makes a new PDF of files the user picks (PDFs, Office files, images, web pages, text),
+/// after the active document's file when `with_active`, and opens it.
 fn combine(app: &mut App, with_active: bool) -> Done {
     let first = app.active_path().filter(|_| with_active);
     let title = if first.is_some() {

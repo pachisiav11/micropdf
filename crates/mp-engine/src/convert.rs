@@ -1,15 +1,20 @@
-//! Conversion: a document out to Word, OpenDocument, Excel, images, text, HTML and Markdown,
-//! and images, web pages and text files in as PDF.
+//! Conversion: a document out to Word, OpenDocument, Excel, PowerPoint, images, text, HTML
+//! and Markdown, and Office files, images, web pages and text files in as PDF.
 //!
 //! Word, OpenDocument, text, HTML and the images come from MuPDF's document writers. Excel is
 //! the tables MuPDF's CSV writer finds (it segments each page and hunts for tables in the text
 //! and the rules around it), one sheet a table, written as XLSX here. Markdown is set from the
-//! page's text blocks, with headings by type size.
+//! page's text blocks, with headings by type size. Office files become PDFs in Word, Excel or
+//! PowerPoint when installed, driven over COM from PowerShell, else in LibreOffice, installed
+//! or as micropdf's add-on; PowerPoint files come from LibreOffice's PDF import.
 
 use std::collections::HashMap;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use mupdf::{Document, DocumentWriter, Matrix};
 
 use crate::edit::blocks;
@@ -22,6 +27,7 @@ pub enum Export {
     Word,
     OpenDocument,
     Excel,
+    PowerPoint,
     Png,
     Jpeg,
     Text,
@@ -35,6 +41,7 @@ impl Export {
             Export::Word => "docx",
             Export::OpenDocument => "odt",
             Export::Excel => "xlsx",
+            Export::PowerPoint => "pptx",
             Export::Png => "png",
             Export::Jpeg => "jpg",
             Export::Text => "txt",
@@ -53,7 +60,150 @@ const A4: (f32, f32) = (595.0, 842.0);
 /// The resolution pages are exported as images at.
 const DPI: u32 = 150;
 
-/// A file removed when dropped.
+/// The Office and OpenDocument files a PDF is made of through Office or LibreOffice.
+pub const OFFICE: [&str; 10] = [
+    "doc", "docx", "rtf", "odt", "xls", "xlsx", "ods", "ppt", "pptx", "odp",
+];
+
+/// Starts a process without a console window.
+const NO_WINDOW: u32 = 0x0800_0000;
+
+const NEEDS_OFFICE: &str = "This needs Microsoft Office or LibreOffice. Install the LibreOffice \
+                            add-on from the Convert menu, or LibreOffice itself.";
+
+/// Where micropdf keeps add-ons: %LOCALAPPDATA%\micropdf\addons.
+pub fn addons_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("micropdf")
+        .join("addons")
+}
+
+/// Where the LibreOffice add-on is unpacked.
+pub fn libreoffice_dir() -> PathBuf {
+    addons_dir().join("LibreOffice")
+}
+
+/// The LibreOffice add-on's program, when the add-on is installed.
+pub fn addon_soffice() -> Option<PathBuf> {
+    fn find(dir: &Path, depth: usize) -> Option<PathBuf> {
+        let exe = dir.join("program").join("soffice.exe");
+        if exe.is_file() {
+            return Some(exe);
+        }
+        let entries = std::fs::read_dir(dir).ok().filter(|_| depth > 0)?;
+        entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .find_map(|e| find(&e.path(), depth - 1))
+    }
+    find(&libreoffice_dir(), 3)
+}
+
+/// LibreOffice's program: the add-on's, else an installed one.
+pub fn soffice() -> Option<PathBuf> {
+    addon_soffice().or_else(|| {
+        ["ProgramFiles", "ProgramFiles(x86)"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(|d| PathBuf::from(d).join("LibreOffice/program/soffice.exe"))
+            .find(|p| p.is_file())
+    })
+}
+
+/// Converts `path` to `format` in LibreOffice, with `filter` reading it when given; returns
+/// the temporary folder it wrote to, and the file.
+fn libreoffice(path: &Path, format: &str, filter: Option<&str>) -> Result<(Temp, PathBuf), Error> {
+    let soffice = soffice().ok_or(Error::Message(NEEDS_OFFICE.into()))?;
+    let out = Temp::new("dir");
+    std::fs::create_dir_all(&out.0)?;
+    // A profile of its own, so a LibreOffice the user has open does not take the job.
+    let profile = addons_dir().join("profile");
+    let url = format!(
+        "file:///{}",
+        profile
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(' ', "%20")
+    );
+    let mut command = Command::new(soffice);
+    command.args([
+        "--headless",
+        "--norestore",
+        "--nolockcheck",
+        &format!("-env:UserInstallation={url}"),
+    ]);
+    if let Some(filter) = filter {
+        command.arg(format!("--infilter={filter}"));
+    }
+    command
+        .args(["--convert-to", format, "--outdir"])
+        .arg(&out.0)
+        .arg(path);
+    finish(&mut command)?;
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let made = out.0.join(format!("{stem}.{format}"));
+    if !made.is_file() {
+        return Err(Error::Message(format!(
+            "LibreOffice could not convert {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )));
+    }
+    Ok((out, made))
+}
+
+/// Makes a PDF of `path` in Word, Excel or PowerPoint; false if that Office program is not
+/// installed or failed.
+fn microsoft_office(path: &Path, target: &Path, ext: &str) -> bool {
+    let quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "''"));
+    let (input, output) = (quote(path), quote(target));
+    let work = match ext {
+        "doc" | "docx" | "rtf" | "odt" => format!(
+            "$a = New-Object -ComObject Word.Application; try {{ $d = $a.Documents.Open({input}, \
+             $false, $true); $d.ExportAsFixedFormat({output}, 17); $d.Close($false) }} finally \
+             {{ $a.Quit() }}"
+        ),
+        "xls" | "xlsx" | "ods" => format!(
+            "$a = New-Object -ComObject Excel.Application; $a.DisplayAlerts = $false; try {{ \
+             $b = $a.Workbooks.Open({input}, 0, $true); $b.ExportAsFixedFormat(0, {output}); \
+             $b.Close($false) }} finally {{ $a.Quit() }}"
+        ),
+        _ => format!(
+            "$a = New-Object -ComObject PowerPoint.Application; try {{ $p = \
+             $a.Presentations.Open({input}, -1, 0, 0); $p.SaveAs({output}, 32); $p.Close() }} \
+             finally {{ $a.Quit() }}"
+        ),
+    };
+    let script = format!("$ErrorActionPreference = 'Stop'; {work}");
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        .arg(BASE64_STANDARD.encode(utf16));
+    finish(&mut command).unwrap_or(false) && target.is_file()
+}
+
+/// Runs `command` without a window, and stops it after three minutes: Office or LibreOffice
+/// waiting on a dialog no one can see would otherwise hold the conversion for ever. Returns
+/// whether it succeeded.
+fn finish(command: &mut Command) -> Result<bool, Error> {
+    let mut child = command.creation_flags(NO_WINDOW).spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status.success());
+        }
+        if start.elapsed() > std::time::Duration::from_secs(180) {
+            let _ = child.kill();
+            return Err(Error::Message(
+                "The conversion took too long and was stopped.".into(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// A file, or a folder, removed when dropped.
 pub(crate) struct Temp(pub(crate) PathBuf);
 
 impl Temp {
@@ -68,6 +218,7 @@ impl Temp {
 impl Drop for Temp {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -89,11 +240,21 @@ fn write_pages(doc: &Document, path: &str, format: &str, options: &str) -> Resul
 
 /// When `path` is not a PDF, writes it as one to a temporary file and returns that.
 pub(crate) fn as_pdf(path: &Path) -> Result<Option<Temp>, Error> {
-    let pdf = path
+    let ext = path
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
-    if pdf {
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext == "pdf" {
         return Ok(None);
+    }
+    if OFFICE.contains(&ext.as_str()) {
+        let temp = Temp::new("pdf");
+        if microsoft_office(path, &temp.0, &ext) {
+            return Ok(Some(temp));
+        }
+        let (_out, made) = libreoffice(path, "pdf", None)?;
+        std::fs::rename(made, &temp.0)?;
+        return Ok(Some(temp));
     }
     let mut doc = Document::open(utf8(path)?)?;
     if doc.is_reflowable()? {
@@ -403,6 +564,16 @@ impl crate::Engine {
         format: Export,
         target: PathBuf,
     ) -> Result<Vec<PathBuf>, Error> {
-        self.read(doc, move |d, _| export(d, format, &target))
+        if format != Export::PowerPoint {
+            return self.read(doc, move |d, _| export(d, format, &target));
+        }
+        // LibreOffice reads the document from a file, saved as it is now; the engine is free
+        // while it works.
+        let saved = Temp::new("pdf");
+        let path = saved.0.clone();
+        self.read(doc, move |d, _| Ok(pdf(d)?.save(utf8(&path)?)?))?;
+        let (_out, made) = libreoffice(&saved.0, "pptx", Some("impress_pdf_import"))?;
+        std::fs::copy(made, &target)?;
+        Ok(vec![target])
     }
 }

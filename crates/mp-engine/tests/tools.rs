@@ -203,6 +203,21 @@ fn documents_export_to_other_formats_and_other_files_combine_as_pdf() {
     assert_eq!(lines[1..], ["Note", "Hello micropdf"]);
 }
 
+/// Drives Microsoft Office, or LibreOffice, so it runs only on request:
+/// `cargo test -p mp-engine --test tools -- --ignored office`.
+#[test]
+#[ignore]
+fn office_files_become_pdfs() {
+    let engine = Engine::start();
+    let doc = open(&engine, &fixture("report.pdf"));
+    let scratch = Scratch::new("office");
+    let docx = scratch.file("report.docx");
+    engine.export(doc, Export::Word, docx.clone()).unwrap();
+    mp_engine::combine(&[docx], &scratch.file("back.pdf")).unwrap();
+    let back = open(&engine, &scratch.file("back.pdf"));
+    assert!(texts(&engine, back)[0].contains("Quarterly report"));
+}
+
 #[test]
 fn pages_crop_and_take_labels() {
     let engine = Engine::start();
