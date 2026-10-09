@@ -145,6 +145,19 @@ Find where fields go adds text fields over lines of underscores, empty boxes and
 of ruled tables, and checkboxes in small empty squares. Tab order by rows or by columns sorts the
 fields of every page for the Tab key.
 
+## Convert
+
+The Convert button exports the document, with any unsaved changes, to Word (.docx),
+OpenDocument text (.odt), Excel (.xlsx), PNG or JPEG images at 150 dpi (a file a page), plain
+text, a web page or Markdown. Word, OpenDocument, text, web page and images come from MuPDF's
+document writers. For Excel, MuPDF segments each page and hunts for tables in the text and the
+rules around it; each table becomes a sheet, numbers stay numbers, and a document with no tables
+gives a sheet a page of its text. Markdown marks headings by type size and keeps the paragraphs.
+
+Create a PDF from files makes one PDF of PDFs, images, web pages and text files, in the order of
+their names; Combine files in Tools takes the same files after the open document. Web pages and
+text are laid out on A4 pages.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

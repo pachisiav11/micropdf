@@ -680,6 +680,13 @@ export component MainWindow inherits Window {
                             tools-menu.show();
                         }
                     }
+                    convert-button := ToolButton {
+                        label: "Convert";
+                        tip: "Export to other formats, or make a PDF of other files";
+                        clicked => {
+                            convert-menu.show();
+                        }
+                    }
                     sign-button := ToolButton {
                         label: "Sign";
                         tip: "Sign or add initials";
@@ -816,6 +823,23 @@ export component MainWindow inherits Window {
                             MenuEntry { text: "Tab order by rows"; clicked => { root.command("field-order-rows"); } }
                             MenuEntry { text: "Tab order by columns"; clicked => { root.command("field-order-columns"); } }
                         }
+                    }
+                }
+
+                convert-menu := PopupWindow {
+                    x: min(convert-button.x, parent.width - 240px);
+                    y: parent.height - 4px;
+                    width: 240px;
+                    Menu {
+                        if root.has-document: MenuEntry { text: "Export to Word\u{2026}"; clicked => { root.command("export-word"); } }
+                        if root.has-document: MenuEntry { text: "Export to Excel\u{2026}"; clicked => { root.command("export-excel"); } }
+                        if root.has-document: MenuEntry { text: "Export to OpenDocument\u{2026}"; clicked => { root.command("export-odt"); } }
+                        if root.has-document: MenuEntry { text: "Export as PNG images\u{2026}"; clicked => { root.command("export-png"); } }
+                        if root.has-document: MenuEntry { text: "Export as JPEG images\u{2026}"; clicked => { root.command("export-jpeg"); } }
+                        if root.has-document: MenuEntry { text: "Export to plain text\u{2026}"; clicked => { root.command("export-text"); } }
+                        if root.has-document: MenuEntry { text: "Export to a web page\u{2026}"; clicked => { root.command("export-html"); } }
+                        if root.has-document: MenuEntry { text: "Export to Markdown\u{2026}"; clicked => { root.command("export-markdown"); } }
+                        MenuEntry { text: "Create a PDF from files\u{2026}"; clicked => { root.command("create-pdf"); } }
                     }
                 }
 

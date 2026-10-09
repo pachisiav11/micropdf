@@ -1,7 +1,6 @@
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M8 — conversion + LibreOffice add-on (v0.8)
-- 2026-10-09 12:06: M8.1 — Export to Word (DOCX), ODT, Excel (XLSX, tables from text), PNG/JPEG, text, HTML, Markdown; create PDF from images, HTML and text
 - 2026-10-09 12:06: M8.2 — Office to PDF through installed Office or LibreOffice; LibreOffice add-on manager (download, verify, per-user extract, remove); PDF to PowerPoint through it
 - 2026-10-07 00:18: M9 — library + batch (v0.9)
 - 2026-10-07 00:18: M10 — hardening, signing, store listings (v1.0)

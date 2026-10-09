@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use mp_engine::{
-    Bates, DocId, Engine, Find, ImageSource, LabelStyle, LinkTarget, Optimize, OutlineItem,
+    Bates, DocId, Engine, Export, Find, ImageSource, LabelStyle, LinkTarget, Optimize, OutlineItem,
     Overlay, PATTERNS, Place, Protection, Recognize, Rect, Sanitize, Security, SignField, SignWith,
     Signing, Trust,
 };
@@ -154,6 +154,53 @@ fn pages_go_to_new_files_and_files_combine() {
         ["Hello micropdf", "Chapter 1", "Chapter 2", "Chapter 3"]
     );
     assert!(mp_engine::combine(&[fixture("encrypted.pdf")], &scratch.file("x.pdf")).is_err());
+}
+
+#[test]
+fn documents_export_to_other_formats_and_other_files_combine_as_pdf() {
+    let engine = Engine::start();
+    let doc = open(&engine, &fixture("report.pdf"));
+    let scratch = Scratch::new("export");
+    let export = |format: Export| {
+        let target = scratch.file(&format!("report.{}", format.extension()));
+        engine.export(doc, format, target).unwrap()
+    };
+    let read = |format: Export| std::fs::read(&export(format)[0]).unwrap();
+
+    for format in [Export::Word, Export::OpenDocument] {
+        assert!(read(format).starts_with(b"PK"), "{format:?}");
+    }
+    let text = String::from_utf8_lossy(&read(Export::Text)).into_owned();
+    assert!(
+        text.contains("Quarterly report") && text.contains("Apples"),
+        "{text}"
+    );
+    let html = String::from_utf8_lossy(&read(Export::Html)).into_owned();
+    assert!(html.contains("Pears"), "{html}");
+    let md = String::from_utf8(read(Export::Markdown)).unwrap();
+    assert!(md.starts_with("# Quarterly report\n\nSales rose"), "{md}");
+
+    let xlsx = read(Export::Excel);
+    assert!(xlsx.starts_with(b"PK"));
+    let xlsx = String::from_utf8_lossy(&xlsx).into_owned();
+    assert!(xlsx.contains("Page 1 table 1"), "{xlsx}");
+    assert!(
+        xlsx.contains(">Apples<") && xlsx.contains("<v>12</v>"),
+        "{xlsx}"
+    );
+
+    let images = export(Export::Png);
+    assert_eq!(images, [scratch.file("report-1.png")]);
+    assert!(std::fs::read(&images[0]).unwrap().starts_with(b"\x89PNG"));
+
+    let page = scratch.file("note.html");
+    std::fs::write(&page, "<h1>Note</h1><p>Made from a web page.</p>").unwrap();
+    let sources = [fixture("red.png"), page, fixture("hello.pdf")];
+    mp_engine::combine(&sources, &scratch.file("made.pdf")).unwrap();
+    let made = open(&engine, &scratch.file("made.pdf"));
+    let lines = first_lines(&engine, made);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[1..], ["Note", "Hello micropdf"]);
 }
 
 #[test]

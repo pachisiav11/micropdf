@@ -45,14 +45,14 @@ struct Spot {
 }
 
 /// A block with what setting it again needs.
-struct Block {
-    shown: TextBlock,
+pub(crate) struct Block {
+    pub(crate) shown: TextBlock,
     /// Each line's box, for the redaction.
     lines: Vec<Rect>,
     spot: Spot,
 }
 
-fn blocks(page: &PdfPage) -> Result<Vec<Block>, Error> {
+pub(crate) fn blocks(page: &PdfPage) -> Result<Vec<Block>, Error> {
     let text = page.to_text_page(TextPageFlags::empty())?;
     let mut out = Vec::new();
     for block in text.blocks() {

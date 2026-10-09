@@ -115,7 +115,8 @@ pub fn command(app: &mut App, id: &str) -> bool {
                 "pages-delete" => delete(app, None),
                 "pages-insert-file" => pick_pdf(app, true),
                 "pages-replace" => pick_pdf(app, false),
-                "combine" => combine(app),
+                "combine" => combine(app, true),
+                "create-pdf" => combine(app, false),
                 "unprotect" => unprotect(app),
                 "redact-selection" => {
                     app.redact_selection();
@@ -521,7 +522,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
         Form::Extract => {
             let pages = pages(&f[0])?;
             let name = format!("{} pages {}.pdf", stem(&path), f[0].text.trim());
-            save_dialog("Extract pages", &path, name, move |target| {
+            save_dialog("Extract pages", &path, name, PDFS, move |target| {
                 engine
                     .extract_pages(doc, pages, target.clone())
                     .map(|()| format!("Saved {}", file_name(&target)))
@@ -562,7 +563,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
                 }
             };
             let name = format!("{}.pdf", stem(&path));
-            save_dialog("Split: name the parts", &path, name, move |first| {
+            save_dialog("Split: name the parts", &path, name, PDFS, move |first| {
                 let groups = match max {
                     0 => groups,
                     max => engine.size_groups(doc, max)?,
@@ -674,7 +675,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             };
             let before = std::fs::metadata(&path).map_or(0, |m| m.len());
             let name = format!("{} (smaller).pdf", stem(&path));
-            save_dialog("Reduce file size", &path, name, move |target| {
+            save_dialog("Reduce file size", &path, name, PDFS, move |target| {
                 engine.optimize(doc, target.clone(), how)?;
                 let after = std::fs::metadata(&target).map_or(0, |m| m.len());
                 Ok(format!(
@@ -805,7 +806,7 @@ fn unprotect(app: &mut App) -> Done {
     Ok(())
 }
 
-fn stem(path: &Path) -> String {
+pub(crate) fn stem(path: &Path) -> String {
     path.file_stem()
         .unwrap_or_default()
         .to_string_lossy()
@@ -866,12 +867,13 @@ fn recognize(
 /// One system file dialog at a time.
 static PICKING: AtomicBool = AtomicBool::new(false);
 
-/// Asks on a thread where to save, next to `path`; then runs `write` there and shows what it
-/// says, or why it failed.
-fn save_dialog(
+/// Asks on a thread where to save a file of `kind`, next to `path`; then runs `write` there
+/// and shows what it says, or why it failed.
+pub(crate) fn save_dialog(
     title: &'static str,
     path: &Path,
     name: String,
+    kind: (&'static str, &'static [&'static str]),
     write: impl FnOnce(PathBuf) -> Result<String, mp_engine::Error> + Send + 'static,
 ) {
     if PICKING.swap(true, Ordering::SeqCst) {
@@ -881,7 +883,7 @@ fn save_dialog(
     std::thread::spawn(move || {
         let mut dialog = rfd::FileDialog::new()
             .set_title(title)
-            .add_filter("PDF documents", &["pdf"])
+            .add_filter(kind.0, kind.1)
             .set_file_name(name);
         if let Some(dir) = dir {
             dialog = dialog.set_directory(dir);
@@ -900,6 +902,14 @@ fn save_dialog(
 }
 
 pub(crate) const PDFS: (&str, &[&str]) = ("PDF documents", &["pdf"]);
+
+/// What a PDF can be made of.
+const SOURCES: (&str, &[&str]) = (
+    "PDFs, images, web pages and text",
+    &[
+        "pdf", "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "htm", "html", "xhtml", "txt",
+    ],
+);
 
 /// Asks for files of `kind` (a name and extensions) on a thread, next to `path` when given.
 pub(crate) fn pick_files(
@@ -970,31 +980,38 @@ fn pick_pdf(app: &mut App, insert: bool) -> Done {
     Ok(())
 }
 
-/// Combines the active document's file (if any) with PDFs the user picks into a new file,
-/// and opens it.
-fn combine(app: &mut App) -> Done {
-    let first = app.active_path();
+/// Makes a new PDF of files the user picks (PDFs, images, web pages, text), after the active
+/// document's file when `with_active`, and opens it.
+fn combine(app: &mut App, with_active: bool) -> Done {
+    let first = app.active_path().filter(|_| with_active);
     let title = if first.is_some() {
         "Combine: choose the files to add after this one"
     } else {
-        "Combine: choose the files"
+        "Choose the files to make a PDF of"
     };
-    pick_files(title, first.clone(), true, PDFS, move |mut files| {
+    let near = first.clone().or_else(|| app.active_path());
+    pick_files(title, near, true, SOURCES, move |mut files| {
         files.sort();
         let sources: Vec<PathBuf> = first.into_iter().chain(files).collect();
-        if sources.len() < 2 {
+        if with_active && sources.len() < 2 {
             return;
         }
-        let name = format!("{} combined.pdf", stem(&sources[0]));
+        let name = match sources.len() {
+            1 => format!("{}.pdf", stem(&sources[0])),
+            _ => format!("{} combined.pdf", stem(&sources[0])),
+        };
         let start = sources[0].clone();
         let _ = slint::invoke_from_event_loop(move || {
-            save_dialog("Save the combined PDF", &start, name, move |target| {
+            save_dialog("Save the PDF", &start, name, PDFS, move |target| {
                 mp_engine::combine(&sources, &target)?;
                 let shown = target.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     viewer::with(|app| app.open_paths(vec![shown]));
                 });
-                Ok(format!("Combined {} files", sources.len()))
+                Ok(match sources.len() {
+                    1 => format!("Made {}", file_name(&target)),
+                    n => format!("Combined {n} files"),
+                })
             });
         });
     });

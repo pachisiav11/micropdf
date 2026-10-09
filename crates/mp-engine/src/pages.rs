@@ -225,11 +225,13 @@ pub(crate) fn split(
     Ok(written)
 }
 
-/// Writes the PDFs at `sources`, one after another, to a new PDF at `target`.
+/// Writes the files at `sources`, one after another, to a new PDF at `target`: PDFs, and
+/// images, web pages and text files, which are made PDFs first.
 pub fn combine(sources: &[PathBuf], target: &Path) -> Result<(), Error> {
     let mut out = PdfDocument::new();
     for path in sources {
-        let src = open(path, "")?;
+        let made = crate::convert::as_pdf(path)?;
+        let src = open(made.as_ref().map_or(path, |t| &t.0), "")?;
         let at = count(&out)?;
         insert(&mut out, &src, PageSelection::All, at)?;
     }

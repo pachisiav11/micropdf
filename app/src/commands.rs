@@ -159,6 +159,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
                 || crate::measure::command(app, id)
                 || crate::content::command(app, id)
                 || crate::prepare::command(app, id)
+                || crate::convert::command(app, id)
             {
                 return None;
             }

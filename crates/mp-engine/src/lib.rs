@@ -8,6 +8,7 @@
 mod annots;
 mod attachments;
 mod compare;
+mod convert;
 mod edit;
 mod engine;
 mod error;
@@ -34,6 +35,7 @@ pub use annots::{
     STAMPS, Style, readable_date,
 };
 pub use compare::{Change, Comparison, Word, compare_words};
+pub use convert::Export;
 pub use edit::{ImageSource, Replaced, TextBlock};
 pub use engine::{DocId, DocInfo, Engine, PageSize};
 pub use error::Error;

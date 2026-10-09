@@ -18,6 +18,8 @@ redact.pdf         2 pages of uncompressed text with an email address, a phone n
 red.png            a 2 by 2 red PNG, for adding and replacing images.
 blank-form.pdf     one page, no fields: a line of underscores, an empty square, and a 3-row table
                    whose right column is empty, for finding where fields go.
+report.pdf         one page: a large heading, a paragraph and a ruled 3 by 3 table with numbers,
+                   for exporting to other formats.
 
 encrypted.pdf is written by MuPDF itself: cargo run -p mp-engine --example make_encrypted
 """
@@ -275,6 +277,27 @@ def blank_form() -> bytes:
     ])
 
 
+def report() -> bytes:
+    rules = b"".join(b"72 %d m 372 %d l S\n" % (y, y) for y in (600, 580, 560, 540))
+    rules += b"".join(b"%d 600 m %d 540 l S\n" % (x, x) for x in (72, 172, 272, 372))
+    rows = ((586, (b"Item", b"Qty", b"Price")), (566, (b"Apples", b"3", b"1.50")),
+            (546, (b"Pears", b"12", b"0.75")))
+    cells = b"".join(b"BT /F1 10 Tf %d %d Td (%s) Tj ET\n" % (76 + 100 * i, y, t)
+                     for y, row in rows for i, t in enumerate(row))
+    content = (b"BT /F2 20 Tf 72 700 Td (Quarterly report) Tj ET\n"
+               b"BT /F1 10 Tf 72 670 Td (Sales rose in every region this quarter.) Tj ET\n"
+               + rules + cells)
+    return serialize([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>",
+        stream(content),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    ])
+
+
 def red_png() -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         body = kind + data
@@ -300,8 +323,10 @@ def main() -> None:
     (FIXTURES / "redact.pdf").write_bytes(redact())
     (FIXTURES / "red.png").write_bytes(red_png())
     (FIXTURES / "blank-form.pdf").write_bytes(blank_form())
+    (FIXTURES / "report.pdf").write_bytes(report())
     print("wrote outline-links.pdf, form.pdf, truncated.pdf, not-a-pdf.pdf, attachment.pdf, layers.pdf, "
-          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf, red.png, blank-form.pdf")
+          "cjk.pdf, calc.pdf, xfa-static.pdf, xfa-dynamic.pdf, redact.pdf, red.png, blank-form.pdf, "
+          "report.pdf")
 
 
 if __name__ == "__main__":
