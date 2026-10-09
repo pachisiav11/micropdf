@@ -11,6 +11,7 @@ pub mod palette;
 pub mod print;
 pub mod recolor;
 pub mod settings;
+pub mod signing;
 pub mod tools;
 pub mod viewer;
 
@@ -111,6 +112,9 @@ pub fn wire(window: &MainWindow) {
     });
     window.on_attachment_save(|i| {
         viewer::with(|app| app.attachment_save(i as usize));
+    });
+    window.on_signature_go(|i| {
+        viewer::with(|app| app.signature_go(i as usize));
     });
     window.on_attachment_delete(|i| {
         viewer::with(|app| app.attachment_delete(i as usize));

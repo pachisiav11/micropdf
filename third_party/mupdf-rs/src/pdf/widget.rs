@@ -72,6 +72,10 @@ impl PdfWidget {
         &self.annot
     }
 
+    pub fn annotation_mut(&mut self) -> &mut PdfAnnotation {
+        &mut self.annot
+    }
+
     pub fn into_annotation(self) -> PdfAnnotation {
         self.annot
     }

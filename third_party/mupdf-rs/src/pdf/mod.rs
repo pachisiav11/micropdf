@@ -6,6 +6,7 @@ pub mod intent;
 pub mod links;
 pub mod object;
 pub mod page;
+pub mod sign;
 pub mod widget;
 
 #[cfg(test)]
@@ -32,6 +33,9 @@ pub use object::{PdfArrayIter, PdfDictIter, PdfObject};
 pub use page::{
     ExtractedImage, FontInfo, ImagePlacement, InsertFontOptions, InsertImageOptions, PageImageInfo,
     PageImageSource, PdfPage,
+};
+pub use sign::{
+    Certificate, PdfSigner, SIGNATURE_APPEARANCE, SignatureCheck, SignatureError, certificates,
 };
 pub use widget::{FieldFlags, PdfWidget, PdfWidgetIter, WidgetType};
 

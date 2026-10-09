@@ -1,10 +1,10 @@
-//! Organize, stamps, protection, Optimize, Sanitize and redaction.
+//! Organize, stamps, protection, Optimize, Sanitize, redaction and digital signatures.
 
 use std::path::{Path, PathBuf};
 
 use mp_engine::{
     Bates, DocId, Engine, Find, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection, Rect,
-    Sanitize, Security,
+    Sanitize, Security, SignField, SignWith, Signing, Trust,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -442,4 +442,109 @@ fn redaction_removes_text_from_the_page_and_the_file() {
     }
     let again = open(&engine, &out);
     assert_eq!(texts(&engine, again)[1], "Page two keeps its text.");
+}
+
+fn signing(field: SignField, certify: bool, password: &str) -> Signing {
+    Signing {
+        with: SignWith::Pfx {
+            data: std::fs::read(fixture("signer.pfx")).unwrap(),
+            password: password.into(),
+        },
+        field,
+        reason: "Approved".into(),
+        location: "Test bench".into(),
+        tsa: None,
+        certify,
+    }
+}
+
+fn new_field(y: f32) -> SignField {
+    SignField::New {
+        page: 0,
+        rect: Rect {
+            x0: 20.0,
+            y0: y,
+            x1: 200.0,
+            y1: y + 40.0,
+        },
+    }
+}
+
+/// Signs a copy of hello.pdf at `path`, and opens it again from the saved bytes.
+fn signed_copy(engine: &Engine, path: &Path, certify: bool) -> DocId {
+    std::fs::copy(fixture("hello.pdf"), path).unwrap();
+    let doc = open(engine, path);
+    engine
+        .sign(doc, signing(new_field(100.0), certify, "test"))
+        .unwrap();
+    engine.save(doc, path, true).unwrap();
+    engine.close(doc);
+    open(engine, path)
+}
+
+/// The signature checks that a tampered copy of a signed file is flagged rest on. Run with
+/// `cargo test -p mp-engine --test tools -- --ignored` to write them again.
+#[test]
+#[ignore]
+fn write_signed_fixtures() {
+    let engine = Engine::start();
+    let doc = signed_copy(&engine, &fixture("signed.pdf"), false);
+    engine.close(doc);
+    let mut bytes = std::fs::read(fixture("signed.pdf")).unwrap();
+    let at = bytes.windows(5).position(|w| w == b"Hello").unwrap();
+    bytes[at] = b'J';
+    std::fs::write(fixture("signed-tampered.pdf"), bytes).unwrap();
+}
+
+#[test]
+fn signed_fixtures_check_out() {
+    let engine = Engine::start();
+    let signed = open(&engine, &fixture("signed.pdf"));
+    let s = engine.signatures(signed).unwrap();
+    assert_eq!(s.len(), 1);
+    assert!(s[0].signed && s[0].intact && !s[0].changed_after, "{s:?}");
+    // Self-signed: the identity is unknown, not untrusted.
+    assert_eq!(s[0].trust, Trust::Unknown);
+    assert_eq!(s[0].signer, "micropdf test signer");
+    assert_eq!(
+        (s[0].reason.as_str(), s[0].location.as_str()),
+        ("Approved", "Test bench")
+    );
+
+    let tampered = open(&engine, &fixture("signed-tampered.pdf"));
+    let s = engine.signatures(tampered).unwrap();
+    assert!(s[0].signed && !s[0].intact, "{s:?}");
+}
+
+#[test]
+fn signatures_sign_count_later_changes_and_certify() {
+    let engine = Engine::start();
+    let scratch = Scratch::new("sign");
+    let path = scratch.file("signed.pdf");
+    std::fs::copy(fixture("hello.pdf"), &path).unwrap();
+    let doc = open(&engine, &path);
+    let wrong = engine.sign(doc, signing(new_field(100.0), false, "nope"));
+    assert!(wrong.unwrap_err().to_string().contains("password"));
+    engine.close(doc);
+
+    let doc = signed_copy(&engine, &path, false);
+    // A second signature, appended: the first stays intact and shows the change after it.
+    engine
+        .sign(doc, signing(new_field(150.0), false, "test"))
+        .unwrap();
+    engine.save(doc, &path, true).unwrap();
+    engine.close(doc);
+    let doc = open(&engine, &path);
+    let s = engine.signatures(doc).unwrap();
+    assert_eq!(s.len(), 2);
+    assert!(s.iter().all(|s| s.signed && s.intact), "{s:?}");
+    assert_eq!(
+        s.iter().map(|s| s.changed_after).collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert!(s.iter().all(|s| !s.certifies));
+
+    let certified = signed_copy(&engine, &scratch.file("certified.pdf"), true);
+    let s = engine.signatures(certified).unwrap();
+    assert!(s[0].certifies && s[0].intact, "{s:?}");
 }

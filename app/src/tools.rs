@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mp_engine::{
     Bates, Find, INFO_FIELDS, LabelStyle, Optimize, Overlay, PATTERNS, Place, Protection, Sanitize,
-    Security, parse_ranges,
+    Security, SignField, parse_ranges,
 };
 use slint::{ModelRc, SharedString, VecModel};
 use windows_sys::Win32::Foundation::SYSTEMTIME;
@@ -17,9 +17,9 @@ use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use crate::FormField;
 use crate::viewer::{self, App, Tool, file_name};
 
-type Done = Result<(), Box<dyn Error>>;
+pub(crate) type Done = Result<(), Box<dyn Error>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Form {
     Rotate,
     Delete,
@@ -37,6 +37,7 @@ pub enum Form {
     Sanitize,
     Redact,
     ApplyRedactions,
+    Sign(SignField),
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -95,6 +96,14 @@ pub fn command(app: &mut App, id: &str) -> bool {
                     app.set_tool(Tool::Redact);
                     Ok(())
                 }
+                "tool-certify" => {
+                    app.set_tool(Tool::Certify);
+                    app.status(
+                        "Drag a box where the signature goes, or click an empty signature field"
+                            .into(),
+                    );
+                    Ok(())
+                }
                 _ => return false,
             };
             if let Err(e) = done {
@@ -107,7 +116,7 @@ pub fn command(app: &mut App, id: &str) -> bool {
     true
 }
 
-fn text(label: &str, value: &str) -> FormField {
+pub(crate) fn text(label: &str, value: &str) -> FormField {
     FormField {
         label: label.into(),
         kind: 0,
@@ -116,14 +125,14 @@ fn text(label: &str, value: &str) -> FormField {
     }
 }
 
-fn password(label: &str) -> FormField {
+pub(crate) fn password(label: &str) -> FormField {
     FormField {
         kind: 1,
         ..text(label, "")
     }
 }
 
-fn check(label: &str, on: bool) -> FormField {
+pub(crate) fn check(label: &str, on: bool) -> FormField {
     FormField {
         kind: 2,
         checked: on,
@@ -131,7 +140,7 @@ fn check(label: &str, on: bool) -> FormField {
     }
 }
 
-fn choice(label: &str, options: &[&str], index: i32) -> FormField {
+pub(crate) fn choice(label: &str, options: &[&str], index: i32) -> FormField {
     let options: Vec<SharedString> = options.iter().map(|&o| o.into()).collect();
     FormField {
         kind: 3,
@@ -392,6 +401,7 @@ fn open(app: &mut App, form: Form) {
                 Vec::new(),
             )
         }
+        Form::Sign(field) => return crate::signing::open(app, field),
     };
     app.show_form(form, title, note, ok, fields);
 }
@@ -658,6 +668,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
                 if changed == 1 { "" } else { "s" }
             ));
         }
+        Form::Sign(field) => crate::signing::run(app, field, f)?,
     }
     Ok(())
 }
@@ -764,11 +775,14 @@ fn save_dialog(
     });
 }
 
-/// Asks for PDFs on a thread, next to `path` when given.
-fn pick_files(
+const PDFS: (&str, &[&str]) = ("PDF documents", &["pdf"]);
+
+/// Asks for files of `kind` (a name and extensions) on a thread, next to `path` when given.
+pub(crate) fn pick_files(
     title: &'static str,
     path: Option<PathBuf>,
     many: bool,
+    kind: (&'static str, &'static [&'static str]),
     then: impl FnOnce(Vec<PathBuf>) + Send + 'static,
 ) {
     if PICKING.swap(true, Ordering::SeqCst) {
@@ -777,7 +791,7 @@ fn pick_files(
     std::thread::spawn(move || {
         let mut dialog = rfd::FileDialog::new()
             .set_title(title)
-            .add_filter("PDF documents", &["pdf"]);
+            .add_filter(kind.0, kind.1);
         if let Some(dir) = path.as_deref().and_then(Path::parent) {
             dialog = dialog.set_directory(dir);
         }
@@ -804,7 +818,7 @@ fn pick_pdf(app: &mut App, insert: bool) -> Done {
     } else {
         "Replace pages with"
     };
-    pick_files(title, Some(path), false, move |files| {
+    pick_files(title, Some(path), false, PDFS, move |files| {
         let file = files[0].clone();
         let _ = slint::invoke_from_event_loop(move || {
             viewer::with(|app| {
@@ -841,7 +855,7 @@ fn combine(app: &mut App) -> Done {
     } else {
         "Combine: choose the files"
     };
-    pick_files(title, first.clone(), true, move |mut files| {
+    pick_files(title, first.clone(), true, PDFS, move |mut files| {
         files.sort();
         let sources: Vec<PathBuf> = first.into_iter().chain(files).collect();
         if sources.len() < 2 {

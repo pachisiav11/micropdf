@@ -1397,6 +1397,39 @@ fn steps() -> Vec<Step> {
             closed
         }),
         step(
+            "a signed file lists its signature",
+            open("signed.pdf"),
+            |w| {
+                active_title(w) == "signed.pdf"
+                    && w.get_signatures()
+                        .row_data(0)
+                        .is_some_and(|r| r.state == 2 && r.name == "micropdf test signer")
+            },
+        ),
+        step(
+            "the certificate tool asks how to sign a box dragged out",
+            |w| {
+                w.invoke_command("tool-certify".into());
+                drag_hello(w, &[(20.0, 120.0), (120.0, 150.0), (200.0, 170.0)]);
+            },
+            |w| {
+                w.get_dialog_kind() == "form"
+                    && w.get_dialog_title() == "Sign with a certificate"
+                    && w.get_form_fields().row_count() == 6
+            },
+        ),
+        step(
+            "cancelling leaves the file unsigned",
+            |w| {
+                w.invoke_dialog_cancel();
+                w.invoke_command("tool-select".into());
+            },
+            |w| w.get_dialog_kind().is_empty() && !w.get_dirty() && w.get_tool() == 0,
+        ),
+        step("close the signed file", command("close-tab"), |w| {
+            active_title(w) == "xfa-dynamic.pdf"
+        }),
+        step(
             "every button has an accessible name",
             |_| {},
             |w| {

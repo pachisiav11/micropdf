@@ -65,6 +65,22 @@ card and US Social Security numbers, or a regular expression); applying the mark
 images and drawings under them, and the next save rewrites the file so nothing removed stays in it.
 Every page edit can be undone until you save.
 
+## Digital signatures
+
+Sign → Sign with a certificate, then drag a box on the page or click an empty signature field.
+The certificate comes from your Windows personal store, which includes smart cards and USB tokens,
+or from a .pfx / .p12 file and its password. A signature can carry a reason, a location and a
+trusted time from an RFC 3161 timestamp server, and can certify the document so that later changes
+other than form filling and signing break it. Signatures are PAdES (CAdES-detached CMS with
+SHA-256 and the signing certificate named in a signed attribute), made and checked by Windows
+CryptoAPI; signing saves the file at once, appending to it so earlier signatures stay valid. The
+Signed panel lists each signature field: whether the signed bytes are intact, whether Windows
+trusts the signer's certificate, whether the file was added to after signing, and the signer,
+date, reason and location.
+
+`scripts/make_test_signer.py` makes `fixtures/signer.pfx` (password `test`), the self-signed test
+ID behind `fixtures/signed.pdf` and its tampered copy.
+
 ## Browser extension
 
 The extension in `extension/` opens PDFs from the web in its own viewer instead of the browser's,

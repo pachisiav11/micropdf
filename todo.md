@@ -1,5 +1,4 @@
 - 2026-10-07 02:56: M6 — split view (two panes, one or two documents), built with synced compare
-- 2026-10-07 01:53: M6 — signed-PDF fixtures (valid, tampered)
 - 2026-10-07 00:18: M4 — AI assistant, Recto port (v0.4)
 - 2026-10-09 02:34: M4 — live smoke test with one real API key (ask the user for a key)
 - 2026-10-07 00:18: M6 — OCR, digital signatures, compare, measure (v0.6)

@@ -13,7 +13,8 @@ use std::time::{Duration, SystemTime};
 use mp_engine::{
     Annot, AnnotKind, Attachment, Border, DocId, DocInfo, Engine, Field, FieldEdit, FieldKind,
     History, LINE_ENDS, Layer, Link, LinkTarget, Mark, NewAnnot, OutlineItem, PageText, Properties,
-    REVIEW_STATES, Rect, RenderPool, Restyle, STAMPS, Security, Style, Tile, Xfa, readable_date,
+    REVIEW_STATES, Rect, RenderPool, Restyle, STAMPS, Security, SignField, Signature, Style, Tile,
+    Xfa, readable_date,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer, SharedString,
@@ -26,7 +27,7 @@ use crate::recolor::ReadingMode;
 use crate::settings::{SavedMark, Settings};
 use crate::{
     AttachmentRow, CommentRow, FormField, InfoRow, LayerRow, MainWindow, MarkItem, Named,
-    OutlineRow, PageItem, PaletteItem, Swatch, TabItem, Theme, ThumbItem, TileItem,
+    OutlineRow, PageItem, PaletteItem, SignatureRow, Swatch, TabItem, Theme, ThumbItem, TileItem,
 };
 
 /// Tile edge in device pixels.
@@ -183,6 +184,8 @@ struct DocTab {
     pressed: Option<(usize, bool)>,
     /// Each page's label, as the thumbnails show it.
     labels: Vec<String>,
+    /// The signature fields as checked when the file was opened.
+    signatures: Vec<Signature>,
 }
 
 impl DocTab {
@@ -322,6 +325,7 @@ struct Models {
     palette: Rc<VecModel<PaletteItem>>,
     recent: Rc<VecModel<PaletteItem>>,
     attachments: Rc<VecModel<AttachmentRow>>,
+    signatures: Rc<VecModel<SignatureRow>>,
     layers: Rc<VecModel<LayerRow>>,
     comments: Rc<VecModel<CommentRow>>,
     form: Rc<VecModel<FormField>>,
@@ -391,6 +395,7 @@ impl App {
             palette: Rc::new(VecModel::default()),
             recent: Rc::new(VecModel::default()),
             attachments: Rc::new(VecModel::default()),
+            signatures: Rc::new(VecModel::default()),
             layers: Rc::new(VecModel::default()),
             comments: Rc::new(VecModel::default()),
             form: Rc::new(VecModel::default()),
@@ -405,6 +410,7 @@ impl App {
         window.set_palette_items(ModelRc::from(models.palette.clone()));
         window.set_recent_items(ModelRc::from(models.recent.clone()));
         window.set_attachments(ModelRc::from(models.attachments.clone()));
+        window.set_signatures(ModelRc::from(models.signatures.clone()));
         window.set_layers(ModelRc::from(models.layers.clone()));
         window.set_comments(ModelRc::from(models.comments.clone()));
         window.set_form_fields(ModelRc::from(models.form.clone()));
@@ -579,6 +585,7 @@ impl App {
         let attachments = self.engine.attachments(info.id).unwrap_or_default();
         let layers = self.engine.layers(info.id).unwrap_or_default();
         let labels = self.engine.page_labels(info.id).unwrap_or_default();
+        let signatures = self.engine.signatures(info.id).unwrap_or_default();
         let expanded = if outline.len() <= 30 {
             (0..outline.len()).collect()
         } else {
@@ -641,6 +648,7 @@ impl App {
             chosen: BTreeSet::new(),
             pressed: None,
             labels,
+            signatures,
         };
         self.tabs.push(tab);
         self.scan_comments(self.tabs.len() - 1);
@@ -993,6 +1001,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         let attachments = self.engine.attachments(info.id).unwrap_or_default();
         let layers = self.engine.layers(info.id).unwrap_or_default();
         let labels = self.engine.page_labels(info.id).unwrap_or_default();
+        let signatures = self.engine.signatures(info.id).unwrap_or_default();
         let generation = self.bump();
         let thumb_generation = self.bump();
         let active = self.active == Some(index);
@@ -1022,6 +1031,7 @@ Open it in Adobe Acrobat Reader to fill it in.",
         tab.attachments = attachments;
         tab.layers = layers;
         tab.labels = labels;
+        tab.signatures = signatures;
         tab.chosen.clear();
         tab.dirty = false;
         tab.saved = None;
@@ -3011,9 +3021,52 @@ Open it in Adobe Acrobat Reader to fill it in.",
         self.fill_files();
         self.fill_layers();
         self.fill_comments();
-        if window.get_sidebar_tab() == 4 && tab.layers.is_empty() {
+        self.models
+            .signatures
+            .set_vec(crate::signing::rows(&tab.signatures));
+        if (window.get_sidebar_tab() == 4 && tab.layers.is_empty())
+            || (window.get_sidebar_tab() == 6 && tab.signatures.is_empty())
+        {
             window.set_sidebar_tab(0);
         }
+    }
+
+    /// Goes to signature `index` of the Signed panel; an empty field asks to be signed.
+    pub fn signature_go(&mut self, index: usize) {
+        let Some(s) = self.tab().and_then(|t| t.signatures.get(index)) else {
+            return;
+        };
+        let (page, signed, id) = (s.page, s.signed, s.id);
+        if signed {
+            self.flash_page(page);
+        } else {
+            self.go_to(page, None, true);
+            crate::signing::open(self, SignField::Existing { page, id });
+        }
+    }
+
+    /// Saves document `doc` after signing it, which writes the signature, and opens the file
+    /// again so the Signed panel checks it.
+    pub(crate) fn save_signed(&mut self, doc: DocId) {
+        let Some(index) = self.tabs.iter().position(|t| t.info.id == doc) else {
+            return;
+        };
+        let path = self.tabs[index].path.clone();
+        if let Err(e) = self.engine.save(doc, &path, true) {
+            self.edited(None);
+            self.message(
+                "Could not save the signature",
+                format!("{}\n\n{e}", path.display()),
+            );
+            return;
+        }
+        self.tabs[index].saved = file_stamp(&path);
+        self.reload(index);
+        if self.active == Some(index) {
+            self.set_tool(Tool::Select);
+            self.set_sidebar(true, Some(6));
+        }
+        self.status(format!("Signed and saved {}", file_name(&path)));
     }
 
     /// Fills the attachments panel, and leaves it when the tab has no files.
@@ -3761,6 +3814,24 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 };
                 self.add_comment(page, new, red);
             }
+            Tool::Certify => {
+                let empty = self
+                    .page_fields(page)
+                    .iter()
+                    .find(|f| f.kind == FieldKind::Signature && f.rect.contains(b.0, b.1))
+                    .map(|f| f.id)
+                    .filter(|&id| {
+                        self.tab()
+                            .is_some_and(|t| t.signatures.iter().any(|s| s.id == id && !s.signed))
+                    });
+                if let Some(id) = empty {
+                    crate::signing::open(self, SignField::Existing { page, id });
+                } else if rect.width() < 24.0 || rect.height() < 12.0 {
+                    self.status("Drag a box where the signature goes".into());
+                } else {
+                    crate::signing::open(self, SignField::New { page, rect });
+                }
+            }
             Tool::Redact => {
                 let Some(doc) = self.tab().map(|t| t.info.id) else {
                     return;
@@ -3816,7 +3887,17 @@ Open it in Adobe Acrobat Reader to fill it in.",
                 self.focus_field(page, field, false);
             }
             FieldKind::Text | FieldKind::Choice => self.focus_field(page, field, true),
-            FieldKind::Signature => self.status("Signing is not supported yet".into()),
+            FieldKind::Signature => {
+                let signed = self
+                    .tab()
+                    .and_then(|t| t.signatures.iter().find(|s| s.id == field.id))
+                    .is_some_and(|s| s.signed);
+                if signed {
+                    self.set_sidebar(true, Some(6));
+                } else {
+                    crate::signing::open(self, SignField::Existing { page, id: field.id });
+                }
+            }
             FieldKind::Button | FieldKind::Other => {}
         }
     }
@@ -5695,6 +5776,8 @@ pub enum Tool {
     Callout,
     Attach,
     Redact,
+    /// Signs with a certificate: in a box dragged out, or in an empty signature field.
+    Certify,
 }
 
 /// The signature pad's state that the window does not hold.
