@@ -496,6 +496,7 @@ impl App {
         app.refresh_recent();
         app.refresh_sign_menu();
         crate::library::start(&mut app);
+        crate::update::start(&app);
         app
     }
 

@@ -67,6 +67,8 @@ pub enum Form {
     LibraryRemove,
     /// Runs a tool on many files.
     Batch,
+    /// Downloads the release offered.
+    Update,
 }
 
 /// Undo steps after which the pages are read again: they change how many there are, their
@@ -446,7 +448,8 @@ fn open(app: &mut App, form: Form) {
         | Form::FieldProps { .. }
         | Form::Addon(_)
         | Form::LibraryRemove
-        | Form::Batch => return,
+        | Form::Batch
+        | Form::Update => return,
         Form::Ocr => {
             let languages = ocr_languages();
             if languages.is_empty() {
@@ -500,6 +503,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             return crate::library::remove_folder(app, f[0].index.max(0) as usize);
         }
         Form::Batch => return crate::batch::run(app, f),
+        Form::Update => return crate::update::download(app),
         _ => {}
     }
     let Some((doc, path, _, count)) = app.reading() else {
@@ -755,7 +759,7 @@ fn run(app: &mut App, form: Form, f: &[FormField]) -> Done {
             crate::content::bookmark_named(app, form, f)?
         }
         Form::FieldProps { page, id } => crate::prepare::set_props(app, page, id, f)?,
-        Form::Addon(_) | Form::LibraryRemove | Form::Batch => {}
+        Form::Addon(_) | Form::LibraryRemove | Form::Batch | Form::Update => {}
         Form::Ocr => {
             let how = Recognize {
                 language: ocr_languages()

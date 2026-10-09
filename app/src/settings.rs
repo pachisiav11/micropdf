@@ -31,6 +31,8 @@ pub struct Settings {
     pub comment_colors: HashMap<String, [f32; 3]>,
     /// The library's folders, searched with their subfolders.
     pub library: Vec<PathBuf>,
+    /// Look for a newer release at start; otherwise only when asked.
+    pub check_updates: bool,
 }
 
 /// A signature or initials as kept in the settings file.
@@ -95,6 +97,7 @@ impl Default for Settings {
             initials: None,
             comment_colors: HashMap::new(),
             library: Vec::new(),
+            check_updates: false,
         }
     }
 }

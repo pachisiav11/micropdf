@@ -21,6 +21,7 @@ pub mod settings;
 pub mod signing;
 pub mod split;
 pub mod tools;
+pub mod update;
 pub mod viewer;
 
 slint::include_modules!();

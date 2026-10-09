@@ -177,6 +177,12 @@ pub const COMMANDS: &[Command] = &[
     c("unprotect", "Remove password protection", ""),
     c("optimize", "Reduce file size", ""),
     c("batch", "Run a tool on many files", ""),
+    c("update-check", "Check for updates", ""),
+    c(
+        "update-auto",
+        "Check for updates when micropdf starts (on or off)",
+        "",
+    ),
     c("doc-properties", "Edit document properties", ""),
     c("sanitize", "Sanitize document", ""),
     c("redact-selection", "Redact selected text", ""),

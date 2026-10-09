@@ -162,6 +162,7 @@ fn command(app: &mut App, id: &str) -> Option<&'static str> {
                 || crate::convert::command(app, id)
                 || crate::library::command(app, id)
                 || crate::batch::command(app, id)
+                || crate::update::command(app, id)
             {
                 return None;
             }

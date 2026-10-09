@@ -81,6 +81,7 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::run_event_loop()?;
     window.hide()?;
     viewer::with(viewer::App::shutdown);
+    micropdf::update::after_exit();
     // Settings are saved; skip tearing down render workers and MuPDF one by one.
     std::process::exit(0)
 }

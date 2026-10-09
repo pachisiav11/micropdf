@@ -6,7 +6,6 @@
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::os::windows::process::CommandExt;
-use std::path::Path;
 use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -205,7 +204,7 @@ fn download_and_unpack() -> Result<String, String> {
         })?;
         file.flush().map_err(io)?;
         drop(file);
-        if sha256(&msi)? != expected {
+        if hex(&sha256(File::open(&msi).map_err(io)?)?) != expected {
             return Err(
                 "The download does not match the checksum The Document Foundation \
                         publishes, so nothing was installed."
@@ -228,8 +227,7 @@ fn download_and_unpack() -> Result<String, String> {
     result
 }
 
-fn sha256(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+pub(crate) fn sha256(mut input: impl Read) -> Result<[u8; 32], String> {
     let mut buffer = vec![0u8; 1 << 20];
     let mut digest = [0u8; 32];
     unsafe {
@@ -240,7 +238,7 @@ fn sha256(path: &Path) -> Result<String, String> {
         let mut hash = null_mut();
         let mut ok = BCryptCreateHash(algorithm, &mut hash, null_mut(), 0, null(), 0, 0) == 0;
         while ok {
-            let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
             }
@@ -253,21 +251,21 @@ fn sha256(path: &Path) -> Result<String, String> {
             return Err("Windows could not hash the download.".into());
         }
     }
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(digest)
+}
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sha256;
+    use super::{hex, sha256};
 
     #[test]
     fn sha256_matches_a_known_digest() {
-        let path = std::env::temp_dir().join(format!("mp-sha-{}.txt", std::process::id()));
-        std::fs::write(&path, "abc").unwrap();
-        let digest = sha256(&path);
-        let _ = std::fs::remove_file(&path);
         assert_eq!(
-            digest.unwrap(),
+            hex(&sha256(&b"abc"[..]).unwrap()),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }

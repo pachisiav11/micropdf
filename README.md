@@ -52,6 +52,12 @@ prompt, and adds a Start menu entry, "Open with" for PDF files (Settings > Defau
 the default), the browser extension's bridge, and an entry in Settings > Apps > Installed apps
 that uninstalls it (`micropdf.exe --uninstall`). `scripts/release.ps1` builds the zip.
 
+micropdf looks for updates only when asked: "Check for updates" in the palette, or "Check for
+updates when micropdf starts" to have it look at each start. It reads the latest GitHub release's
+manifest and trusts it only if it is signed with the release key, whose public half is built into
+the app (ECDSA P-256, checked by Windows CNG). A newer version is downloaded, checked against the
+manifest's SHA-256, unpacked, and installed when you close micropdf, which then starts again.
+
 ## Assistant
 
 Ctrl+Shift+A opens the assistant, which answers questions about the open document with a model
